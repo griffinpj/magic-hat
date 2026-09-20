@@ -11,7 +11,7 @@
 import Foundation
 import SwiftData
 
-enum CardFinish: String, Codable, CaseIterable {
+nonisolated enum CardFinish: String, Codable, CaseIterable, Sendable {
     case normal
     case foil
     case etched

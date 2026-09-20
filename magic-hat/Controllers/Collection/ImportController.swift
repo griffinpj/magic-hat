@@ -2,43 +2,55 @@
 //  ImportController.swift
 //  magic-hat
 //
-//  Applies a parsed ManaBox import into the SwiftData store. Every change
-//  is recorded in the append-only AuditRecord ledger under a single
-//  actionID so History can group it and undo/redo can be added later.
+//  Applies a parsed ManaBox import into the SwiftData store. Runs on its own
+//  background ModelContext (@ModelActor) so inserting thousands of records
+//  never blocks the main thread, and reports fractional progress so the UI
+//  can show a loading bar. Every change is recorded in the append-only
+//  AuditRecord ledger under a single actionID for grouping and future
+//  undo/redo.
+//
+//  This project uses default MainActor isolation, so SwiftData models live on
+//  the main actor. Rather than fight that with a background context, the
+//  import runs on the main context but yields to the run loop between chunks
+//  so the UI stays responsive and the progress bar animates smoothly.
 //
 
 import Foundation
 import SwiftData
 
-enum ImportMode {
+enum ImportMode: Sendable {
     case add        // merge/upsert into existing binders
     case replace    // clear selected binders first, then insert
 }
 
 @MainActor
 enum ImportController {
-    struct Summary {
+    struct Summary: Sendable {
         let actionID: UUID
         let added: Int      // total copies added
         let removed: Int    // total copies removed (replace mode)
         let binders: [String]
     }
 
-    /// Imports `rows` limited to `selectedBinders` using `mode`.
-    /// Returns a summary of what changed.
-    @discardableResult
+    /// Imports `rows` limited to `selectedBinders` using `mode`, reporting
+    /// progress in [0, 1] as records are written. Yields between chunks so
+    /// the main thread never stalls on a large import.
     static func apply(
         rows: [ManaBoxRow],
         selectedBinders: Set<String>,
         mode: ImportMode,
-        context: ModelContext
-    ) throws -> Summary {
+        context modelContext: ModelContext,
+        progress: (Double) -> Void
+    ) async throws -> Summary {
         let actionID = UUID()
         let now = Date()
         var addedCount = 0
         var removedCount = 0
 
-        let relevant = rows.filter { selectedBinders.contains($0.binderName) }
+        let relevant = rows.filter { selectedBinders.contains($0.binderName) && $0.quantity > 0 }
+        let total = max(relevant.count, 1)
+
+        progress(0)
 
         // 1. Replace mode: clear existing entries in the target binders and
         //    log a removal for each copy.
@@ -47,10 +59,10 @@ enum ImportController {
                 let descriptor = FetchDescriptor<CollectionEntry>(
                     predicate: #Predicate { $0.binderName == binder }
                 )
-                let existing = try context.fetch(descriptor)
+                let existing = try modelContext.fetch(descriptor)
                 for entry in existing {
                     removedCount += entry.quantity
-                    context.insert(AuditRecord(
+                    modelContext.insert(AuditRecord(
                         actionID: actionID,
                         action: .importReplace,
                         timestamp: now,
@@ -62,7 +74,7 @@ enum ImportController {
                         quantityDelta: -entry.quantity,
                         collectionEntryID: entry.id
                     ))
-                    context.delete(entry)
+                    modelContext.delete(entry)
                 }
             }
         }
@@ -70,7 +82,7 @@ enum ImportController {
         // 2. Build a lookup of surviving entries for upsert (add mode).
         var existingByKey: [String: CollectionEntry] = [:]
         if mode == .add {
-            let all = try context.fetch(FetchDescriptor<CollectionEntry>())
+            let all = try modelContext.fetch(FetchDescriptor<CollectionEntry>())
             for entry in all where selectedBinders.contains(entry.binderName) {
                 existingByKey[entry.mergeKey] = entry
             }
@@ -79,13 +91,19 @@ enum ImportController {
         // 3. Ensure a CardMeta placeholder exists per Scryfall ID (hydrated
         //    lazily later). Track which we've seen to avoid dup inserts.
         var knownMeta = Set(
-            try context.fetch(FetchDescriptor<CardMeta>()).map(\.scryfallID)
+            try modelContext.fetch(FetchDescriptor<CardMeta>()).map(\.scryfallID)
         )
 
-        // 4. Insert/upsert rows.
-        for row in relevant where row.quantity > 0 {
+        // 4. Insert/upsert rows, reporting progress and saving in batches so
+        //    memory stays bounded for very large imports. Progress updates
+        //    more often than saves so the bar animates smoothly.
+        let saveEvery = 500
+        let reportEvery = max(total / 100, 1)
+        var processed = 0
+
+        for row in relevant {
             if !knownMeta.contains(row.scryfallID) {
-                context.insert(CardMeta(
+                modelContext.insert(CardMeta(
                     scryfallID: row.scryfallID,
                     name: row.name,
                     setCode: row.setCode,
@@ -120,12 +138,12 @@ enum ImportController {
                     manaBoxID: row.manaBoxID,
                     addedDate: row.added
                 )
-                context.insert(entry)
+                modelContext.insert(entry)
                 if mode == .add { existingByKey[key] = entry }
             }
 
             addedCount += row.quantity
-            context.insert(AuditRecord(
+            modelContext.insert(AuditRecord(
                 actionID: actionID,
                 action: .importAdd,
                 timestamp: now,
@@ -137,9 +155,20 @@ enum ImportController {
                 quantityDelta: row.quantity,
                 collectionEntryID: entry.id
             ))
+
+            processed += 1
+            if processed % saveEvery == 0 {
+                try modelContext.save()
+                // Let the run loop breathe: UI updates and stays responsive.
+                await Task.yield()
+            }
+            if processed % reportEvery == 0 {
+                progress(Double(processed) / Double(total))
+            }
         }
 
-        try context.save()
+        try modelContext.save()
+        progress(1)
 
         return Summary(
             actionID: actionID,

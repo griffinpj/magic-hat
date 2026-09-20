@@ -31,7 +31,7 @@ enum HTTPMethod: String {
     case post = "POST"
 }
 
-struct HTTPClient {
+nonisolated struct HTTPClient {
     /// Accurate User-Agent per Scryfall requirements.
     let userAgent: String
     let accept: String
