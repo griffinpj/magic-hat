@@ -12,7 +12,9 @@ import SwiftData
 struct magic_hatApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            CollectionEntry.self,
+            CardMeta.self,
+            AuditRecord.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -25,7 +27,7 @@ struct magic_hatApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            MainTabView()
         }
         .modelContainer(sharedModelContainer)
     }
