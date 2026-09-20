@@ -11,7 +11,7 @@
 import Foundation
 
 /// Scryfall endpoint families and their minimum spacing between requests.
-enum RateLimitCategory {
+nonisolated enum RateLimitCategory {
     case cardsSearch    // /cards/search      2/sec
     case cardsNamed     // /cards/named       2/sec
     case cardsRandom    // /cards/random      2/sec

@@ -13,9 +13,17 @@ struct CardImageView: View {
     let urlString: String?
     let aspectRatio: Double
     var cornerRadius: CGFloat = 10
+    /// Longest-edge target in points; scaled to pixels for downsampling.
+    var targetWidth: CGFloat = 150
 
     @State private var image: UIImage?
     @State private var didFail = false
+
+    private var maxPixel: CGFloat {
+        // 3-wide grid tile is ~130pt; scale to device pixels and round up so
+        // images stay crisp without decoding at full resolution.
+        targetWidth * UIScreen.main.scale
+    }
 
     var body: some View {
         ZStack {
@@ -47,12 +55,13 @@ struct CardImageView: View {
         didFail = false
         guard let urlString, !urlString.isEmpty else { return }
 
-        if let cached = await ImageLoader.shared.cachedImage(for: urlString) {
+        let px = maxPixel
+        if let cached = await ImageLoader.shared.cachedImage(for: urlString, maxPixel: px) {
             image = cached
             return
         }
         do {
-            image = try await ImageLoader.shared.image(for: urlString)
+            image = try await ImageLoader.shared.image(for: urlString, maxPixel: px)
         } catch {
             didFail = true
         }
