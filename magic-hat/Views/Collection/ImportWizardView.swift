@@ -24,6 +24,8 @@ struct ImportWizardView: View {
     @State private var mode: ImportMode = .add
     @State private var summary: ImportController.Summary?
     @State private var errorMessage: String?
+    @State private var isImporting = false
+    @State private var progress = ImportProgress()
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -48,8 +50,9 @@ struct ImportWizardView: View {
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
+                            .disabled(isImporting)
                     }
-                    if summary == nil {
+                    if summary == nil && !isImporting {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Import") { runImport() }
                                 .disabled(selected.isEmpty)
@@ -68,11 +71,26 @@ struct ImportWizardView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if let summary {
+        if isImporting {
+            importingStep
+        } else if let summary {
             doneStep(summary)
         } else {
             chooseBindersStep
         }
+    }
+
+    private var importingStep: some View {
+        VStack(spacing: 20) {
+            ProgressView(value: progress.fraction)
+                .progressViewStyle(.linear)
+                .frame(maxWidth: 280)
+            Text("Importing \(Int(progress.fraction * 100))%")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var chooseBindersStep: some View {
@@ -138,17 +156,33 @@ struct ImportWizardView: View {
     }
 
     private func runImport() {
-        do {
-            summary = try ImportController.apply(
-                rows: rows,
-                selectedBinders: selected,
-                mode: mode,
-                context: modelContext
-            )
-        } catch {
-            errorMessage = error.localizedDescription
+        isImporting = true
+        progress.fraction = 0
+
+        Task {
+            do {
+                let result = try await ImportController.apply(
+                    rows: rows,
+                    selectedBinders: selected,
+                    mode: mode,
+                    context: modelContext
+                ) { fraction in
+                    progress.fraction = fraction
+                }
+                summary = result
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isImporting = false
         }
     }
+}
+
+/// Observable progress holder the wizard binds its loading bar to.
+@MainActor
+@Observable
+final class ImportProgress {
+    var fraction: Double = 0
 }
 
 #Preview {

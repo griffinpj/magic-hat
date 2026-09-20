@@ -9,7 +9,7 @@
 
 import Foundation
 
-enum CSVParser {
+nonisolated enum CSVParser {
     /// Parses CSV text into an array of string arrays (rows of fields).
     static func parse(_ text: String) -> [[String]] {
         var rows: [[String]] = []
@@ -66,7 +66,7 @@ enum CSVParser {
 
 // MARK: - ManaBox mapping
 
-enum ManaBoxParseError: Error, LocalizedError {
+nonisolated enum ManaBoxParseError: Error, LocalizedError {
     case empty
     case unexpectedHeader([String])
 
@@ -79,7 +79,7 @@ enum ManaBoxParseError: Error, LocalizedError {
     }
 }
 
-extension CSVParser {
+nonisolated extension CSVParser {
     private static let isoFormatter = ISO8601DateFormatter()
 
     /// Parses ManaBox CSV text into rows, validating the header.

@@ -8,7 +8,7 @@
 
 import Foundation
 
-struct ManaBoxRow: Identifiable, Hashable {
+nonisolated struct ManaBoxRow: Identifiable, Hashable, Sendable {
     let id = UUID()
 
     var binderName: String

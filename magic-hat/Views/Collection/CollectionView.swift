@@ -28,6 +28,7 @@ struct CollectionView: View {
     @State private var parsedRows: [ManaBoxRow] = []
     @State private var showingWizard = false
     @State private var importError: String?
+    @State private var isParsing = false
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
@@ -61,6 +62,7 @@ struct CollectionView: View {
             }
             .navigationTitle("Collection")
             .overlay(alignment: .topTrailing) { optionsMenu }
+            .overlay { if isParsing { parsingOverlay } }
             .fileImporter(
                 isPresented: $showingFileImporter,
                 allowedContentTypes: [.commaSeparatedText, .plainText, .text],
@@ -100,6 +102,21 @@ struct CollectionView: View {
         .padding(.top, 8)
     }
 
+    // Brief spinner shown while the picked CSV is read + parsed off-main.
+    private var parsingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.15).ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Reading file…")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(24)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
     private var binderList: some View {
         List(binders) { binder in
             NavigationLink {
@@ -126,27 +143,47 @@ struct CollectionView: View {
             importError = error.localizedDescription
         case .success(let urls):
             guard let url = urls.first else { return }
+            isParsing = true
+            Task {
+                let outcome = await Self.parse(url: url)
+                isParsing = false
+                switch outcome {
+                case .rows(let rows):
+                    parsedRows = rows
+                    showingWizard = true
+                case .failure(let message):
+                    importError = message
+                }
+            }
+        }
+    }
+
+    private enum ParseOutcome: Sendable {
+        case rows([ManaBoxRow])
+        case failure(String)
+    }
+
+    /// Reads and parses the CSV off the main thread so picking a large file
+    /// never stalls the UI. Returns rows or a user-facing error message.
+    private static func parse(url: URL) async -> ParseOutcome {
+        await Task.detached(priority: .userInitiated) {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
                 let data = try Data(contentsOf: url)
-                let text = String(data: data, encoding: .utf8)
-                    ?? String(data: data, encoding: .isoLatin1)
-                guard let text else {
-                    importError = "Couldn't read the file as text."
-                    return
+                guard let text = String(data: data, encoding: .utf8)
+                        ?? String(data: data, encoding: .isoLatin1) else {
+                    return .failure("Couldn't read the file as text.")
                 }
                 let rows = try CSVParser.parseManaBox(text)
                 guard !rows.isEmpty else {
-                    importError = "No card rows found in the file."
-                    return
+                    return .failure("No card rows found in the file.")
                 }
-                parsedRows = rows
-                showingWizard = true
+                return .rows(rows)
             } catch {
-                importError = error.localizedDescription
+                return .failure(error.localizedDescription)
             }
-        }
+        }.value
     }
 }
 
