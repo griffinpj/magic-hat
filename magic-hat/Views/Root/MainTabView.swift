@@ -25,7 +25,7 @@ struct MainTabView: View {
                 HistoryView()
             }
 
-            Tab("Search", systemImage: "magnifyingglass", role: .search) {
+            Tab("Search", systemImage: "magnifyingglass") {
                 SearchView()
             }
         }
