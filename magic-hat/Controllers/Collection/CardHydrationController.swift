@@ -17,16 +17,25 @@ import SwiftData
 final class CardHydrationController {
     private let client = ScryfallClient.shared
     private var inFlight: Set<String> = []
+    /// IDs known-fetched this session, so repeated scroll prefetches short
+    /// circuit without a SwiftData fetch on the main thread.
+    private var hydrated: Set<String> = []
 
     /// Hydrates any of `scryfallIDs` whose CardMeta is still pending/failed.
-    /// Safe to call repeatedly (e.g. from scroll prefetch); already-fetched
-    /// and in-flight IDs are skipped.
+    /// Safe to call on every tile's onAppear; already-known and in-flight IDs
+    /// are skipped with pure set math (no DB query).
     func hydrate(scryfallIDs: [String], context: ModelContext) {
-        let candidates = Set(scryfallIDs).subtracting(inFlight)
+        var candidates = Set(scryfallIDs)
+        candidates.subtract(hydrated)
+        candidates.subtract(inFlight)
         guard !candidates.isEmpty else { return }
 
-        // Which candidates actually need fetching?
+        // Only unknown IDs hit the store (covers metadata cached across
+        // launches). This is the sole DB touch and runs rarely during scroll.
         let needed = neededIDs(from: candidates, context: context)
+
+        // Anything already fetched in the store: remember and skip.
+        hydrated.formUnion(candidates.subtracting(needed))
         guard !needed.isEmpty else { return }
 
         inFlight.formUnion(needed)
@@ -36,6 +45,7 @@ final class CardHydrationController {
             do {
                 let cards = try await client.cards(ids: Array(needed))
                 apply(cards: cards, context: context)
+                hydrated.formUnion(needed)
             } catch {
                 markFailed(needed, context: context)
             }

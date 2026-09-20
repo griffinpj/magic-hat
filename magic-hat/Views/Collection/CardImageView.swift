@@ -51,15 +51,16 @@ struct CardImageView: View {
     }
 
     private func load() async {
-        image = nil
         didFail = false
-        guard let urlString, !urlString.isEmpty else { return }
+        guard let urlString, !urlString.isEmpty else { image = nil; return }
 
         let px = maxPixel
-        if let cached = await ImageLoader.shared.cachedImage(for: urlString, maxPixel: px) {
+        // Synchronous memory hit: no actor hop, no placeholder flash on reuse.
+        if let cached = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, px)) {
             image = cached
             return
         }
+        image = nil
         do {
             image = try await ImageLoader.shared.image(for: urlString, maxPixel: px)
         } catch {

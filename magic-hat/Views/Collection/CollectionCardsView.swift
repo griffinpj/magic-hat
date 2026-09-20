@@ -32,12 +32,22 @@ struct CollectionCardsView: View {
 
     init(collectionName: String) {
         self.collectionName = collectionName
-        _entries = Query(
-            filter: #Predicate<CollectionEntry> {
-                $0.collectionName == collectionName
-            },
-            sort: \CollectionEntry.name
+
+        var entryDescriptor = FetchDescriptor<CollectionEntry>(
+            predicate: #Predicate { $0.collectionName == collectionName },
+            sortBy: [SortDescriptor(\.name)]
         )
+        // Only the columns tiles render are prefetched.
+        entryDescriptor.propertiesToFetch = [
+            \.scryfallID, \.name, \.setCode, \.collectorNumber, \.quantity
+        ]
+        _entries = Query(entryDescriptor)
+
+        var metaDescriptor = FetchDescriptor<CardMeta>()
+        metaDescriptor.propertiesToFetch = [
+            \.scryfallID, \.imageNormalURL, \.imageWidth, \.imageHeight
+        ]
+        _allMeta = Query(metaDescriptor)
     }
 
     private func rebuildMeta() {
@@ -49,6 +59,7 @@ struct CollectionCardsView: View {
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                     CardTile(entry: entry, meta: metaByID[entry.scryfallID])
+                        .equatable()
                         .onAppear { prefetch(around: index) }
                 }
             }

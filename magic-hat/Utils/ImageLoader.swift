@@ -16,10 +16,26 @@ import UIKit
 import ImageIO
 import CryptoKit
 
+/// Thread-safe, synchronously readable in-memory image cache. Lives outside
+/// the actor so views can check for a decoded image without an async hop —
+/// scrolling reuses images instantly with no placeholder flash.
+nonisolated final class ImageMemoryCache: @unchecked Sendable {
+    static let shared = ImageMemoryCache()
+    private let cache = NSCache<NSString, UIImage>()
+
+    init() { cache.countLimit = 600 }
+
+    static func key(_ urlString: String, _ maxPixel: CGFloat) -> String {
+        "\(urlString)|\(Int(maxPixel))"
+    }
+
+    func image(_ key: String) -> UIImage? { cache.object(forKey: key as NSString) }
+    func set(_ image: UIImage, _ key: String) { cache.setObject(image, forKey: key as NSString) }
+}
+
 actor ImageLoader {
     static let shared = ImageLoader()
 
-    private let memory = NSCache<NSString, UIImage>()
     private let http = HTTPClient()
     private let fm = FileManager.default
     private let cacheDir: URL
@@ -31,27 +47,16 @@ actor ImageLoader {
         let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         cacheDir = caches.appendingPathComponent("CardImages", isDirectory: true)
         try? fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        memory.countLimit = 400
-    }
-
-    private func memKey(_ urlString: String, _ maxPixel: Int) -> NSString {
-        "\(urlString)|\(maxPixel)" as NSString
-    }
-
-    /// Returns an already-decoded image from the in-memory cache only.
-    func cachedImage(for urlString: String, maxPixel: CGFloat) -> UIImage? {
-        memory.object(forKey: memKey(urlString, Int(maxPixel)))
     }
 
     /// Loads a card image downsampled to `maxPixel` (longest edge, in pixels).
     /// Order: memory → disk bytes → network. Decode/downsample runs here on
     /// the actor, off the main thread.
     func image(for urlString: String, maxPixel: CGFloat) async throws -> UIImage {
-        let key = memKey(urlString, Int(maxPixel))
-        if let cached = memory.object(forKey: key) { return cached }
+        let key = ImageMemoryCache.key(urlString, maxPixel)
+        if let cached = ImageMemoryCache.shared.image(key) { return cached }
 
-        let inFlightKey = key as String
-        if let existing = inFlight[inFlightKey] {
+        if let existing = inFlight[key] {
             return try await existing.value
         }
 
@@ -72,15 +77,15 @@ actor ImageLoader {
             }
             return img
         }
-        inFlight[inFlightKey] = task
+        inFlight[key] = task
 
         do {
             let img = try await task.value
-            inFlight[inFlightKey] = nil
-            memory.setObject(img, forKey: key)
+            inFlight[key] = nil
+            ImageMemoryCache.shared.set(img, key)
             return img
         } catch {
-            inFlight[inFlightKey] = nil
+            inFlight[key] = nil
             throw error
         }
     }
