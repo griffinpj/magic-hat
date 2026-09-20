@@ -2,34 +2,32 @@
 //  ImportWizardView.swift
 //  magic-hat
 //
-//  Wizard for importing a ManaBox CSV: pick a file, choose which binders to
-//  import, decide whether to add-to or replace existing binders, then apply
-//  via ImportService (which records the change in the audit ledger).
+//  Second half of the import flow: given already-parsed ManaBox rows, choose
+//  which binders to import and whether to add-to or replace existing binders,
+//  then apply via ImportController (which records the change in the audit
+//  ledger). File picking/parsing happens in CollectionView before this opens.
 //
 
 import SwiftUI
 import SwiftData
-import UniformTypeIdentifiers
 
 struct ImportWizardView: View {
+    let rows: [ManaBoxRow]
+
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     /// Binder names that already exist, to flag add-vs-replace decisions.
     @Query private var existingEntries: [CollectionEntry]
 
-    private enum Step {
-        case pickFile
-        case chooseBinders
-        case done(ImportService.Summary)
-    }
-
-    @State private var step: Step = .pickFile
-    @State private var showingFileImporter = false
-    @State private var rows: [ManaBoxRow] = []
     @State private var selected: Set<String> = []
     @State private var mode: ImportMode = .add
+    @State private var summary: ImportController.Summary?
     @State private var errorMessage: String?
+
+    private var errorBinding: Binding<Bool> {
+        Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
+    }
 
     /// Card counts per binder in the parsed file.
     private var binderCounts: [(name: String, count: Int)] {
@@ -45,55 +43,35 @@ struct ImportWizardView: View {
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Import Collection")
+                .navigationTitle(summary == nil ? "Choose Binders" : "Import Complete")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel") { dismiss() }
                     }
-                    if case .chooseBinders = step {
+                    if summary == nil {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Import") { runImport() }
                                 .disabled(selected.isEmpty)
                         }
                     }
                 }
-                .fileImporter(
-                    isPresented: $showingFileImporter,
-                    allowedContentTypes: [.commaSeparatedText, .plainText, .text],
-                    allowsMultipleSelection: false
-                ) { result in
-                    handleFile(result)
-                }
-                .alert("Import Error", isPresented: .constant(errorMessage != nil)) {
-                    Button("OK") { errorMessage = nil }
+                .alert("Import Error", isPresented: errorBinding) {
+                    Button("OK", role: .cancel) {}
                 } message: {
                     Text(errorMessage ?? "")
                 }
         }
-    }
-
-    @ViewBuilder private var content: some View {
-        switch step {
-        case .pickFile:
-            pickFileStep
-        case .chooseBinders:
-            chooseBindersStep
-        case .done(let summary):
-            doneStep(summary)
+        .onAppear {
+            if selected.isEmpty { selected = Set(rows.map(\.binderName)) }
         }
     }
 
-    // MARK: Steps
-
-    private var pickFileStep: some View {
-        ContentUnavailableView {
-            Label("Choose a File", systemImage: "doc.badge.plus")
-        } description: {
-            Text("Select a ManaBox CSV export to import into your collection.")
-        } actions: {
-            Button("Select File…") { showingFileImporter = true }
-                .buttonStyle(.borderedProminent)
+    @ViewBuilder private var content: some View {
+        if let summary {
+            doneStep(summary)
+        } else {
+            chooseBindersStep
         }
     }
 
@@ -139,7 +117,7 @@ struct ImportWizardView: View {
         }
     }
 
-    private func doneStep(_ summary: ImportService.Summary) -> some View {
+    private func doneStep(_ summary: ImportController.Summary) -> some View {
         ContentUnavailableView {
             Label("Import Complete", systemImage: "checkmark.circle.fill")
         } description: {
@@ -159,39 +137,14 @@ struct ImportWizardView: View {
         else { selected.insert(name) }
     }
 
-    private func handleFile(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
-            errorMessage = error.localizedDescription
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let text = try String(contentsOf: url, encoding: .utf8)
-                let parsed = try CSVParser.parseManaBox(text)
-                guard !parsed.isEmpty else {
-                    errorMessage = "No card rows found in the file."
-                    return
-                }
-                rows = parsed
-                selected = Set(parsed.map(\.binderName))
-                step = .chooseBinders
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
     private func runImport() {
         do {
-            let summary = try ImportService.apply(
+            summary = try ImportController.apply(
                 rows: rows,
                 selectedBinders: selected,
                 mode: mode,
                 context: modelContext
             )
-            step = .done(summary)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -199,6 +152,6 @@ struct ImportWizardView: View {
 }
 
 #Preview {
-    ImportWizardView()
+    ImportWizardView(rows: [])
         .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
 }
