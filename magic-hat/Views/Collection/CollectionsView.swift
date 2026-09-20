@@ -126,7 +126,7 @@ struct CollectionsView: View {
     private var collectionList: some View {
         List(collections) { collection in
             NavigationLink {
-                CollectionDetailView(collectionName: collection.name)
+                CollectionCardsView(collectionName: collection.name)
             } label: {
                 HStack {
                     Image(systemName: "tray.full.fill")
