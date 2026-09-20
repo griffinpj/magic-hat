@@ -1,19 +1,19 @@
 //
-//  BinderDetailView.swift
+//  CollectionCardsView.swift
 //  magic-hat
 //
-//  A 3-wide card grid for one binder. Card metadata and images are
-//  hydrated lazily as tiles approach the viewport: when a tile appears we
-//  prefetch a lookahead window of cards so images are usually ready before
-//  the user scrolls to them, avoiding visible loading.
+//  A 3-wide card grid for every card in one collection (flat: binders are
+//  metadata, not a navigation level). Card metadata and images are hydrated
+//  lazily as tiles approach the viewport: when a tile appears we prefetch a
+//  lookahead window so images are usually ready before the user scrolls to
+//  them, avoiding visible loading.
 //
 
 import SwiftUI
 import SwiftData
 
-struct BinderDetailView: View {
+struct CollectionCardsView: View {
     let collectionName: String
-    let binderName: String
 
     @Environment(\.modelContext) private var modelContext
     @Query private var entries: [CollectionEntry]
@@ -30,12 +30,11 @@ struct BinderDetailView: View {
         repeating: GridItem(.flexible(), spacing: 10), count: 3
     )
 
-    init(collectionName: String, binderName: String) {
+    init(collectionName: String) {
         self.collectionName = collectionName
-        self.binderName = binderName
         _entries = Query(
             filter: #Predicate<CollectionEntry> {
-                $0.collectionName == collectionName && $0.binderName == binderName
+                $0.collectionName == collectionName
             },
             sort: \CollectionEntry.name
         )
@@ -55,7 +54,7 @@ struct BinderDetailView: View {
             }
             .padding(10)
         }
-        .navigationTitle(binderName)
+        .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
         .task { prefetch(around: 0) }
         .onChange(of: allMeta, initial: true) { _, _ in rebuildMeta() }
