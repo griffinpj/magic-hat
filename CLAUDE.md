@@ -37,11 +37,15 @@ are cross-cutting, not owned by one feature.
 - `Controllers/<Feature>/` — feature logic that orchestrates models + clients
   (e.g. `ImportController`, `CardHydrationController`).
 - `Models/` — SwiftData `@Model` types and plain value types.
+  - Hierarchy: `MTGCollection` → binder → card. A collection owns binders
+    (identified by name), which own cards.
+  - `MTGCollection` — a named top-level collection (unique name). Import
+    targets one collection: a new one, or an existing one to merge into.
   - `CardMeta` — cached Scryfall metadata (image URLs, dims), keyed by
-    Scryfall ID; one per card, shared across binders.
-  - `CollectionEntry` — one owned row (binder + finish + condition + qty);
-    mirrors a ManaBox CSV row. CSV fields are denormalized so the collection
-    is browsable before hydration.
+    Scryfall ID; one per card, shared across binders/collections.
+  - `CollectionEntry` — one owned row (collection + binder + finish +
+    condition + qty); mirrors a ManaBox CSV row. CSV fields are denormalized
+    so the collection is browsable before hydration.
   - `AuditRecord` — append-only ledger. Records sharing an `actionID` come
     from one user action; each has a signed `quantityDelta`. Backs the
     History tab and future undo/redo.
@@ -52,8 +56,10 @@ are cross-cutting, not owned by one feature.
   - `HTTPClient` — transport, required headers (User-Agent/Accept), decoding.
   - `RateLimiter` — actor enforcing Scryfall per-endpoint limits.
   - `CSVParser` — RFC-4180-ish parser + ManaBox mapping.
-  - `ImageLoader` — two-tier (NSCache + disk under Caches/) card image cache
-    with in-flight coalescing.
+  - `ImageLoader` — card image cache: original bytes on disk (Caches/),
+    decoded+downsampled UIImages in memory keyed by URL+size. Decode and
+    downsample run on the actor (off-main) via ImageIO so scrolling never
+    triggers a main-thread decode of a full-resolution image.
 - `Controllers/Collection/`
   - `ImportController` — applies a parsed import (add/replace), writes audit.
   - `CardHydrationController` — lazily fetches metadata for visible cards.

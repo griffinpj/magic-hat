@@ -12,6 +12,7 @@ import SwiftUI
 import SwiftData
 
 struct BinderDetailView: View {
+    let collectionName: String
     let binderName: String
 
     @Environment(\.modelContext) private var modelContext
@@ -19,6 +20,8 @@ struct BinderDetailView: View {
     @Query private var allMeta: [CardMeta]
 
     @State private var hydrator = CardHydrationController()
+    // Memoized meta lookup, rebuilt only when metadata changes.
+    @State private var metaByID: [String: CardMeta] = [:]
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
@@ -27,16 +30,19 @@ struct BinderDetailView: View {
         repeating: GridItem(.flexible(), spacing: 10), count: 3
     )
 
-    init(binderName: String) {
+    init(collectionName: String, binderName: String) {
+        self.collectionName = collectionName
         self.binderName = binderName
         _entries = Query(
-            filter: #Predicate<CollectionEntry> { $0.binderName == binderName },
+            filter: #Predicate<CollectionEntry> {
+                $0.collectionName == collectionName && $0.binderName == binderName
+            },
             sort: \CollectionEntry.name
         )
     }
 
-    private var metaByID: [String: CardMeta] {
-        Dictionary(allMeta.map { ($0.scryfallID, $0) }) { a, _ in a }
+    private func rebuildMeta() {
+        metaByID = Dictionary(allMeta.map { ($0.scryfallID, $0) }) { a, _ in a }
     }
 
     var body: some View {
@@ -52,6 +58,7 @@ struct BinderDetailView: View {
         .navigationTitle(binderName)
         .navigationBarTitleDisplayMode(.inline)
         .task { prefetch(around: 0) }
+        .onChange(of: allMeta, initial: true) { _, _ in rebuildMeta() }
     }
 
     /// Hydrates the window of cards starting at `index` through the lookahead.
