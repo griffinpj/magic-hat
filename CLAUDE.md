@@ -64,6 +64,27 @@ Enforced in `RateLimiter`. `/cards/search|named|random|collection` 2/sec,
 `/cards/manifest` 10/min, everything else (incl. images) 10/sec. All requests
 send an accurate `User-Agent` (`MagicHat/1.0`) and an `Accept` header.
 
+## Keep work off the main thread
+
+Responsiveness is a hard requirement: the UI must never lag or freeze. Any
+non-trivial work — file I/O, parsing, decoding, networking, image processing,
+bulk data writes — belongs off the main thread.
+
+- Put pure, CPU-bound work (CSV parsing, decoding) on a background task
+  (`Task.detached(priority: .userInitiated)`), then hop back to update state.
+- Mark pure value types / helpers `nonisolated` so they don't inherit the
+  project's default MainActor isolation and can run off-main without warnings
+  (e.g. `ManaBoxRow`, `CardFinish`, `CSVParser`, `HTTPClient`).
+- Networking runs off-main via `nonisolated` clients + `RateLimiter` (an
+  actor); never block on the main thread waiting for a request.
+- SwiftData `@Model` types are main-actor-bound under this project's default
+  MainActor isolation, so their writes happen on the main context. For large
+  writes, chunk the loop and `await Task.yield()` between batches so the run
+  loop stays responsive, and surface progress (e.g. a progress bar) rather
+  than blocking behind a spinner.
+- Long-running user actions should show progress and keep the UI interactive
+  (or explicitly disable only the controls that must not change mid-operation).
+
 ## Data flow notes
 
 - Import does not fetch card data. Metadata/images are hydrated lazily when a
