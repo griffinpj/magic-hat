@@ -61,7 +61,19 @@ struct CollectionView: View {
                 }
             }
             .navigationTitle("Collection")
-            .overlay(alignment: .topTrailing) { optionsMenu }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            showingFileImporter = true
+                        } label: {
+                            Label("Import…", systemImage: "square.and.arrow.down")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
             .overlay { if isParsing { parsingOverlay } }
             .fileImporter(
                 isPresented: $showingFileImporter,
@@ -79,27 +91,6 @@ struct CollectionView: View {
                 Text(importError ?? "")
             }
         }
-    }
-
-    // Floating Liquid Glass "…" menu, overlaid top-right so it never
-    // consumes the navigation title's space. Placed outside the toolbar to
-    // avoid the first-tap lag SwiftUI toolbar menus exhibit.
-    private var optionsMenu: some View {
-        Menu {
-            Button {
-                showingFileImporter = true
-            } label: {
-                Label("Import…", systemImage: "square.and.arrow.down")
-            }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
-        }
-        .glassEffect(.regular.interactive(), in: Circle())
-        .padding(.trailing, 16)
-        .padding(.top, 8)
     }
 
     // Brief spinner shown while the picked CSV is read + parsed off-main.

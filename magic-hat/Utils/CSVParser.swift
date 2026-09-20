@@ -11,12 +11,17 @@ import Foundation
 
 nonisolated enum CSVParser {
     /// Parses CSV text into an array of string arrays (rows of fields).
+    ///
+    /// Iterates over Unicode scalars rather than Characters: a CRLF ("\r\n")
+    /// is a single Swift `Character` (grapheme cluster), so matching on
+    /// Characters would swallow line breaks and collapse the file into one
+    /// giant row. Scalars keep `\r` and `\n` separate.
     static func parse(_ text: String) -> [[String]] {
         var rows: [[String]] = []
         var field = ""
         var record: [String] = []
         var inQuotes = false
-        let scalars = Array(text)
+        let scalars = Array(text.unicodeScalars)
         var i = 0
 
         func endField() {
@@ -25,33 +30,38 @@ nonisolated enum CSVParser {
         }
         func endRecord() {
             endField()
-            // Skip blank trailing lines.
+            // Skip blank lines.
             if !(record.count == 1 && record[0].isEmpty) {
                 rows.append(record)
             }
             record = []
         }
 
+        let quote: Unicode.Scalar = "\""
+        let comma: Unicode.Scalar = ","
+        let newline: Unicode.Scalar = "\n"
+        let carriage: Unicode.Scalar = "\r"
+
         while i < scalars.count {
             let c = scalars[i]
             if inQuotes {
-                if c == "\"" {
-                    if i + 1 < scalars.count && scalars[i + 1] == "\"" {
-                        field.append("\"")
+                if c == quote {
+                    if i + 1 < scalars.count && scalars[i + 1] == quote {
+                        field.unicodeScalars.append(quote)
                         i += 1
                     } else {
                         inQuotes = false
                     }
                 } else {
-                    field.append(c)
+                    field.unicodeScalars.append(c)
                 }
             } else {
                 switch c {
-                case "\"": inQuotes = true
-                case ",": endField()
-                case "\n": endRecord()
-                case "\r": break // handled by following \n or ignored
-                default: field.append(c)
+                case quote: inQuotes = true
+                case comma: endField()
+                case newline: endRecord()
+                case carriage: break // part of CRLF; the \n ends the record
+                default: field.unicodeScalars.append(c)
                 }
             }
             i += 1
@@ -88,9 +98,12 @@ nonisolated extension CSVParser {
         guard let header = rows.first else { throw ManaBoxParseError.empty }
 
         // Index columns by trimmed header name so order changes are tolerated.
-        let idx = Dictionary(uniqueKeysWithValues: header.enumerated().map {
-            ($1.trimmingCharacters(in: .whitespaces), $0)
-        })
+        // Keep the first occurrence if a header ever repeats a column, so a
+        // malformed file surfaces as a clean error rather than a crash.
+        let idx = Dictionary(
+            header.enumerated().map { ($1.trimmingCharacters(in: .whitespaces), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         // Require the essential columns.
         let required = ["Name", "Scryfall ID", "Quantity", "Binder Name"]
