@@ -31,6 +31,7 @@ final class AuditRecord {
     // Snapshot of what changed (kept even if the entry is later deleted).
     var scryfallID: String
     var cardName: String
+    var collectionName: String = "My Collection"
     var binderName: String
     var finishRaw: String
     var condition: String
@@ -53,6 +54,7 @@ final class AuditRecord {
         timestamp: Date = Date(),
         scryfallID: String,
         cardName: String,
+        collectionName: String,
         binderName: String,
         finish: CardFinish,
         condition: String,
@@ -65,6 +67,7 @@ final class AuditRecord {
         self.timestamp = timestamp
         self.scryfallID = scryfallID
         self.cardName = cardName
+        self.collectionName = collectionName
         self.binderName = binderName
         self.finishRaw = finish.rawValue
         self.condition = condition

@@ -29,6 +29,7 @@ enum ImportController {
         let actionID: UUID
         let added: Int      // total copies added
         let removed: Int    // total copies removed (replace mode)
+        let collectionName: String
         let binders: [String]
     }
 
@@ -38,6 +39,7 @@ enum ImportController {
     static func apply(
         rows: [ManaBoxRow],
         selectedBinders: Set<String>,
+        collectionName: String,
         mode: ImportMode,
         context modelContext: ModelContext,
         progress: (Double) -> Void
@@ -52,37 +54,51 @@ enum ImportController {
 
         progress(0)
 
-        // 1. Replace mode: clear existing entries in the target binders and
-        //    log a removal for each copy.
+        // 0. Ensure the target collection exists.
+        let existingCollections = try modelContext.fetch(
+            FetchDescriptor<MTGCollection>(
+                predicate: #Predicate { $0.name == collectionName }
+            )
+        )
+        if existingCollections.isEmpty {
+            modelContext.insert(MTGCollection(name: collectionName))
+        }
+
+        // 1. Replace mode: clear existing entries in the target binders within
+        //    this collection, logging a removal for each copy.
         if mode == .replace {
-            for binder in selectedBinders {
-                let descriptor = FetchDescriptor<CollectionEntry>(
-                    predicate: #Predicate { $0.binderName == binder }
-                )
-                let existing = try modelContext.fetch(descriptor)
-                for entry in existing {
-                    removedCount += entry.quantity
-                    modelContext.insert(AuditRecord(
-                        actionID: actionID,
-                        action: .importReplace,
-                        timestamp: now,
-                        scryfallID: entry.scryfallID,
-                        cardName: entry.name,
-                        binderName: entry.binderName,
-                        finish: entry.finish,
-                        condition: entry.condition,
-                        quantityDelta: -entry.quantity,
-                        collectionEntryID: entry.id
-                    ))
-                    modelContext.delete(entry)
-                }
+            let descriptor = FetchDescriptor<CollectionEntry>(
+                predicate: #Predicate { $0.collectionName == collectionName }
+            )
+            let existing = try modelContext.fetch(descriptor)
+            for entry in existing where selectedBinders.contains(entry.binderName) {
+                removedCount += entry.quantity
+                modelContext.insert(AuditRecord(
+                    actionID: actionID,
+                    action: .importReplace,
+                    timestamp: now,
+                    scryfallID: entry.scryfallID,
+                    cardName: entry.name,
+                    collectionName: entry.collectionName,
+                    binderName: entry.binderName,
+                    finish: entry.finish,
+                    condition: entry.condition,
+                    quantityDelta: -entry.quantity,
+                    collectionEntryID: entry.id
+                ))
+                modelContext.delete(entry)
             }
         }
 
-        // 2. Build a lookup of surviving entries for upsert (add mode).
+        // 2. Build a lookup of surviving entries for upsert (add mode), scoped
+        //    to the target collection.
         var existingByKey: [String: CollectionEntry] = [:]
         if mode == .add {
-            let all = try modelContext.fetch(FetchDescriptor<CollectionEntry>())
+            let all = try modelContext.fetch(
+                FetchDescriptor<CollectionEntry>(
+                    predicate: #Predicate { $0.collectionName == collectionName }
+                )
+            )
             for entry in all where selectedBinders.contains(entry.binderName) {
                 existingByKey[entry.mergeKey] = entry
             }
@@ -115,13 +131,14 @@ enum ImportController {
             }
 
             let entry: CollectionEntry
-            let key = "\(row.scryfallID)|\(row.binderName)|\(row.finish.rawValue)|\(row.condition)"
+            let key = "\(row.scryfallID)|\(collectionName)|\(row.binderName)|\(row.finish.rawValue)|\(row.condition)"
             if mode == .add, let existing = existingByKey[key] {
                 existing.quantity += row.quantity
                 entry = existing
             } else {
                 entry = CollectionEntry(
                     scryfallID: row.scryfallID,
+                    collectionName: collectionName,
                     binderName: row.binderName,
                     binderType: row.binderType,
                     name: row.name,
@@ -149,6 +166,7 @@ enum ImportController {
                 timestamp: now,
                 scryfallID: row.scryfallID,
                 cardName: row.name,
+                collectionName: collectionName,
                 binderName: row.binderName,
                 finish: row.finish,
                 condition: row.condition,
@@ -174,6 +192,7 @@ enum ImportController {
             actionID: actionID,
             added: addedCount,
             removed: removedCount,
+            collectionName: collectionName,
             binders: Array(selectedBinders).sorted()
         )
     }

@@ -32,6 +32,10 @@ final class CollectionEntry {
     /// Links to `CardMeta.scryfallID` for hydrated metadata/images.
     var scryfallID: String
 
+    /// Name of the owning collection (top level). Defaults so existing data
+    /// migrates into a single collection.
+    var collectionName: String = "My Collection"
+
     var binderName: String
     var binderType: String
 
@@ -57,14 +61,16 @@ final class CollectionEntry {
         set { finishRaw = newValue.rawValue }
     }
 
-    /// Stable key for merge/upsert: same card + binder + finish + condition.
+    /// Stable key for merge/upsert: same card + collection + binder + finish
+    /// + condition.
     var mergeKey: String {
-        "\(scryfallID)|\(binderName)|\(finishRaw)|\(condition)"
+        "\(scryfallID)|\(collectionName)|\(binderName)|\(finishRaw)|\(condition)"
     }
 
     init(
         id: UUID = UUID(),
         scryfallID: String,
+        collectionName: String,
         binderName: String,
         binderType: String = "binder",
         name: String = "",
@@ -83,6 +89,7 @@ final class CollectionEntry {
     ) {
         self.id = id
         self.scryfallID = scryfallID
+        self.collectionName = collectionName
         self.binderName = binderName
         self.binderType = binderType
         self.name = name

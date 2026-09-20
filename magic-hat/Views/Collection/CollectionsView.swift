@@ -1,37 +1,35 @@
 //
-//  CollectionView.swift
+//  CollectionsView.swift
 //  magic-hat
 //
-//  Collection tab landing screen: lists the binders in the collection and
-//  hosts the "…" menu whose Import action picks a ManaBox CSV. The file is
-//  parsed here, then the wizard sheet opens with the parsed rows — no
-//  file picker is presented from inside the sheet (which is fragile).
+//  Collection tab root: lists the named collections and hosts the "…" import
+//  menu. Import picks a ManaBox CSV, parses it off-main, then opens the
+//  wizard to choose a destination collection and which binders to import.
 //
 
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
-/// Aggregated view of one binder for the list.
-private struct BinderSummary: Identifiable {
+/// Aggregated stats for one collection.
+private struct CollectionSummary: Identifiable {
     let name: String
-    let uniqueCards: Int
+    let binderCount: Int
     let totalCopies: Int
     var id: String { name }
 }
 
-struct CollectionView: View {
+struct CollectionsView: View {
     @Environment(\.modelContext) private var modelContext
 
-    // Only the columns needed to aggregate binders are prefetched, so the
-    // landing screen stays light even with large collections.
+    @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
+
+    // Lightweight rows (only the columns needed to aggregate) for counts.
     @Query private var entries: [CollectionEntry]
 
     init() {
-        var descriptor = FetchDescriptor<CollectionEntry>(
-            sortBy: [SortDescriptor(\.binderName)]
-        )
-        descriptor.propertiesToFetch = [\.binderName, \.quantity]
+        var descriptor = FetchDescriptor<CollectionEntry>()
+        descriptor.propertiesToFetch = [\.collectionName, \.binderName, \.quantity]
         _entries = Query(descriptor)
     }
 
@@ -40,42 +38,42 @@ struct CollectionView: View {
     @State private var showingWizard = false
     @State private var importError: String?
     @State private var isParsing = false
-
-    // Cached binder aggregation. Recomputed only when `entries` actually
-    // changes (see .onChange), not on every unrelated body re-evaluation.
-    @State private var binders: [BinderSummary] = []
+    @State private var summaries: [CollectionSummary] = []
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
     }
 
-    private func rebuildBinders() {
-        let grouped = Dictionary(grouping: entries, by: \.binderName)
-        binders = grouped.map { name, rows in
-            BinderSummary(
-                name: name,
-                uniqueCards: rows.count,
+    private func rebuildSummaries() {
+        let byCollection = Dictionary(grouping: entries, by: \.collectionName)
+        summaries = collections.map { collection in
+            let rows = byCollection[collection.name] ?? []
+            return CollectionSummary(
+                name: collection.name,
+                binderCount: Set(rows.map(\.binderName)).count,
                 totalCopies: rows.reduce(0) { $0 + $1.quantity }
             )
         }
-        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func summary(for name: String) -> CollectionSummary? {
+        summaries.first { $0.name == name }
     }
 
     var body: some View {
         NavigationStack {
             Group {
-                if binders.isEmpty {
+                if collections.isEmpty {
                     ContentUnavailableView {
-                        Text("📭")
-                            .font(.system(size: 64))
+                        Text("📭").font(.system(size: 64))
                     } description: {
-                        Text("No binders yet.\nImport a collection from the “…” menu.")
+                        Text("No collections yet.\nImport one from the “…” menu.")
                     }
                 } else {
-                    binderList
+                    collectionList
                 }
             }
-            .navigationTitle("Collection")
+            .navigationTitle("Collections")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -100,14 +98,49 @@ struct CollectionView: View {
             .sheet(isPresented: $showingWizard) {
                 ImportWizardView(
                     rows: parsedRows,
-                    existingBinderNames: Set(binders.map(\.name))
+                    existingCollectionNames: collections.map(\.name)
                 )
             }
-            .onChange(of: entries, initial: true) { _, _ in rebuildBinders() }
             .alert("Import Error", isPresented: errorBinding) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(importError ?? "")
+            }
+            .onChange(of: entries, initial: true) { _, _ in rebuildSummaries() }
+            .onChange(of: collections, initial: true) { _, _ in rebuildSummaries() }
+            .task { backfillCollections() }
+        }
+    }
+
+    /// Ensures an MTGCollection row exists for every collection name present in
+    /// entries. Covers data imported before collections were modeled.
+    private func backfillCollections() {
+        let names = Set(entries.map(\.collectionName)).filter { !$0.isEmpty }
+        let existing = Set(collections.map(\.name))
+        let missing = names.subtracting(existing)
+        guard !missing.isEmpty else { return }
+        for name in missing { modelContext.insert(MTGCollection(name: name)) }
+        try? modelContext.save()
+    }
+
+    private var collectionList: some View {
+        List(collections) { collection in
+            NavigationLink {
+                CollectionDetailView(collectionName: collection.name)
+            } label: {
+                HStack {
+                    Image(systemName: "tray.full.fill")
+                        .foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(collection.name)
+                            .font(.body.weight(.medium))
+                        if let s = summary(for: collection.name) {
+                            Text("\(s.binderCount) binders · \(s.totalCopies) cards")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
         }
     }
@@ -124,26 +157,6 @@ struct CollectionView: View {
             }
             .padding(24)
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        }
-    }
-
-    private var binderList: some View {
-        List(binders) { binder in
-            NavigationLink {
-                BinderDetailView(binderName: binder.name)
-            } label: {
-                HStack {
-                    Image(systemName: "books.vertical.fill")
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(binder.name)
-                            .font(.body.weight(.medium))
-                        Text("\(binder.uniqueCards) cards · \(binder.totalCopies) copies")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
         }
     }
 
@@ -198,6 +211,6 @@ struct CollectionView: View {
 }
 
 #Preview {
-    CollectionView()
-        .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
+    CollectionsView()
+        .modelContainer(for: [MTGCollection.self, CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
 }

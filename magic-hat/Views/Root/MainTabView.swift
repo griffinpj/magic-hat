@@ -14,7 +14,7 @@ struct MainTabView: View {
     var body: some View {
         TabView {
             Tab("Collection", systemImage: "square.grid.3x3.fill") {
-                CollectionView()
+                CollectionsView()
             }
 
             Tab("Decks", systemImage: "rectangle.stack.fill") {
@@ -34,5 +34,5 @@ struct MainTabView: View {
 
 #Preview {
     MainTabView()
-        .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
+        .modelContainer(for: [MTGCollection.self, CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
 }

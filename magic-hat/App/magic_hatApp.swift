@@ -12,6 +12,7 @@ import SwiftData
 struct magic_hatApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
+            MTGCollection.self,
             CollectionEntry.self,
             CardMeta.self,
             AuditRecord.self,

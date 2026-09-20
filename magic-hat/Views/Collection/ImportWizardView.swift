@@ -3,9 +3,9 @@
 //  magic-hat
 //
 //  Second half of the import flow: given already-parsed ManaBox rows, choose
-//  which binders to import and whether to add-to or replace existing binders,
+//  a destination collection (new or existing) and which binders to import,
 //  then apply via ImportController (which records the change in the audit
-//  ledger). File picking/parsing happens in CollectionView before this opens.
+//  ledger). File picking/parsing happens in CollectionsView before this opens.
 //
 
 import SwiftUI
@@ -13,13 +13,20 @@ import SwiftData
 
 struct ImportWizardView: View {
     let rows: [ManaBoxRow]
-    /// Binder names already in the collection, passed in to flag add-vs-replace
-    /// decisions without the wizard re-querying the whole store.
-    let existingBinderNames: Set<String>
+    /// Existing collection names, offered as import destinations.
+    let existingCollectionNames: [String]
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    private enum Destination: Hashable {
+        case new
+        case existing
+    }
+
+    @State private var destination: Destination = .new
+    @State private var newName: String = "New Collection"
+    @State private var selectedCollection: String = ""
     @State private var selected: Set<String> = []
     @State private var mode: ImportMode = .add
     @State private var summary: ImportController.Summary?
@@ -38,10 +45,25 @@ struct ImportWizardView: View {
             .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
     }
 
+    /// The resolved destination collection name, or nil if invalid.
+    private var resolvedCollectionName: String? {
+        switch destination {
+        case .new:
+            let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case .existing:
+            return selectedCollection.isEmpty ? nil : selectedCollection
+        }
+    }
+
+    private var canImport: Bool {
+        resolvedCollectionName != nil && !selected.isEmpty
+    }
+
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle(summary == nil ? "Choose Binders" : "Import Complete")
+                .navigationTitle(summary == nil ? "Import" : "Import Complete")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -51,7 +73,7 @@ struct ImportWizardView: View {
                     if summary == nil && !isImporting {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Import") { runImport() }
-                                .disabled(selected.isEmpty)
+                                .disabled(!canImport)
                         }
                     }
                 }
@@ -63,6 +85,11 @@ struct ImportWizardView: View {
         }
         .onAppear {
             if selected.isEmpty { selected = Set(rows.map(\.binderName)) }
+            if existingCollectionNames.isEmpty {
+                destination = .new
+            } else if selectedCollection.isEmpty {
+                selectedCollection = existingCollectionNames[0]
+            }
         }
     }
 
@@ -72,7 +99,7 @@ struct ImportWizardView: View {
         } else if let summary {
             doneStep(summary)
         } else {
-            chooseBindersStep
+            chooseStep
         }
     }
 
@@ -89,42 +116,66 @@ struct ImportWizardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var chooseBindersStep: some View {
+    private var chooseStep: some View {
         Form {
+            destinationSection
+            bindersSection
+        }
+    }
+
+    @ViewBuilder private var destinationSection: some View {
+        Section("Destination") {
+            Picker("Import into", selection: $destination) {
+                Text("New Collection").tag(Destination.new)
+                Text("Existing Collection")
+                    .tag(Destination.existing)
+            }
+            .pickerStyle(.segmented)
+            .disabled(existingCollectionNames.isEmpty)
+
+            switch destination {
+            case .new:
+                TextField("Collection name", text: $newName)
+                    .textInputAutocapitalization(.words)
+            case .existing:
+                Picker("Collection", selection: $selectedCollection) {
+                    ForEach(existingCollectionNames, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+            }
+        }
+
+        if destination == .existing {
             Section {
-                Picker("When binder exists", selection: $mode) {
+                Picker("For selected binders", selection: $mode) {
                     Text("Add to binder").tag(ImportMode.add)
                     Text("Replace binder").tag(ImportMode.replace)
                 }
                 .pickerStyle(.segmented)
             } footer: {
                 Text(mode == .add
-                     ? "New copies are added to matching binders; quantities merge."
-                     : "Selected binders are cleared, then filled from this file.")
+                     ? "New copies merge into matching binders; quantities add up."
+                     : "Selected binders in this collection are cleared, then filled from the file.")
             }
+        }
+    }
 
-            Section("Binders (\(rows.count) rows)") {
-                ForEach(binderCounts, id: \.name) { binder in
-                    Button {
-                        toggle(binder.name)
-                    } label: {
-                        HStack {
-                            Image(systemName: selected.contains(binder.name)
-                                  ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(selected.contains(binder.name)
-                                                 ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(binder.name).foregroundStyle(.primary)
-                                if existingBinderNames.contains(binder.name) {
-                                    Text("Already in collection")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                            Spacer()
-                            Text("\(binder.count)")
-                                .foregroundStyle(.secondary)
-                        }
+    private var bindersSection: some View {
+        Section("Binders (\(rows.count) rows)") {
+            ForEach(binderCounts, id: \.name) { binder in
+                Button {
+                    toggle(binder.name)
+                } label: {
+                    HStack {
+                        Image(systemName: selected.contains(binder.name)
+                              ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selected.contains(binder.name)
+                                             ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(binder.name).foregroundStyle(.primary)
+                        Spacer()
+                        Text("\(binder.count)")
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -135,7 +186,7 @@ struct ImportWizardView: View {
         ContentUnavailableView {
             Label("Import Complete", systemImage: "checkmark.circle.fill")
         } description: {
-            Text("Added \(summary.added) copies"
+            Text("“\(summary.collectionName)” — added \(summary.added) copies"
                  + (summary.removed > 0 ? ", removed \(summary.removed)." : ".")
                  + "\nBinders: \(summary.binders.joined(separator: ", "))")
         } actions: {
@@ -152,6 +203,10 @@ struct ImportWizardView: View {
     }
 
     private func runImport() {
+        guard let collectionName = resolvedCollectionName else { return }
+        // A brand-new collection has nothing to replace.
+        let effectiveMode: ImportMode = destination == .new ? .add : mode
+
         isImporting = true
         progress.fraction = 0
 
@@ -160,7 +215,8 @@ struct ImportWizardView: View {
                 let result = try await ImportController.apply(
                     rows: rows,
                     selectedBinders: selected,
-                    mode: mode,
+                    collectionName: collectionName,
+                    mode: effectiveMode,
                     context: modelContext
                 ) { fraction in
                     progress.fraction = fraction
@@ -182,6 +238,6 @@ final class ImportProgress {
 }
 
 #Preview {
-    ImportWizardView(rows: [], existingBinderNames: [])
-        .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
+    ImportWizardView(rows: [], existingCollectionNames: ["My Library"])
+        .modelContainer(for: [MTGCollection.self, CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
 }
