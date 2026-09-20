@@ -1,5 +1,5 @@
 //
-//  CardHydrationService.swift
+//  CardHydrationController.swift
 //  magic-hat
 //
 //  Lazily fills in Scryfall metadata (image URLs, dimensions) for cards as
@@ -14,7 +14,7 @@ import SwiftData
 
 @MainActor
 @Observable
-final class CardHydrationService {
+final class CardHydrationController {
     private let client = ScryfallClient.shared
     private var inFlight: Set<String> = []
 

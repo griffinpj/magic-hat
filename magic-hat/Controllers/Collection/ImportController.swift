@@ -1,5 +1,5 @@
 //
-//  ImportService.swift
+//  ImportController.swift
 //  magic-hat
 //
 //  Applies a parsed ManaBox import into the SwiftData store. Every change
@@ -16,7 +16,7 @@ enum ImportMode {
 }
 
 @MainActor
-enum ImportService {
+enum ImportController {
     struct Summary {
         let actionID: UUID
         let added: Int      // total copies added

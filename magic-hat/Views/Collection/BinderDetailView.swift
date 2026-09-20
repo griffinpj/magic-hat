@@ -18,7 +18,7 @@ struct BinderDetailView: View {
     @Query private var entries: [CollectionEntry]
     @Query private var allMeta: [CardMeta]
 
-    @State private var hydrator = CardHydrationService()
+    @State private var hydrator = CardHydrationController()
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
