@@ -13,12 +13,12 @@ import SwiftData
 
 struct ImportWizardView: View {
     let rows: [ManaBoxRow]
+    /// Binder names already in the collection, passed in to flag add-vs-replace
+    /// decisions without the wizard re-querying the whole store.
+    let existingBinderNames: Set<String>
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
-
-    /// Binder names that already exist, to flag add-vs-replace decisions.
-    @Query private var existingEntries: [CollectionEntry]
 
     @State private var selected: Set<String> = []
     @State private var mode: ImportMode = .add
@@ -36,10 +36,6 @@ struct ImportWizardView: View {
         Dictionary(grouping: rows, by: \.binderName)
             .map { ($0.key, $0.value.reduce(0) { $0 + $1.quantity }) }
             .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
-    }
-
-    private var existingBinderNames: Set<String> {
-        Set(existingEntries.map(\.binderName))
     }
 
     var body: some View {
@@ -186,6 +182,6 @@ final class ImportProgress {
 }
 
 #Preview {
-    ImportWizardView(rows: [])
+    ImportWizardView(rows: [], existingBinderNames: [])
         .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
 }

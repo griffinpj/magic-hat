@@ -22,7 +22,18 @@ private struct BinderSummary: Identifiable {
 
 struct CollectionView: View {
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \CollectionEntry.binderName) private var entries: [CollectionEntry]
+
+    // Only the columns needed to aggregate binders are prefetched, so the
+    // landing screen stays light even with large collections.
+    @Query private var entries: [CollectionEntry]
+
+    init() {
+        var descriptor = FetchDescriptor<CollectionEntry>(
+            sortBy: [SortDescriptor(\.binderName)]
+        )
+        descriptor.propertiesToFetch = [\.binderName, \.quantity]
+        _entries = Query(descriptor)
+    }
 
     @State private var showingFileImporter = false
     @State private var parsedRows: [ManaBoxRow] = []
@@ -30,13 +41,17 @@ struct CollectionView: View {
     @State private var importError: String?
     @State private var isParsing = false
 
+    // Cached binder aggregation. Recomputed only when `entries` actually
+    // changes (see .onChange), not on every unrelated body re-evaluation.
+    @State private var binders: [BinderSummary] = []
+
     private var errorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
     }
 
-    private var binders: [BinderSummary] {
+    private func rebuildBinders() {
         let grouped = Dictionary(grouping: entries, by: \.binderName)
-        return grouped.map { name, rows in
+        binders = grouped.map { name, rows in
             BinderSummary(
                 name: name,
                 uniqueCards: rows.count,
@@ -83,8 +98,12 @@ struct CollectionView: View {
                 handleFile(result)
             }
             .sheet(isPresented: $showingWizard) {
-                ImportWizardView(rows: parsedRows)
+                ImportWizardView(
+                    rows: parsedRows,
+                    existingBinderNames: Set(binders.map(\.name))
+                )
             }
+            .onChange(of: entries, initial: true) { _, _ in rebuildBinders() }
             .alert("Import Error", isPresented: errorBinding) {
                 Button("OK", role: .cancel) {}
             } message: {
