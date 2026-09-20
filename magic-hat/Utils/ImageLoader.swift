@@ -2,14 +2,18 @@
 //  ImageLoader.swift
 //  magic-hat
 //
-//  Two-tier card-image cache: an in-memory NSCache for instant reuse and a
-//  disk cache under Caches/ so images survive relaunches without bloating
-//  the SwiftData store or iCloud backups. Downloads are deduplicated so a
-//  card scrolling into view repeatedly only fetches once.
+//  Two-tier card-image cache. Original bytes are cached on disk under Caches/
+//  so images survive relaunches without bloating the SwiftData store; decoded,
+//  downsampled UIImages are cached in memory keyed by URL + target size.
+//
+//  Crucially, decode + downsample happen off the main thread (on this actor)
+//  via ImageIO, so scrolling the grid never triggers a main-thread decode of
+//  a full-resolution card image — the usual cause of scroll jank.
 //
 
 import Foundation
 import UIKit
+import ImageIO
 import CryptoKit
 
 actor ImageLoader {
@@ -20,7 +24,7 @@ actor ImageLoader {
     private let fm = FileManager.default
     private let cacheDir: URL
 
-    /// In-flight downloads keyed by URL string, to coalesce duplicate requests.
+    /// In-flight loads keyed by "url|maxPixel", to coalesce duplicate requests.
     private var inFlight: [String: Task<UIImage, Error>] = [:]
 
     init() {
@@ -30,55 +34,81 @@ actor ImageLoader {
         memory.countLimit = 400
     }
 
-    /// Returns a cached image without touching the network, if present.
-    func cachedImage(for urlString: String) -> UIImage? {
-        if let img = memory.object(forKey: urlString as NSString) { return img }
-        let file = fileURL(for: urlString)
-        if let data = try? Data(contentsOf: file), let img = UIImage(data: data) {
-            memory.setObject(img, forKey: urlString as NSString)
-            return img
-        }
-        return nil
+    private func memKey(_ urlString: String, _ maxPixel: Int) -> NSString {
+        "\(urlString)|\(maxPixel)" as NSString
     }
 
-    /// Loads an image from memory, disk, or network (in that order).
-    func image(for urlString: String) async throws -> UIImage {
-        if let cached = cachedImage(for: urlString) { return cached }
+    /// Returns an already-decoded image from the in-memory cache only.
+    func cachedImage(for urlString: String, maxPixel: CGFloat) -> UIImage? {
+        memory.object(forKey: memKey(urlString, Int(maxPixel)))
+    }
 
-        if let existing = inFlight[urlString] {
+    /// Loads a card image downsampled to `maxPixel` (longest edge, in pixels).
+    /// Order: memory → disk bytes → network. Decode/downsample runs here on
+    /// the actor, off the main thread.
+    func image(for urlString: String, maxPixel: CGFloat) async throws -> UIImage {
+        let key = memKey(urlString, Int(maxPixel))
+        if let cached = memory.object(forKey: key) { return cached }
+
+        let inFlightKey = key as String
+        if let existing = inFlight[inFlightKey] {
             return try await existing.value
         }
 
+        let file = fileURL(for: urlString)
         let task = Task<UIImage, Error> { [http] in
-            guard let url = URL(string: urlString) else { throw HTTPError.badURL }
-            // Card images are on the general (10/sec) limit family.
-            let data = try await http.requestData(url: url, rateLimit: .other)
-            guard let img = UIImage(data: data) else { throw HTTPError.badURL }
+            let data: Data
+            if let onDisk = try? Data(contentsOf: file) {
+                data = onDisk
+            } else {
+                guard let url = URL(string: urlString) else { throw HTTPError.badURL }
+                // Card images are on the general (10/sec) limit family.
+                let downloaded = try await http.requestData(url: url, rateLimit: .other)
+                try? downloaded.write(to: file, options: .atomic)
+                data = downloaded
+            }
+            guard let img = Self.downsample(data: data, maxPixel: maxPixel) else {
+                throw HTTPError.badURL
+            }
             return img
         }
-        inFlight[urlString] = task
+        inFlight[inFlightKey] = task
 
         do {
             let img = try await task.value
-            inFlight[urlString] = nil
-            memory.setObject(img, forKey: urlString as NSString)
-            persist(img, for: urlString)
+            inFlight[inFlightKey] = nil
+            memory.setObject(img, forKey: key)
             return img
         } catch {
-            inFlight[urlString] = nil
+            inFlight[inFlightKey] = nil
             throw error
         }
     }
 
-    private func persist(_ image: UIImage, for urlString: String) {
-        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
-        try? data.write(to: fileURL(for: urlString), options: .atomic)
+    /// Decodes and downsamples image data to `maxPixel` (longest edge) using
+    /// ImageIO, forcing an immediate decode so the returned UIImage is ready
+    /// to render without further main-thread work.
+    private nonisolated static func downsample(data: Data, maxPixel: CGFloat) -> UIImage? {
+        let srcOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(data as CFData, srcOptions) else {
+            return nil
+        }
+        let thumbOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(maxPixel)
+        ] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOptions) else {
+            return UIImage(data: data)
+        }
+        return UIImage(cgImage: cg)
     }
 
     private func fileURL(for urlString: String) -> URL {
         // Stable (cross-launch), filesystem-safe name derived from the URL.
         let digest = SHA256.hash(data: Data(urlString.utf8))
         let name = digest.map { String(format: "%02x", $0) }.joined()
-        return cacheDir.appendingPathComponent("\(name).jpg")
+        return cacheDir.appendingPathComponent("\(name).img")
     }
 }
