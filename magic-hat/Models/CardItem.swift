@@ -42,13 +42,21 @@ struct CardItem: Identifiable, Hashable, Sendable {
     let power: String?
     let toughness: String?
 
-    // Scryfall market prices (USD); low/mid are TCGplayer-only and mocked.
+    // Scryfall market prices (USD).
     let priceUSD: Double?
     let priceUSDFoil: Double?
+
+    /// Price paid at import, if the CSV had one (for gain/loss display).
+    let purchasePrice: Double?
 
     var powerToughness: String? {
         guard let power, let toughness else { return nil }
         return "\(power)/\(toughness)"
+    }
+
+    /// Current market price for this item's finish.
+    var marketPrice: Double? {
+        finish == .normal ? priceUSD : (priceUSDFoil ?? priceUSD)
     }
 }
 
@@ -80,5 +88,37 @@ extension CardItem {
         self.toughness = meta?.toughness
         self.priceUSD = meta?.priceUSD
         self.priceUSDFoil = meta?.priceUSDFoil
+        self.purchasePrice = entry.purchasePrice
+    }
+
+    /// A card built straight from a Scryfall result (e.g. a printing or a
+    /// search hit). `owned` marks whether it's already in the collection.
+    init(scryfallCard card: ScryfallCard, owned: Bool) {
+        self.id = card.id
+        self.scryfallID = card.id
+        self.oracleID = card.oracleID
+        self.name = card.name
+        self.setCode = card.set
+        self.setName = card.setName
+        self.collectorNumber = card.collectorNumber
+        self.rarity = card.rarity
+        self.quantity = 1
+        self.finish = .normal
+        self.condition = "near_mint"
+        self.language = "en"
+        self.binderName = ""
+        self.addedDate = nil
+        self.owned = owned
+        self.imageURL = card.bestImageURIs?.normal
+        self.artCropURL = card.bestImageURIs?.artCrop
+        self.aspectRatio = card.isLandscape ? 680.0/488.0 : 488.0/680.0
+        self.typeLine = card.bestTypeLine
+        self.manaCost = card.bestManaCost
+        self.oracleText = card.bestOracleText
+        self.power = card.power
+        self.toughness = card.toughness
+        self.priceUSD = card.prices?.usd.flatMap(Double.init)
+        self.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+        self.purchasePrice = nil
     }
 }

@@ -111,9 +111,14 @@ reuse them later (they take plain values, not SwiftData/Scryfall models):
   and all printings (grouped by set) with owned indicators.
 
 Pricing: Scryfall provides only a single market price per finish
-(`prices.usd` / `usd_foil`). LOW/MID tiers are TCGplayer-only — not fetched,
-shown as a mocked `$xx.xx` (see `PriceFormat`). Revisit if a TCGplayer feed
-is added.
+(`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers). The
+overlay shows the gain/loss vs the price paid at import (`CollectionEntry
+.purchasePrice`) as `(±$Δ, ±%)`.
+
+Set symbols: Scryfall serves set icons as SVG only. `SetSymbolLoader`
+rasterizes the SVG once via an offscreen WKWebView snapshot (white on
+transparent), caches it, and `SetSymbolView` renders it as a `.template`
+tinted with `.primary` so it adapts to light/dark.
 
 ## Data flow notes
 

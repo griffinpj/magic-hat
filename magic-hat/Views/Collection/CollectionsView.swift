@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 /// Aggregated stats for one collection.
 private struct CollectionSummary: Identifiable {
     let name: String
-    let binderCount: Int
+    let uniqueCards: Int
     let totalCopies: Int
     var id: String { name }
 }
@@ -29,7 +29,7 @@ struct CollectionsView: View {
 
     init() {
         var descriptor = FetchDescriptor<CollectionEntry>()
-        descriptor.propertiesToFetch = [\.collectionName, \.binderName, \.quantity]
+        descriptor.propertiesToFetch = [\.collectionName, \.quantity]
         _entries = Query(descriptor)
     }
 
@@ -50,7 +50,7 @@ struct CollectionsView: View {
             let rows = byCollection[collection.name] ?? []
             return CollectionSummary(
                 name: collection.name,
-                binderCount: Set(rows.map(\.binderName)).count,
+                uniqueCards: rows.count,
                 totalCopies: rows.reduce(0) { $0 + $1.quantity }
             )
         }
@@ -135,7 +135,7 @@ struct CollectionsView: View {
                         Text(collection.name)
                             .font(.body.weight(.medium))
                         if let s = summary(for: collection.name) {
-                            Text("\(s.binderCount) binders · \(s.totalCopies) cards")
+                            Text("\(s.totalCopies) cards · \(s.uniqueCards) unique")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
