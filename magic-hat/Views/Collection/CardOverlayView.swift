@@ -2,61 +2,91 @@
 //  CardOverlayView.swift
 //  magic-hat
 //
-//  Full-bleed overlay shown when a card is tapped in the grid. The enlarged
-//  card sits in a horizontal pager that peeks the neighbours; swiping left/
-//  right flows through every card in the grid. Below is an info panel and a
-//  Liquid Glass action bar; the eye action opens the detail screen.
+//  Full-bleed overlay shown when a card is tapped. The enlarged card sits in
+//  a horizontal pager that peeks the neighbours; swiping flows through the
+//  batch. Dismiss with the floating glass X or a swipe down — tapping the
+//  dimmed backdrop does NOT dismiss, so a mis-tap near the action bar can't
+//  accidentally close it.
 //
 
 import SwiftUI
 
 struct CardOverlayView: View {
     let items: [CardItem]
-    let index: Int
     let onClose: () -> Void
     let onOpenDetail: (CardItem) -> Void
 
     @State private var currentID: String?
     @State private var dragOffset: CGFloat = 0
 
+    init(
+        items: [CardItem],
+        index: Int,
+        onClose: @escaping () -> Void,
+        onOpenDetail: @escaping (CardItem) -> Void
+    ) {
+        self.items = items
+        self.onClose = onClose
+        self.onOpenDetail = onOpenDetail
+        // Position the pager on the tapped card up front — no post-appear jump.
+        let start = items.indices.contains(index) ? items[index].id : items.first?.id
+        _currentID = State(initialValue: start)
+    }
+
     private var currentItem: CardItem? {
-        guard let currentID else { return items.indices.contains(index) ? items[index] : nil }
+        guard let currentID else { return items.first }
         return items.first { $0.id == currentID }
     }
 
     var body: some View {
-        ZStack {
-            // Dimmed backdrop reveals the grid behind; tap to dismiss.
-            Color.black.opacity(0.55)
+        ZStack(alignment: .topTrailing) {
+            // Dimmed backdrop. Intentionally NOT tap-to-dismiss.
+            Color.black.opacity(0.6)
                 .ignoresSafeArea()
-                .onTapGesture { onClose() }
+                .contentShape(Rectangle())
 
             VStack(spacing: 16) {
                 Spacer(minLength: 0)
                 pager
                 if let item = currentItem {
                     InfoPanel(item: item)
-                        .transition(.opacity)
                     ActionBar(onEye: { onOpenDetail(item) })
                 }
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 24)
             .offset(y: dragOffset)
+
+            closeButton
         }
-        .gesture(
-            DragGesture()
-                .onChanged { v in if v.translation.height > 0 { dragOffset = v.translation.height } }
-                .onEnded { v in
-                    if v.translation.height > 120 { onClose() }
-                    else { withAnimation(.spring) { dragOffset = 0 } }
+        .gesture(dismissDrag)
+    }
+
+    private var closeButton: some View {
+        Button(action: onClose) {
+            Image(systemName: "xmark")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 36, height: 36)
+                .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .padding(.trailing, 20)
+        .padding(.top, 8)
+    }
+
+    // Swipe down to dismiss; ignores mostly-horizontal drags (pager scrolls).
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { v in
+                if v.translation.height > 0, abs(v.translation.height) > abs(v.translation.width) {
+                    dragOffset = v.translation.height
                 }
-        )
-        .task {
-            if currentID == nil, items.indices.contains(index) {
-                currentID = items[index].id
             }
-        }
+            .onEnded { v in
+                if v.translation.height > 120 { onClose() }
+                else { withAnimation(.spring) { dragOffset = 0 } }
+            }
     }
 
     private var pager: some View {
@@ -94,10 +124,6 @@ struct CardOverlayView: View {
 private struct InfoPanel: View {
     let item: CardItem
 
-    private var marketPrice: Double? {
-        item.finish == .normal ? item.priceUSD : (item.priceUSDFoil ?? item.priceUSD)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
@@ -113,7 +139,7 @@ private struct InfoPanel: View {
             }
 
             HStack(spacing: 6) {
-                SetSymbolView(setCode: item.setCode, size: 18, tint: .secondary)
+                SetSymbolView(setCode: item.setCode, size: 18, tint: .primary)
                 Text("\(item.setName)  #\(item.collectorNumber)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -131,17 +157,36 @@ private struct InfoPanel: View {
                     .foregroundStyle(.tertiary)
             }
 
-            HStack(spacing: 6) {
-                Text("MARKET").font(.caption.weight(.bold)).foregroundStyle(.blue)
-                Text(PriceFormat.string(marketPrice))
-                    .font(.callout.weight(.semibold))
-            }
-            .padding(.top, 2)
+            priceLine
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .padding(.horizontal, 20)
+    }
+
+    private var priceLine: some View {
+        HStack(spacing: 8) {
+            Text("MARKET").font(.caption.weight(.bold)).foregroundStyle(.blue)
+            Text(PriceFormat.string(item.marketPrice))
+                .font(.callout.weight(.semibold))
+            if let delta = gainLoss {
+                Text(delta.text)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(delta.up ? .green : .red)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    /// Market vs. price paid at import.
+    private var gainLoss: (text: String, up: Bool)? {
+        guard let market = item.marketPrice, let paid = item.purchasePrice, paid > 0 else { return nil }
+        let diff = market - paid
+        let pct = diff / paid * 100
+        let sign = diff >= 0 ? "+" : "-"
+        let text = String(format: "(%@$%.2f, %@%.1f%%)", sign, abs(diff), sign, abs(pct))
+        return (text, diff >= 0)
     }
 
     private func chip(_ text: String, icon: String? = nil) -> some View {
@@ -160,7 +205,7 @@ private struct ActionBar: View {
     let onEye: () -> Void
 
     var body: some View {
-        HStack(spacing: 28) {
+        HStack(spacing: 22) {
             action("pencil") {}
             action("rectangle.stack.badge.plus") {}
             action("plus.rectangle.on.rectangle") {}
@@ -168,26 +213,25 @@ private struct ActionBar: View {
             action("checkmark.circle") {}
             action("trash") {}
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
         .glassEffect(.regular, in: Capsule())
     }
 
     private func action(_ symbol: String, prominent: Bool = false, run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: symbol)
-                .font(.system(size: 24, weight: .semibold))
-                .frame(width: 30, height: 30)
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(prominent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)
     }
 }
 
-/// Formats Scryfall USD prices; nil shows the mock placeholder.
+/// Formats Scryfall USD prices; nil shows a dash.
 enum PriceFormat {
     static func string(_ value: Double?) -> String {
-        guard let value else { return "$xx.xx" }
+        guard let value else { return "—" }
         return String(format: "$%.2f", value)
     }
 }

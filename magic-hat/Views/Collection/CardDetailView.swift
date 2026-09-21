@@ -24,8 +24,15 @@ struct CardDetailView: View {
     @State private var loadError: String?
     @State private var selectedTab: Tab = .versions
     @State private var filterText = ""
+    @State private var overlayIndex: Int?
+    @State private var detailPush: CardItem?
 
     private enum Tab: Hashable { case versions, ruling }
+
+    /// All printings as overlay-ready items, marking the ones we own.
+    private var printingItems: [CardItem] {
+        printings.map { CardItem(scryfallCard: $0, owned: ownedIDs.contains($0.id)) }
+    }
 
     init(item: CardItem) {
         self.item = item
@@ -49,6 +56,25 @@ struct CardDetailView: View {
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadPrintings() }
+        .overlay {
+            if let index = overlayIndex, printingItems.indices.contains(index) {
+                CardOverlayView(
+                    items: printingItems,
+                    index: index,
+                    onClose: {
+                        withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = nil }
+                    },
+                    onOpenDetail: { tapped in
+                        overlayIndex = nil
+                        detailPush = tapped
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .navigationDestination(item: $detailPush) { pushed in
+            CardDetailView(item: pushed)
+        }
     }
 
     // MARK: Hero
@@ -157,7 +183,7 @@ struct CardDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Text("PRICING").font(.caption.weight(.bold)).foregroundStyle(.tint)
-                Text("Market from Scryfall · Low/Mid mocked")
+                Text("Market prices from Scryfall")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
@@ -196,6 +222,12 @@ struct CardDetailView: View {
             ForEach(group.cards) { card in
                 PrintingRow(card: card, owned: ownedIDs.contains(card.id))
                     .padding(.horizontal, 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if let idx = printingItems.firstIndex(where: { $0.id == card.id }) {
+                            withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = idx }
+                        }
+                    }
             }
         }
         .padding(.top, 8)
@@ -265,27 +297,19 @@ private struct PrintingRow: View {
     }
 
     private var priceGrid: some View {
-        HStack(alignment: .top, spacing: 16) {
-            priceColumn(title: "Normal", market: card.prices?.usd)
+        HStack(spacing: 20) {
+            priceColumn(title: "Normal", market: card.prices?.usd, foil: false)
             priceColumn(title: "Foil", market: card.prices?.usdFoil, foil: true)
         }
     }
 
-    private func priceColumn(title: String, market: String?, foil: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(foil ? .orange : .primary)
-            priceRow("LOW", nil, .red)
-            priceRow("MID", nil, .green)
-            priceRow("MKT", market.flatMap(Double.init), .blue)
-        }
-    }
-
-    private func priceRow(_ label: String, _ value: Double?, _ color: Color) -> some View {
+    private func priceColumn(title: String, market: String?, foil: Bool) -> some View {
         HStack(spacing: 6) {
-            Text(label).font(.caption2.weight(.bold)).foregroundStyle(color)
-            Text(PriceFormat.string(value)).font(.caption2)
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(foil ? .orange : .secondary)
+            Text(PriceFormat.string(market.flatMap(Double.init)))
+                .font(.caption.weight(.medium))
         }
     }
 }

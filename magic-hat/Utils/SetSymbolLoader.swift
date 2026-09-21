@@ -103,11 +103,12 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        // Small delay so layout settles before snapshotting.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        // Let layout + paint settle before snapshotting the SVG.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             guard let self else { return }
             let config = WKSnapshotConfiguration()
             config.rect = CGRect(x: 0, y: 0, width: self.size, height: self.size)
+            config.afterScreenUpdates = true
             self.webView.takeSnapshot(with: config) { image, _ in
                 self.finish(image)
             }

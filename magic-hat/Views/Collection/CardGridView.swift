@@ -29,17 +29,22 @@ struct CardGridView: View {
                     CardTile(item: item)
                         .equatable()
                         .onAppear { onAppearIndex(index) }
-                        .onTapGesture { selectedIndex = index }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = index }
+                        }
                 }
             }
             .padding(10)
         }
         .overlay {
-            if let index = selectedIndex {
+            if let index = selectedIndex, items.indices.contains(index) {
                 CardOverlayView(
                     items: items,
                     index: index,
-                    onClose: { selectedIndex = nil },
+                    onClose: {
+                        withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = nil }
+                    },
                     onOpenDetail: { item in
                         selectedIndex = nil
                         detailItem = item
@@ -48,7 +53,6 @@ struct CardGridView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: selectedIndex)
         .navigationDestination(item: $detailItem) { item in
             CardDetailView(item: item)
         }
