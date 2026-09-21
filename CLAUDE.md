@@ -150,6 +150,21 @@ already make — one request, no bulk download, no UUID mapping.
 TCGplayer no longer issues public API keys, so those tiers are unavailable to
 us at any price. We show the single Scryfall market price and nothing else.
 
+### Why not Scryfall bulk data
+
+Scryfall publishes bulk files and prefers them over hammering the API — but
+that guidance is for consumers who want the whole catalog. We want ~3.5% of
+it (one collection out of 112k cards), and `default_cards` is 79MB
+compressed / several hundred MB parsed, which hits the same device-memory
+wall as MTGJSON, all-or-nothing before anything can render. 53 batched
+`/cards/collection` requests finish in ~30s, fill the grid progressively, and
+sit well inside Scryfall's published limits. Bulk becomes the right call only
+if we ever need offline search over every card.
+
+MTGJSON **set files carry no prices** (verified) — only `identifiers`,
+`legalities`, `foreignData`, `purchaseUrls` and similar. Prices live solely in
+the bulk price files, so pricing cannot be fetched per set during import.
+
 ### What MTGJSON IS good for on device
 
 Its bulk *price* and *card* files are too big (above), but several artifacts
@@ -198,7 +213,9 @@ near-transparent image that, as a template, was invisible.
   `/cards/collection` (75 per request), applying per chunk so the grid fills
   progressively. Viewport-only hydration left most cards with no price or
   rarity, which silently broke every sort that keys on them.
-- The sync starts **right after an import finishes** and resumes when a
+- The sync runs as a **visible second phase of the import wizard** ("Fetching
+  card data"), dismissable because it continues on the shared controller
+  regardless. It also starts and resumes when a
   collection is opened. It is idempotent (`neededIDs` skips what is already
   fetched), so an interrupted run simply continues. It holds a background-task
   assertion so it survives the app being backgrounded briefly. `BGTaskScheduler`

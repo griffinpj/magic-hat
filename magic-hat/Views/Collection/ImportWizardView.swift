@@ -32,6 +32,7 @@ struct ImportWizardView: View {
     @State private var summary: ImportController.Summary?
     @State private var errorMessage: String?
     @State private var isImporting = false
+    @State private var isFetchingCards = false
     @State private var progress = ImportProgress()
 
     private var errorBinding: Binding<Bool> {
@@ -96,6 +97,8 @@ struct ImportWizardView: View {
     @ViewBuilder private var content: some View {
         if isImporting {
             importingStep
+        } else if isFetchingCards {
+            fetchingStep
         } else if let summary {
             doneStep(summary)
         } else {
@@ -114,6 +117,31 @@ struct ImportWizardView: View {
                 .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Second phase of the import: pull down card data for what was just
+    /// imported, so the collection is browsable and sortable immediately
+    /// rather than syncing the first time it is opened. Dismissable — the
+    /// work continues on the shared controller either way.
+    private var fetchingStep: some View {
+        let hydrator = CardHydrationController.shared
+        return VStack(spacing: 20) {
+            ProgressView(value: hydrator.syncFraction)
+                .progressViewStyle(.linear)
+                .frame(maxWidth: 280)
+            Text("Fetching card data \(hydrator.syncedCount)/\(hydrator.syncTotal)")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Text("Images and prices. You can close this — it keeps going.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+            Button("Done") { dismiss() }
+                .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 24)
     }
 
     private var chooseStep: some View {
@@ -222,22 +250,23 @@ struct ImportWizardView: View {
                     progress.fraction = fraction
                 }
                 summary = result
-                // Import is an attended action — carry straight on into
-                // fetching card metadata so the collection is browsable and
-                // sortable by the time the user opens it. Idempotent, so an
-                // interrupted run just resumes when the collection is opened.
-                Task {
-                    await CardHydrationController.shared.hydrateAll(
-                        scryfallIDs: rows
-                            .filter { selected.contains($0.binderName) }
-                            .map(\.scryfallID),
-                        context: modelContext
-                    )
-                }
+                isImporting = false
+
+                // Import is an attended action, so show the metadata fetch as
+                // a second phase rather than letting it surprise the user the
+                // first time they open the collection.
+                isFetchingCards = true
+                await CardHydrationController.shared.hydrateAll(
+                    scryfallIDs: rows
+                        .filter { selected.contains($0.binderName) }
+                        .map(\.scryfallID),
+                    context: modelContext
+                )
+                isFetchingCards = false
             } catch {
                 errorMessage = error.localizedDescription
+                isImporting = false
             }
-            isImporting = false
         }
     }
 }

@@ -165,12 +165,8 @@ private struct InfoPanel: View {
 
     /// Market vs. price paid at import.
     private var gainLoss: (text: String, up: Bool)? {
-        guard let market = item.marketPrice, let paid = item.purchasePrice, paid > 0 else { return nil }
-        let diff = market - paid
-        let pct = diff / paid * 100
-        let sign = diff >= 0 ? "+" : "-"
-        let text = String(format: "(%@$%.2f, %@%.1f%%)", sign, abs(diff), sign, abs(pct))
-        return (text, diff >= 0)
+        guard let change = item.gainLoss else { return nil }
+        return (PriceFormat.change(change.amount, change.percent), change.amount >= 0)
     }
 
     private func chip(_ text: String, icon: String? = nil) -> some View {
@@ -219,5 +215,16 @@ enum PriceFormat {
     static func string(_ value: Double?) -> String {
         guard let value else { return "—" }
         return String(format: "$%.2f", value)
+    }
+
+    /// Tight form for the grid, where three digits of cents are noise.
+    static func compact(_ value: Double) -> String {
+        value >= 100 ? String(format: "$%.0f", value) : String(format: "$%.2f", value)
+    }
+
+    /// "+2.03 (+5.61%)" — signed, for value change since purchase.
+    static func change(_ amount: Double, _ percent: Double) -> String {
+        let sign = amount >= 0 ? "+" : "-"
+        return String(format: "%@%.2f (%@%.1f%%)", sign, abs(amount), sign, abs(percent))
     }
 }

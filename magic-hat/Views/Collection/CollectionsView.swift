@@ -39,6 +39,8 @@ struct CollectionsView: View {
     @State private var importError: String?
     @State private var isParsing = false
     @State private var summaries: [CollectionSummary] = []
+    @State private var pendingDelete: String?
+    @State private var isDeleting = false
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
@@ -87,7 +89,7 @@ struct CollectionsView: View {
                     }
                 }
             }
-            .overlay { if isParsing { parsingOverlay } }
+            .overlay { if isParsing || isDeleting { busyOverlay(isDeleting ? "Deleting…" : "Reading file…") } }
             .fileImporter(
                 isPresented: $showingFileImporter,
                 allowedContentTypes: [.commaSeparatedText, .plainText, .text],
@@ -123,6 +125,20 @@ struct CollectionsView: View {
         try? modelContext.save()
     }
 
+    private var deleteBinding: Binding<Bool> {
+        Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+    }
+
+    private func delete(_ name: String) {
+        isDeleting = true
+        Task {
+            defer { isDeleting = false }
+            _ = try? await CollectionEditController.delete(
+                collectionName: name, context: modelContext
+            )
+        }
+    }
+
     private var collectionList: some View {
         List(collections) { collection in
             NavigationLink {
@@ -142,16 +158,35 @@ struct CollectionsView: View {
                     }
                 }
             }
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive) {
+                    pendingDelete = collection.name
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+        .confirmationDialog(
+            "Delete “\(pendingDelete ?? "")”?",
+            isPresented: deleteBinding,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Collection", role: .destructive) {
+                if let name = pendingDelete { delete(name) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes every card in this collection. The change is recorded in History.")
         }
     }
 
     // Brief spinner shown while the picked CSV is read + parsed off-main.
-    private var parsingOverlay: some View {
+    private func busyOverlay(_ label: String) -> some View {
         ZStack {
             Color.black.opacity(0.15).ignoresSafeArea()
             VStack(spacing: 12) {
                 ProgressView()
-                Text("Reading file…")
+                Text(label)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
