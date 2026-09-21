@@ -150,16 +150,32 @@ already make — one request, no bulk download, no UUID mapping.
 TCGplayer no longer issues public API keys, so those tiers are unavailable to
 us at any price. We show the single Scryfall market price and nothing else.
 
-### Why not Scryfall bulk data
+### Scryfall bulk data
 
-Scryfall publishes bulk files and prefers them over hammering the API — but
-that guidance is for consumers who want the whole catalog. We want ~3.5% of
-it (one collection out of 112k cards), and `default_cards` is 79MB
-compressed / several hundred MB parsed, which hits the same device-memory
-wall as MTGJSON, all-or-nothing before anything can render. 53 batched
-`/cards/collection` requests finish in ~30s, fill the grid progressively, and
-sit well inside Scryfall's published limits. Bulk becomes the right call only
-if we ever need offline search over every card.
+Scryfall now publishes bulk **only as `jsonl_download_uri`** (`.jsonl.gz`) —
+line-delimited, so unlike MTGJSON's single giant object it can be streamed and
+parsed a line at a time at constant memory. That makes an on-device catalog
+feasible. Measured: `oracle_cards` 24.7MB gz (~35k unique cards),
+`default_cards` 78.8MB gz (~112k printings), `rulings` 5.4MB.
+
+Card lines carry `image_uris` as **URLs**, never image bytes, so a catalog
+download does not affect image storage — images keep streaming lazily into the
+existing disk cache. Lines also carry `prices`, so a catalog refresh doubles
+as a price refresh.
+
+Not yet implemented. The shape it should take:
+1. `GET /bulk-data`, compare `updated_at` with the stored value; skip if same.
+2. Stream `URLSession.bytes`, inflate with the `Compression` framework
+   (the file is `.gz`, served without `Content-Encoding`, so Foundation will
+   not decompress it for us — strip the gzip header and raw-inflate).
+3. Decode one line at a time, upsert `CardMeta` in batches of ~500 with
+   `Task.yield()`, showing determinate progress against `compressed_size`.
+
+`oracle_cards` (25MB) is the right first target: it powers the empty Search
+tab, at a third the size. It holds one printing per oracle id, so it does NOT
+cover the specific printings a collection references — owned cards keep using
+batched `/cards/collection`. It should be **opt-in and Wi-Fi-preferred**, not
+an automatic first-launch download.
 
 MTGJSON **set files carry no prices** (verified) — only `identifiers`,
 `legalities`, `foreignData`, `purchaseUrls` and similar. Prices live solely in
