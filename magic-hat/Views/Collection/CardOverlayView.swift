@@ -112,9 +112,12 @@ private struct InfoPanel: View {
                 }
             }
 
-            Text("\(item.setName)  #\(item.collectorNumber)")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                SetSymbolView(setCode: item.setCode, size: 18, tint: .secondary)
+                Text("\(item.setName)  #\(item.collectorNumber)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack(spacing: 6) {
                 chip(item.language.uppercased())
@@ -157,7 +160,7 @@ private struct ActionBar: View {
     let onEye: () -> Void
 
     var body: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 28) {
             action("pencil") {}
             action("rectangle.stack.badge.plus") {}
             action("plus.rectangle.on.rectangle") {}
@@ -165,15 +168,16 @@ private struct ActionBar: View {
             action("checkmark.circle") {}
             action("trash") {}
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 28)
+        .padding(.vertical, 18)
         .glassEffect(.regular, in: Capsule())
     }
 
     private func action(_ symbol: String, prominent: Bool = false, run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: symbol)
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 24, weight: .semibold))
+                .frame(width: 30, height: 30)
                 .foregroundStyle(prominent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)

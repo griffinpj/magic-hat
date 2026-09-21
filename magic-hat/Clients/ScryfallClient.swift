@@ -32,6 +32,13 @@ struct ScryfallClient {
         )
     }
 
+    /// GET /sets/:code — set metadata, including the SVG set-symbol URI.
+    func set(code: String) async throws -> ScryfallSet {
+        let url = baseURL.appendingPathComponent("sets")
+            .appendingPathComponent(code.lowercased())
+        return try await http.request(ScryfallSet.self, url: url, rateLimit: .other)
+    }
+
     /// GET /cards/search — all printings of a card, by oracle id, newest first.
     /// Rate limited to 2/sec; follows pagination.
     func printings(oracleID: String) async throws -> [ScryfallCard] {
