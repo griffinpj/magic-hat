@@ -14,7 +14,7 @@ struct CatalogSyncBar: View {
     var controller = CatalogSyncController.shared
 
     var body: some View {
-        if controller.phase.isActive {
+        if controller.phase.showsProgressBar {
             VStack(spacing: 6) {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -40,7 +40,7 @@ struct CatalogSyncBar: View {
             .glassEffect(.regular, in: Capsule())
             .padding(.horizontal, 12)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .animation(.easeInOut(duration: 0.25), value: controller.phase.isActive)
+            .animation(.easeInOut(duration: 0.25), value: controller.phase.showsProgressBar)
         }
     }
 }

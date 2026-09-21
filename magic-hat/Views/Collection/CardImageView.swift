@@ -18,6 +18,10 @@ struct CardImageView: View {
     /// A smaller size that may already be decoded (e.g. the grid's), shown
     /// immediately while the larger one decodes so nothing flashes to grey.
     var fallbackTargetWidth: CGFloat? = nil
+    /// Holographic sheen for foil printings (see FoilSheen).
+    var foil: Bool = false
+    var foilAnimated: Bool = false
+    var foilIntensity: Double = 0.22
 
     @Environment(\.displayScale) private var displayScale
 
@@ -36,6 +40,10 @@ struct CardImageView: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
+                    // Sheen is a layerEffect over the image's own layer, so it
+                    // samples the art and is clipped with it below.
+                    .modifier(FoilSheen(active: foil, animated: foilAnimated,
+                                        intensity: Float(foilIntensity)))
             } else {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(.quaternary)

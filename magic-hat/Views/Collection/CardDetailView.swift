@@ -106,7 +106,7 @@ struct CardDetailView: View {
 
     private var hero: some View {
         ZStack(alignment: .bottomLeading) {
-            CardArtImage(urlString: item.artCropURL ?? item.imageURL)
+            CardArtImage(urlString: item.artCropURL ?? item.imageURL, fallbackURL: item.imageURL)
                 .frame(height: 320)
                 .clipped()
                 .overlay(
@@ -246,12 +246,8 @@ struct CardDetailView: View {
         }
     }
 
-    private var matchingRulings: [CardRuling] {
-        guard let oracleID = item.oracleID else { return [] }
-        return allRulings
-            .filter { $0.oracleID == oracleID }
-            .sorted { $0.publishedAt < $1.publishedAt }
-    }
+    /// The query is already scoped to this oracle id and sorted by date.
+    private var matchingRulings: [CardRuling] { allRulings }
 
     // MARK: Versions (printings)
 
@@ -300,35 +296,42 @@ struct CardDetailView: View {
                 Text(loadError).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding()
             } else {
-                ForEach(filteredGroups) { group in
-                    setGroup(group)
+                // Lazy, and flattened: headers and rows are individual lazy
+                // children, so only what is on screen loads its image or
+                // rasterizes its set symbol. As a plain VStack every printing
+                // (and every set symbol) was created during the push.
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ForEach(filteredGroups) { group in
+                        setHeader(group)
+                        ForEach(group.cards) { card in
+                            printingRow(card)
+                        }
+                    }
                 }
             }
         }
         .padding(.bottom, 24)
     }
 
-    private func setGroup(_ group: PrintingGroup) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                SetSymbolView(setCode: group.code, size: 22, tint: .primary)
-                Text(group.setName).font(.headline)
-                Text("(\(group.code))").font(.subheadline).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 16)
-
-            ForEach(group.cards) { card in
-                PrintingRow(card: card, owned: ownedIDs.contains(card.id))
-                    .padding(.horizontal, 16)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        if let idx = printingItems.firstIndex(where: { $0.id == card.id }) {
-                            withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = idx }
-                        }
-                    }
-            }
+    private func setHeader(_ group: PrintingGroup) -> some View {
+        HStack(spacing: 8) {
+            SetSymbolView(setCode: group.code, size: 22, tint: .primary)
+            Text(group.setName).font(.headline)
+            Text("(\(group.code))").font(.subheadline).foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+
+    private func printingRow(_ card: ScryfallCard) -> some View {
+        PrintingRow(card: card, owned: ownedIDs.contains(card.id))
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if let idx = printingItems.firstIndex(where: { $0.id == card.id }) {
+                    withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = idx }
+                }
+            }
     }
 
     // MARK: Loading
@@ -414,9 +417,12 @@ private struct PrintingRow: View {
     }
 }
 
-/// Fills its frame with card art (aspect-fill), decoded off-main.
+/// Fills its frame with card art (aspect-fill), decoded off-main. Shows the
+/// already-decoded card image (from the grid/overlay cache) instantly while
+/// the art crop — a URL nothing has fetched before — downloads.
 private struct CardArtImage: View {
     let urlString: String?
+    var fallbackURL: String? = nil
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
 
@@ -442,6 +448,18 @@ private struct CardArtImage: View {
         if let cached = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, px)) {
             image = cached; return
         }
-        image = try? await ImageLoader.shared.image(for: urlString, maxPixel: px)
+        if let fallbackURL {
+            // Overlay size first, then grid size — whichever is already decoded.
+            for width in [480.0, 150.0] {
+                if let smaller = ImageMemoryCache.shared.image(
+                    ImageMemoryCache.key(fallbackURL, width * displayScale)) {
+                    image = smaller
+                    break
+                }
+            }
+        }
+        if let art = try? await ImageLoader.shared.image(for: urlString, maxPixel: px) {
+            image = art
+        }
     }
 }

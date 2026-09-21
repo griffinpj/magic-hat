@@ -16,6 +16,7 @@ struct CardOverlayView: View {
     let onClose: () -> Void
     let onOpenDetail: (CardItem) -> Void
 
+    @Environment(\.displayScale) private var displayScale
     @State private var currentID: String?
 
     init(
@@ -49,7 +50,7 @@ struct CardOverlayView: View {
                 Spacer(minLength: 0)
                 pager
                 if let item = currentItem {
-                    InfoPanel(item: item)
+                    InfoPanel(item: item, onDetail: { onOpenDetail(item) })
                     ActionBar()
                 }
                 Spacer(minLength: 0)
@@ -61,12 +62,27 @@ struct CardOverlayView: View {
         // debounces it — /cards/search is 2/sec, so firing per swipe would
         // queue dozens of requests.
         .task(id: currentID) {
-            guard let oracleID = currentItem?.oracleID else { return }
-            if PrintingsCache.shared.cached(oracleID: oracleID) != nil { return }
+            guard let item = currentItem else { return }
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled else { return }
-            await PrintingsCache.shared.prefetch(oracleID: oracleID)
+            // Warm what the detail screen needs: its printings list and its
+            // hero art crop (a URL nothing else has fetched).
+            let heroPixels = min(1200, 430 * displayScale)
+            async let printings: Void = Self.prefetchPrintings(for: item)
+            async let art: Void = Self.prefetchArt(for: item, maxPixel: heroPixels)
+            _ = await (printings, art)
         }
+    }
+
+    private static func prefetchPrintings(for item: CardItem) async {
+        guard let oracleID = item.oracleID,
+              PrintingsCache.shared.cached(oracleID: oracleID) == nil else { return }
+        await PrintingsCache.shared.prefetch(oracleID: oracleID)
+    }
+
+    private static func prefetchArt(for item: CardItem, maxPixel: CGFloat) async {
+        guard let url = item.artCropURL else { return }
+        _ = try? await ImageLoader.shared.image(for: url, maxPixel: maxPixel)
     }
 
     private var pager: some View {
@@ -83,15 +99,16 @@ struct CardOverlayView: View {
                             aspectRatio: item.aspectRatio,
                             cornerRadius: 18,
                             targetWidth: 480,
-                            fallbackTargetWidth: 150
+                            fallbackTargetWidth: 150,
+                            foil: item.finish != .normal,
+                            // Animated only for the card in the middle; neighbours
+                            // stay static so the pager isn't redrawing three cards.
+                            foilAnimated: isCurrent,
+                            foilIntensity: 0.28
                         )
                         .frame(width: cardWidth)
                         .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
-                        // The whole card is the detail target; the eye in the
-                        // corner is the affordance that says so.
-                        .overlay(alignment: .topTrailing) {
-                            if isCurrent { detailButton(for: item) }
-                        }
+                        // The whole centred card is the detail target.
                         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .onTapGesture {
                             if isCurrent {
@@ -117,29 +134,17 @@ struct CardOverlayView: View {
         .containerRelativeFrame(.vertical) { height, _ in height * 0.52 }
     }
 
-    private func detailButton(for item: CardItem) -> some View {
-        Button { onOpenDetail(item) } label: {
-            Image(systemName: "eye")
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 38, height: 38)
-                .foregroundStyle(.primary)
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: Circle())
-        .padding(10)
-        .accessibilityIdentifier("overlay-eye")
-        .accessibilityLabel("Show card details")
-    }
 }
 
 // MARK: - Info panel
 
 private struct InfoPanel: View {
     let item: CardItem
+    let onDetail: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
                 Text("\(item.quantity)× \(item.name)")
                     .font(.headline)
                 if item.finish != .normal {
@@ -149,6 +154,20 @@ private struct InfoPanel: View {
                         .background(Color.yellow.opacity(0.85), in: Capsule())
                         .foregroundStyle(.black)
                 }
+                Spacer(minLength: 8)
+                // Detail affordance, top-right of the info card. A child of
+                // the panel, so its tap beats the panel's swallow gesture.
+                Button(action: onDetail) {
+                    Image(systemName: "eye")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: Circle())
+                .accessibilityIdentifier("overlay-eye")
+                .accessibilityLabel("Show card details")
+                .offset(x: 4, y: -4)
             }
 
             HStack(spacing: 6) {
@@ -175,8 +194,9 @@ private struct InfoPanel: View {
         .padding(16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .padding(.horizontal, 20)
-        // Not a target of anything; swallow taps so they can't fall through
-        // to the backdrop and close the overlay.
+        // Not a target of anything itself; swallow taps so they can't fall
+        // through to the backdrop and close the overlay. The eye above is a
+        // child, so it still receives its own taps.
         .contentShape(Rectangle())
         .onTapGesture {}
     }

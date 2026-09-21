@@ -30,6 +30,10 @@ nonisolated enum CardFinish: String, Codable, CaseIterable, Sendable {
 nonisolated final class CollectionEntry {
     @Attribute(.unique) var id: UUID
 
+    // collectionName: every snapshot/summary predicate. scryfallID: the
+    // IN-list lookups hydration uses to link entries to their CardMeta.
+    #Index<CollectionEntry>([\.collectionName], [\.scryfallID])
+
     /// Links to `CardMeta.scryfallID` for hydrated metadata/images.
     var scryfallID: String
 

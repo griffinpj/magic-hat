@@ -42,6 +42,17 @@ final class CatalogSyncController {
             default: return true
             }
         }
+
+        /// Whether the status bar should appear. The manifest check runs on
+        /// every launch and usually finds nothing to do; flashing a
+        /// "Checking…" strip for it looked broken. The first-launch setup
+        /// screen still narrates that phase, because there it is the point.
+        var showsProgressBar: Bool {
+            switch self {
+            case .downloading, .ingesting, .waitingForWiFi: return true
+            default: return false
+            }
+        }
     }
 
     private(set) var phase: Phase = .idle
