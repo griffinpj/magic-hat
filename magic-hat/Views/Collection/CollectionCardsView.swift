@@ -54,10 +54,23 @@ struct CollectionCardsView: View {
         )
     }
 
+    /// Full rebuild + sort. Use on entries/sort changes only.
     private func rebuildItems() {
         let metaByID = Dictionary(allMeta.map { ($0.scryfallID, $0) }) { a, _ in a }
         let built = entries.map { CardItem(entry: $0, meta: metaByID[$0.scryfallID]) }
         items = Self.sorted(built, by: sort)
+    }
+
+    /// Refresh image/price fields as metadata hydrates WITHOUT reordering, so
+    /// the grid doesn't thrash while scrolling/hydrating.
+    private func refreshMeta() {
+        guard !items.isEmpty else { rebuildItems(); return }
+        let metaByID = Dictionary(allMeta.map { ($0.scryfallID, $0) }) { a, _ in a }
+        let entryByID = Dictionary(entries.map { ($0.id.uuidString, $0) }) { a, _ in a }
+        items = items.map { item in
+            guard let entry = entryByID[item.id] else { return item }
+            return CardItem(entry: entry, meta: metaByID[item.scryfallID])
+        }
     }
 
     private static func sorted(_ items: [CardItem], by sort: CardSort) -> [CardItem] {
@@ -99,7 +112,7 @@ struct CollectionCardsView: View {
         .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: entries, initial: true) { _, _ in rebuildItems() }
-        .onChange(of: allMeta) { _, _ in rebuildItems() }
+        .onChange(of: allMeta) { _, _ in refreshMeta() }
         .onChange(of: sort) { _, _ in
             items = Self.sorted(items, by: sort)
         }

@@ -26,24 +26,28 @@ struct CardGridView<Accessory: View>: View {
     )
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    CardTile(item: item)
-                        .equatable()
-                        .onAppear { onAppearIndex(index) }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = index }
-                        }
+        ZStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        CardTile(item: item)
+                            .equatable()
+                            .onAppear { onAppearIndex(index) }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = index }
+                            }
+                    }
                 }
+                .padding(10)
             }
-            .padding(10)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if selectedIndex == nil { accessory() }
-        }
-        .overlay {
+            .overlay(alignment: .bottomTrailing) {
+                if selectedIndex == nil { accessory() }
+            }
+
+            // Overlay as a top-level sibling so it fully intercepts scrolling
+            // and taps — the collection behind can't be interacted with; only a
+            // tap on the dimmed backdrop closes it.
             if let index = selectedIndex, items.indices.contains(index) {
                 CardOverlayView(
                     items: items,
@@ -57,6 +61,7 @@ struct CardGridView<Accessory: View>: View {
                     }
                 )
                 .transition(.opacity)
+                .zIndex(1)
             }
         }
         .navigationDestination(item: $detailItem) { item in
