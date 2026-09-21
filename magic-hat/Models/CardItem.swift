@@ -47,6 +47,13 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let priceUSD: Double?
     let priceUSDFoil: Double?
 
+    // Sort keys, computed once. Comparing these is ~50x cheaper than
+    // localizedCaseInsensitiveCompare on every comparison, which is what made
+    // sorting 3,900 cards a visible pause.
+    let sortKey: String
+    let collectorNumberValue: Int
+    let rarityRankValue: Int
+
     /// Price paid at import, if the CSV had one (for gain/loss display).
     let purchasePrice: Double?
 
@@ -58,6 +65,29 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     var powerToughness: String? {
         guard let power, let toughness else { return nil }
         return "\(power)/\(toughness)"
+    }
+
+    /// Case- and diacritic-insensitive key for ordering by name.
+    static func sortKey(for name: String) -> String {
+        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    }
+
+    /// Numeric collector number; non-numeric ("216s", "★") sort last.
+    static func collectorValue(_ raw: String) -> Int {
+        Int(raw) ?? Int(raw.prefix { $0.isNumber }) ?? Int.max
+    }
+
+    /// Rarity ordering, low → high. Unknown rarity sorts lowest.
+    static func rarityRank(_ raw: String) -> Int {
+        switch raw.lowercased() {
+        case "common": return 0
+        case "uncommon": return 1
+        case "rare": return 2
+        case "mythic": return 3
+        case "special": return 4
+        case "bonus": return 5
+        default: return -1
+        }
     }
 
     /// Current market price for this item's finish.
@@ -101,6 +131,9 @@ nonisolated extension CardItem {
         self.toughness = meta?.toughness
         self.priceUSD = meta?.priceUSD
         self.priceUSDFoil = meta?.priceUSDFoil
+        self.sortKey = Self.sortKey(for: self.name)
+        self.collectorNumberValue = Self.collectorValue(entry.collectorNumber)
+        self.rarityRankValue = Self.rarityRank(entry.rarity)
         self.purchasePrice = entry.purchasePrice
         self.legalities = meta?.legalities
         self.edhrecRank = meta?.edhrecRank
@@ -135,6 +168,9 @@ nonisolated extension CardItem {
         self.toughness = card.toughness
         self.priceUSD = card.prices?.usd.flatMap(Double.init)
         self.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+        self.sortKey = Self.sortKey(for: card.name)
+        self.collectorNumberValue = Self.collectorValue(card.collectorNumber)
+        self.rarityRankValue = Self.rarityRank(card.rarity)
         self.purchasePrice = nil
         self.legalities = card.legalities
         self.edhrecRank = card.edhrecRank

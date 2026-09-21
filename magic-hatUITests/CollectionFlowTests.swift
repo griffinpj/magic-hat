@@ -92,6 +92,26 @@ final class CollectionFlowTests: XCTestCase {
                       "removed card should leave the grid")
     }
 
+    /// Pick "Price (High)" from the sort menu: the grid should jump to the top
+    /// of the new order. In the seed, price = index % 50, so the priciest tier
+    /// is 49 and its alphabetically-first name is "Card 149".
+    @MainActor
+    func testSortByPriceReordersGridFromTheTop() {
+        let app = launch()
+        let grid = openCollection(app)
+        grid.swipeUp(velocity: .fast)   // move away from the top first
+
+        let sort = app.buttons["sort-button"]
+        XCTAssertTrue(sort.waitForExistence(timeout: 5))
+        sort.tap()
+        let price = app.buttons["Price (High)"]
+        XCTAssertTrue(price.waitForExistence(timeout: 5), "sort menu")
+        price.tap()
+
+        XCTAssertTrue(app.staticTexts["Card 149"].firstMatch.waitForExistence(timeout: 10),
+                      "top of the grid should show the highest-priced card")
+    }
+
     @MainActor
     func testGridScrollDoesNotHitch() {
         let app = launch()

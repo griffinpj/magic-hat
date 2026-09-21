@@ -25,6 +25,7 @@ struct CollectionCardsView: View {
     @State private var hasLoaded = false
     @State private var refreshTask: Task<Void, Never>?
     @State private var sortTask: Task<Void, Never>?
+    @State private var scrollToTop = 0
 
     /// Remembered across launches and collections.
     @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
@@ -48,6 +49,7 @@ struct CollectionCardsView: View {
                 CardGridView(
                     items: items,
                     onAppearIndex: { prefetch(around: $0) },
+                    scrollToTop: scrollToTop,
                     accessory: {
                         VStack(alignment: .trailing, spacing: 10) {
                             if hydrator.isSyncing { syncPill }
@@ -93,19 +95,18 @@ struct CollectionCardsView: View {
         }
     }
 
-    /// Re-sorts off the main thread. CardItem is Sendable, so the array can
-    /// be handed to a detached task; 3,900 localized string compares on main
-    /// is a visible pause right as the menu closes.
+    /// Jump to the top first, then re-sort one frame later. With precomputed
+    /// keys the sort itself is a few milliseconds, so it runs on the main
+    /// actor with no async hop; the one-frame gap lets the grid reset to the
+    /// top before the reorder lands, so LazyVGrid lays out the first screen
+    /// rather than re-laying out a reordered grid deep into the old order.
     private func applySort() {
         sortTask?.cancel()
-        let snapshot = items
-        let by = sort
-        sortTask = Task {
-            let sorted = await Task.detached(priority: .userInitiated) {
-                CardSorting.sorted(snapshot, by: by)
-            }.value
+        scrollToTop &+= 1
+        sortTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
-            items = sorted
+            items = CardSorting.sorted(items, by: sort)
         }
     }
 
@@ -176,6 +177,8 @@ struct CollectionCardsView: View {
                 .frame(width: 52, height: 52)
                 .contentShape(Circle())
         }
+        .menuOrder(.fixed)
+        .accessibilityIdentifier("sort-button")
         .glassEffect(.regular.interactive(), in: Circle())
         .padding(.trailing, 20)
         .padding(.bottom, 20)

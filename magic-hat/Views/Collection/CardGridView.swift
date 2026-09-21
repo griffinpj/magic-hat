@@ -14,6 +14,10 @@ import SwiftUI
 struct CardGridView<Accessory: View>: View {
     let items: [CardItem]
     var onAppearIndex: (Int) -> Void = { _ in }
+    /// Bump to jump the grid to the top (the parent does this right before
+    /// a re-sort lands, so the reorder is laid out from the top instead of
+    /// deep into the old order).
+    var scrollToTop: Int = 0
     /// Floating accessory (e.g. a sort button), shown only when no overlay is
     /// open so it never covers the enlarged card.
     @ViewBuilder var accessory: () -> Accessory
@@ -27,19 +31,26 @@ struct CardGridView<Accessory: View>: View {
 
     var body: some View {
         ZStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        CardTile(item: item)
-                            .equatable()
-                            .onAppear { onAppearIndex(index) }
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = index }
-                            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            CardTile(item: item)
+                                .equatable()
+                                .onAppear { onAppearIndex(index) }
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = index }
+                                }
+                        }
                     }
+                    .padding(10)
                 }
-                .padding(10)
+                .onChange(of: scrollToTop) { _, _ in
+                    guard let first = items.first?.id else { return }
+                    var t = Transaction(); t.disablesAnimations = true
+                    withTransaction(t) { proxy.scrollTo(first, anchor: .top) }
+                }
             }
             .overlay(alignment: .bottomTrailing) {
                 if selectedIndex == nil { accessory() }
@@ -71,7 +82,7 @@ struct CardGridView<Accessory: View>: View {
 }
 
 extension CardGridView where Accessory == EmptyView {
-    init(items: [CardItem], onAppearIndex: @escaping (Int) -> Void = { _ in }) {
-        self.init(items: items, onAppearIndex: onAppearIndex, accessory: { EmptyView() })
+    init(items: [CardItem], onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0) {
+        self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop, accessory: { EmptyView() })
     }
 }
