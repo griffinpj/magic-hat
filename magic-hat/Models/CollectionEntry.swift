@@ -32,6 +32,11 @@ final class CollectionEntry {
     /// Links to `CardMeta.scryfallID` for hydrated metadata/images.
     var scryfallID: String
 
+    /// The cached Scryfall record for this card. A real relationship (rather
+    /// than a second unbounded @Query plus a dictionary join) lets the grid
+    /// fetch entries and their metadata in one prefetching query.
+    var card: CardMeta?
+
     /// Name of the owning collection (top level). Defaults so existing data
     /// migrates into a single collection.
     var collectionName: String = "My Collection"

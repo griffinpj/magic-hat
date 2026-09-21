@@ -56,6 +56,17 @@ struct CardOverlayView: View {
             }
             .padding(.vertical, 24)
         }
+        // Warm the printings cache for whatever card is on screen so the eye
+        // action opens instantly. .task(id:) cancels on swipe, and the sleep
+        // debounces it — /cards/search is 2/sec, so firing per swipe would
+        // queue dozens of requests.
+        .task(id: currentID) {
+            guard let oracleID = currentItem?.oracleID else { return }
+            if PrintingsCache.shared.cached(oracleID: oracleID) != nil { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            await PrintingsCache.shared.prefetch(oracleID: oracleID)
+        }
     }
 
     private var pager: some View {

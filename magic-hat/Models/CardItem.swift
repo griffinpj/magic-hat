@@ -49,6 +49,11 @@ struct CardItem: Identifiable, Hashable, Sendable {
     /// Price paid at import, if the CSV had one (for gain/loss display).
     let purchasePrice: Double?
 
+    // Free extras Scryfall returns in the same batch call.
+    let legalities: [String: String]?
+    let edhrecRank: Int?
+    let purchaseURIs: [String: String]?
+
     var powerToughness: String? {
         guard let power, let toughness else { return nil }
         return "\(power)/\(toughness)"
@@ -89,6 +94,9 @@ extension CardItem {
         self.priceUSD = meta?.priceUSD
         self.priceUSDFoil = meta?.priceUSDFoil
         self.purchasePrice = entry.purchasePrice
+        self.legalities = meta?.legalities
+        self.edhrecRank = meta?.edhrecRank
+        self.purchaseURIs = meta?.purchaseURIs
     }
 
     /// A card built straight from a Scryfall result (e.g. a printing or a
@@ -120,5 +128,17 @@ extension CardItem {
         self.priceUSD = card.prices?.usd.flatMap(Double.init)
         self.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
         self.purchasePrice = nil
+        self.legalities = card.legalities
+        self.edhrecRank = card.edhrecRank
+        self.purchaseURIs = card.purchaseURIs
+    }
+
+    /// Formats to surface, in the order players care about.
+    static let shownFormats = ["standard", "pioneer", "modern", "legacy", "vintage", "commander", "pauper"]
+
+    /// Legal formats among `shownFormats`, in that order.
+    var legalFormats: [String] {
+        guard let legalities else { return [] }
+        return Self.shownFormats.filter { legalities[$0] == "legal" }
     }
 }

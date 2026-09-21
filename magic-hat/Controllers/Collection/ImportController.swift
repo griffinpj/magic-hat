@@ -106,8 +106,9 @@ enum ImportController {
 
         // 3. Ensure a CardMeta placeholder exists per Scryfall ID (hydrated
         //    lazily later). Track which we've seen to avoid dup inserts.
-        var knownMeta = Set(
-            try modelContext.fetch(FetchDescriptor<CardMeta>()).map(\.scryfallID)
+        var metaByID = Dictionary(
+            try modelContext.fetch(FetchDescriptor<CardMeta>()).map { ($0.scryfallID, $0) },
+            uniquingKeysWith: { a, _ in a }
         )
 
         // 4. Insert/upsert rows, reporting progress and saving in batches so
@@ -118,16 +119,21 @@ enum ImportController {
         var processed = 0
 
         for row in relevant {
-            if !knownMeta.contains(row.scryfallID) {
-                modelContext.insert(CardMeta(
+            let meta: CardMeta
+            if let existing = metaByID[row.scryfallID] {
+                meta = existing
+            } else {
+                let created = CardMeta(
                     scryfallID: row.scryfallID,
                     name: row.name,
                     setCode: row.setCode,
                     setName: row.setName,
                     collectorNumber: row.collectorNumber,
                     rarity: row.rarity
-                ))
-                knownMeta.insert(row.scryfallID)
+                )
+                modelContext.insert(created)
+                metaByID[row.scryfallID] = created
+                meta = created
             }
 
             let entry: CollectionEntry
@@ -157,6 +163,9 @@ enum ImportController {
                 )
                 modelContext.insert(entry)
                 if mode == .add { existingByKey[key] = entry }
+            }
+            if entry.card == nil {
+                entry.card = meta
             }
 
             addedCount += row.quantity

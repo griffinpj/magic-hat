@@ -68,9 +68,10 @@ are cross-cutting, not owned by one feature.
   - `HTTPClient` — transport, required headers (User-Agent/Accept), decoding.
   - `RateLimiter` — actor enforcing Scryfall per-endpoint limits.
   - `CSVParser` — RFC-4180-ish parser + ManaBox mapping.
-  - `PrintingsCache` — "all printings of this card" by oracle id, with a
-    6h TTL and in-flight dedupe. `/cards/search` is the slowest endpoint
-    family (2/sec) and returns the same answer every time.
+  - `PrintingsCache` — "all printings of this card" by oracle id. Written to
+    disk with a 7-day TTL (printings only change when a set releases), so
+    cold launches don't re-run searches. The card overlay warms it for the
+    card on screen, debounced, so opening the detail screen is instant.
   - `SetSymbolLoader` — see Set symbols below.
   - `ImageLoader` — card image cache: original bytes on disk (Caches/),
     decoded+downsampled UIImages in memory keyed by URL+size. Decode and
@@ -78,7 +79,9 @@ are cross-cutting, not owned by one feature.
     triggers a main-thread decode of a full-resolution image.
 - `Controllers/Collection/`
   - `ImportController` — applies a parsed import (add/replace), writes audit.
-  - `CardHydrationController` — lazily fetches metadata for visible cards.
+  - `CardHydrationController` — fetches card metadata (whole collection, then
+    viewport top-ups) and refreshes stale prices. Bumps `revision` on every
+    write so views can rebuild without a second unbounded query.
 
 ## Rate limits (Scryfall)
 
@@ -124,7 +127,16 @@ reuse them later (they take plain values, not SwiftData/Scryfall models):
   and all printings (grouped by set) with owned indicators.
 
 Pricing: Scryfall provides only a single market price per finish
-(`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers). The
+(`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers).
+
+Why not MTGJSON for LOW/MID, measured rather than assumed: the prices file is
+cheap (`AllPricesToday.json.gz`, 5.5MB) but it is keyed by MTGJSON UUID, and
+mapping those to Scryfall ids costs 181MB (`AllPrintings.json.gz`), 113MB
+(`AllIdentifiers.json.xz`, and iOS has no built-in xz), or ~4MB per set —
+which for a collection spanning 480 sets is ~1.9GB. So MTGJSON prices are not
+viable on-device. `CardMeta.tcgplayerID` (handed to us free by Scryfall) is
+the real join key for TCGplayer's API, which is where LOW/MID actually come
+from. `MTGJSONClient` stays for a future server-side job. The
 overlay shows the gain/loss vs the price paid at import (`CollectionEntry
 .purchasePrice`) as `(±$Δ, ±%)`.
 
@@ -150,6 +162,10 @@ near-transparent image that, as a template, was invisible.
   assertion so it survives the app being backgrounded briefly. `BGTaskScheduler`
   was deliberately not used: iOS gives no timing guarantee, and the work is
   attended and resumable.
+- `CollectionEntry.card` is a real SwiftData relationship to `CardMeta`, and
+  the grid's query sets `relationshipKeyPathsForPrefetching = [\.card]`. This
+  replaced a second unbounded `@Query` over every `CardMeta` row plus a
+  dictionary join rebuilt on each change.
 - **Prices go stale, metadata does not.** `CardMeta.pricesUpdatedAt` drives
   `refreshStalePrices`, which re-fetches only cards older than
   `CardHydrationController.priceTTL` (6h) through the same batched endpoint.
