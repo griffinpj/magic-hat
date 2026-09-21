@@ -27,7 +27,6 @@ struct CardDetailView: View {
     @State private var selectedTab: Tab = .versions
     @State private var filterText = ""
     @State private var overlayIndex: Int?
-    @State private var detailPush: CardItem?
 
     private enum Tab: Hashable { case versions, ruling }
 
@@ -89,16 +88,11 @@ struct CardDetailView: View {
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = nil }
                     },
-                    onOpenDetail: { tapped in
-                        // Keep the overlay so popping detail returns to it.
-                        detailPush = tapped
-                    }
+                    // Already on the detail screen; printings share it.
+                    onOpenDetail: nil
                 )
                 .transition(.opacity)
             }
-        }
-        .navigationDestination(item: $detailPush) { pushed in
-            CardDetailView(item: pushed)
         }
     }
 

@@ -26,15 +26,19 @@ static half3 hueToRGB(float h) {
 
     float2 uv = position / max(size, float2(1.0));
 
-    // Rainbow bands running diagonally, drifting with time.
-    float band = fract((uv.x * 0.9 + uv.y * 0.6) * 1.6 + time * 0.12);
+    // Fine rainbow bands running diagonally, drifting with time. Real foil
+    // shows several narrow bands across a card, not one broad wash.
+    float band = fract((uv.x * 0.9 + uv.y * 0.6) * 3.2 + time * 0.12);
     half3 rainbow = hueToRGB(band);
 
-    // A soft moving highlight decides where the sheen shows; brighter pixels
-    // take more of it, so the art's dark areas stay dark.
-    float highlight = 0.5 + 0.5 * sin((uv.x - uv.y) * 6.2832 + time * 0.9);
+    // A moving specular sweep decides where the sheen shows. Squared so it
+    // reads as a distinct streak rather than an even glaze; a floor keeps a
+    // faint shimmer everywhere. Brighter pixels take more, but dark art
+    // still gets some so black-bordered foils don't look flat.
+    float sweep = 0.5 + 0.5 * sin((uv.x - uv.y) * 6.2832 + time * 0.9);
+    float highlight = 0.25 + 0.75 * sweep * sweep;
     float luma = dot(float3(color.rgb), float3(0.299, 0.587, 0.114));
-    half amount = half(intensity * highlight * (0.35 + 0.65 * luma));
+    half amount = half(intensity * highlight * (0.5 + 0.5 * luma));
 
     // Screen-style blend: adds light without crushing the underlying art.
     half3 mixed = color.rgb + rainbow * amount * (half3(1.0h) - color.rgb);

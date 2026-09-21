@@ -14,7 +14,10 @@ import SwiftUI
 struct CardOverlayView: View {
     let items: [CardItem]
     let onClose: () -> Void
-    let onOpenDetail: (CardItem) -> Void
+    /// Opens the detail screen for the current card. Nil when the overlay is
+    /// already on a detail screen (browsing other printings): every printing
+    /// shares the oracle text and rulings, so there is nothing to push to.
+    let onOpenDetail: ((CardItem) -> Void)?
 
     @Environment(\.displayScale) private var displayScale
     @Environment(\.modelContext) private var modelContext
@@ -28,7 +31,7 @@ struct CardOverlayView: View {
         items: [CardItem],
         index: Int,
         onClose: @escaping () -> Void,
-        onOpenDetail: @escaping (CardItem) -> Void
+        onOpenDetail: ((CardItem) -> Void)?
     ) {
         self.items = items
         self.onClose = onClose
@@ -55,7 +58,7 @@ struct CardOverlayView: View {
                 Spacer(minLength: 0)
                 pager
                 if let item = currentItem {
-                    InfoPanel(item: item, onDetail: { onOpenDetail(item) })
+                    InfoPanel(item: item, onDetail: onOpenDetail.map { open in { open(item) } })
                     ActionBar(
                         canEdit: item.owned,
                         onEdit: { editing = item },
@@ -145,7 +148,7 @@ struct CardOverlayView: View {
                             // Animated only for the card in the middle; neighbours
                             // stay static so the pager isn't redrawing three cards.
                             foilAnimated: isCurrent,
-                            foilIntensity: 0.28
+                            foilIntensity: 0.42
                         )
                         .frame(width: cardWidth)
                         .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
@@ -153,7 +156,7 @@ struct CardOverlayView: View {
                         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .onTapGesture {
                             if isCurrent {
-                                onOpenDetail(item)
+                                onOpenDetail?(item)
                             } else {
                                 // A peeking neighbour: bring it to the centre
                                 // rather than navigating to the wrong card.
@@ -181,7 +184,7 @@ struct CardOverlayView: View {
 
 private struct InfoPanel: View {
     let item: CardItem
-    let onDetail: () -> Void
+    let onDetail: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -198,17 +201,20 @@ private struct InfoPanel: View {
                 Spacer(minLength: 8)
                 // Detail affordance, top-right of the info card. A child of
                 // the panel, so its tap beats the panel's swallow gesture.
-                Button(action: onDetail) {
-                    Image(systemName: "eye")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                        .foregroundStyle(.primary)
+                // Absent when there is no detail screen to go to.
+                if let onDetail {
+                    Button(action: onDetail) {
+                        Image(systemName: "eye")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                            .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityIdentifier("overlay-eye")
+                    .accessibilityLabel("Show card details")
+                    .offset(x: 4, y: -4)
                 }
-                .buttonStyle(.plain)
-                .glassEffect(.regular.interactive(), in: Circle())
-                .accessibilityIdentifier("overlay-eye")
-                .accessibilityLabel("Show card details")
-                .offset(x: 4, y: -4)
             }
 
             HStack(spacing: 6) {
