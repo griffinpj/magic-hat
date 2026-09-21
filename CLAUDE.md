@@ -147,9 +147,38 @@ So LOW/MID/MARKET comes from **TCGplayer's own API**, joined via
 `CardMeta.tcgplayerID`, which Scryfall hands us free in the batch call we
 already make — one request, no bulk download, no UUID mapping.
 
-`MTGJSONClient` remains for a **server-side** job. Its real unique value is
-buylist pricing (what a shop pays you) and multi-vendor/EUR retail, neither
-of which Scryfall publishes. The
+TCGplayer no longer issues public API keys, so those tiers are unavailable to
+us at any price. We show the single Scryfall market price and nothing else.
+
+### What MTGJSON IS good for on device
+
+Its bulk *price* and *card* files are too big (above), but several artifacts
+are small, and some carry data Scryfall has no equivalent for. Measured:
+
+| File | Size | Verdict |
+|---|---|---|
+| `Meta.json` | 113 B | Check before any larger download |
+| `Keywords.json` | 4 KB | Fine |
+| `CardTypes.json` | 7 KB | Fine |
+| `EnumValues.json` | 19 KB | Fine |
+| `DeckList.json` | 634 KB | Fine — 3,059 precons |
+| `decks/<name>.json` | ~150 KB | Fine — one precon |
+| `<SET>.json.gz` | ~1.1 MB | Fine per set, immutable once shipped |
+| `SetList.json` | 11.6 MB | Use Scryfall `/sets` (623 KB) instead |
+| `AllPricesToday.json` | 53 MB / 660 MB RSS | Server only |
+| `AtomicCards.json.gz` | 52 MB | Server only |
+
+**Preconstructed decks are the clear win** — Scryfall has no deck data at all,
+and every deck card carries `identifiers.scryfallId`, so a precon joins
+directly to the cards we already store ("which of these do I own?").
+
+Per-set files additionally carry things Scryfall does not: `foreignData`
+(bundled translations — relevant because ManaBox exports a Language column),
+`leadershipSkills` (can this be a commander?), `edhrecSaltiness`, and
+`variations`. All at 1.1 MB per set, cached permanently.
+
+Buylist pricing (what a shop pays you) remains MTGJSON-only and remains
+server-side-only, because it lives in the 53 MB price file. The
 overlay shows the gain/loss vs the price paid at import (`CollectionEntry
 .purchasePrice`) as `(±$Δ, ±%)`.
 

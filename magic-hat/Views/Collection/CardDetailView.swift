@@ -7,8 +7,9 @@
 //  indicator for the ones we own. Reachable from the card overlay's eye
 //  action; reusable from Search later.
 //
-//  Pricing note: Scryfall provides only a single market price per finish
-//  (prices.usd / usd_foil). LOW/MID tiers are TCGplayer-only and are mocked.
+//  Pricing note: we show the one market price Scryfall publishes per finish
+//  (prices.usd / usd_foil). No low/mid/market tiers — no provider we can
+//  reach on-device has them (see CLAUDE.md).
 //
 
 import SwiftUI

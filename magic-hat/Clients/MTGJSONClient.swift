@@ -47,6 +47,35 @@ nonisolated struct MTGJSONClient {
         return map
     }
 
+    /// GET /api/v5/Meta.json — 113 bytes. Check this before downloading
+    /// anything larger to see whether the data actually changed.
+    func meta() async throws -> MTGJSONMeta {
+        let url = baseURL.appendingPathComponent("Meta.json")
+        return try await http.request(
+            MTGJSONMetaResponse.self, url: url, rateLimit: .other
+        ).data
+    }
+
+    /// GET /api/v5/DeckList.json — index of every preconstructed deck
+    /// (~634KB for 3,000+). Scryfall has no deck data at all, so this is
+    /// MTGJSON's clearest on-device win.
+    func deckList() async throws -> [MTGJSONDeckSummary] {
+        let url = baseURL.appendingPathComponent("DeckList.json")
+        return try await http.request(
+            MTGJSONDeckListResponse.self, url: url, rateLimit: .other
+        ).data
+    }
+
+    /// GET /api/v5/decks/<fileName>.json — one precon, ~150KB. Cards carry
+    /// `identifiers.scryfallId`, so the deck joins to our collection directly.
+    func deck(fileName: String) async throws -> MTGJSONDeck {
+        let url = baseURL.appendingPathComponent("decks")
+            .appendingPathComponent("\(fileName).json")
+        return try await http.request(
+            MTGJSONDeckResponse.self, url: url, rateLimit: .other
+        ).data
+    }
+
     /// GET /api/v5/AllPricesToday.json — today's prices for every card, keyed
     /// by MTGJSON uuid.
     ///
