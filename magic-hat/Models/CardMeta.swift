@@ -86,7 +86,7 @@ nonisolated final class CardMeta {
         setName = card.setName
         collectorNumber = card.collectorNumber
         rarity = card.rarity
-        oracleID = card.oracleID
+        oracleID = card.bestOracleID
         typeLine = card.bestTypeLine
         manaCost = card.bestManaCost
         oracleText = card.bestOracleText

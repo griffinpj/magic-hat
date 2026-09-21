@@ -39,6 +39,21 @@ enum TestSupport {
         return url
     }
 
+    /// Distinct rulings in a rulings fixture, keyed the way CardRuling is.
+    static func distinctRulingCount(_ url: URL) throws -> Int {
+        let reader = try GzipLineReader(url: url)
+        defer { reader.close() }
+        let decoder = JSONDecoder()
+        var ids = Set<String>()
+        while let line = try reader.next() {
+            guard let r = try? decoder.decode(ScryfallRulingLine.self, from: line),
+                  let oracle = r.oracleId else { continue }
+            ids.insert(CardRuling(oracleID: oracle, source: r.source ?? "scryfall",
+                                  publishedAt: r.publishedAt ?? "", comment: r.comment ?? "").id)
+        }
+        return ids.count
+    }
+
     /// Line count of a gzipped JSONL fixture, via the reader under test.
     static func lineCount(_ url: URL) throws -> Int {
         let reader = try GzipLineReader(url: url)

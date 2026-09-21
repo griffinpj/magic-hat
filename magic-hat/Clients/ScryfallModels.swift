@@ -27,6 +27,8 @@ nonisolated struct ScryfallImageURIs: Codable, Sendable {
 /// One face of a (possibly multi-faced) card.
 nonisolated struct ScryfallCardFace: Codable, Sendable {
     let name: String?
+    /// Reversible cards carry oracle_id per face, not at the top level.
+    let oracleID: String?
     let typeLine: String?
     let manaCost: String?
     let oracleText: String?
@@ -36,6 +38,7 @@ nonisolated struct ScryfallCardFace: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case name, power, toughness
+        case oracleID = "oracle_id"
         case typeLine = "type_line"
         case manaCost = "mana_cost"
         case oracleText = "oracle_text"
@@ -112,6 +115,9 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
         guard let faces, !faces.isEmpty else { return nil }
         return faces.joined(separator: "\n\n//\n\n")
     }
+
+    /// Top-level oracle id, else the first face's (reversible layouts).
+    var bestOracleID: String? { oracleID ?? cardFaces?.first?.oracleID }
 
     var bestTypeLine: String? { typeLine ?? cardFaces?.first?.typeLine }
     var bestManaCost: String? { manaCost ?? cardFaces?.first?.manaCost }

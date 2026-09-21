@@ -15,6 +15,8 @@ struct RealCollectionImportTests {
         #expect(Set(rows.map(\.binderName)).count == 8)
         #expect(rows.allSatisfy { !$0.scryfallID.isEmpty })
         #expect(rows.reduce(0) { $0 + $1.quantity } == 6563)
+        // ManaBox timestamps have fractional seconds; all of them must parse.
+        #expect(rows.allSatisfy { $0.added != nil })
     }
 
     @Test @MainActor func importingAllBindersMergesCrossBinderDuplicates() async throws {
