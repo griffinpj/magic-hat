@@ -118,6 +118,18 @@ struct ScryfallCard: Decodable, Identifiable {
     }
 }
 
+/// A Scryfall set object (subset). `iconSVGURI` is an SVG (no raster form).
+struct ScryfallSet: Decodable {
+    let code: String
+    let name: String?
+    let iconSVGURI: String?
+
+    enum CodingKeys: String, CodingKey {
+        case code, name
+        case iconSVGURI = "icon_svg_uri"
+    }
+}
+
 /// Response wrapper for GET /cards/search (paginated list).
 struct ScryfallListResponse: Decodable {
     let data: [ScryfallCard]

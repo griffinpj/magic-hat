@@ -187,8 +187,7 @@ struct CardDetailView: View {
     private func setGroup(_ group: (set: String, code: String, cards: [ScryfallCard])) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: "square.stack.3d.up")
-                    .foregroundStyle(.tint)
+                SetSymbolView(setCode: group.code, size: 22, tint: .primary)
                 Text(group.set).font(.headline)
                 Text("(\(group.code))").font(.subheadline).foregroundStyle(.secondary)
             }
