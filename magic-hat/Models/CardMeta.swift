@@ -77,6 +77,41 @@ final class CardMeta {
         return Double(imageWidth) / Double(imageHeight)
     }
 
+    /// Copies everything we keep from a Scryfall card object. Shared by the
+    /// batched hydration path and the bulk catalog ingest so the two can't
+    /// drift apart.
+    func apply(_ card: ScryfallCard) {
+        name = card.name
+        setCode = card.set
+        setName = card.setName
+        collectorNumber = card.collectorNumber
+        rarity = card.rarity
+        oracleID = card.oracleID
+        typeLine = card.bestTypeLine
+        manaCost = card.bestManaCost
+        oracleText = card.bestOracleText
+        power = card.power
+        toughness = card.toughness
+        priceUSD = card.prices?.usd.flatMap(Double.init)
+        priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+        pricesUpdatedAt = Date()
+        legalities = card.legalities
+        edhrecRank = card.edhrecRank
+        tcgplayerID = card.tcgplayerID
+        purchaseURIs = card.purchaseURIs
+        let uris = card.bestImageURIs
+        imageSmallURL = uris?.small
+        imageNormalURL = uris?.normal
+        imageLargeURL = uris?.large
+        artCropURL = uris?.artCrop
+        // Scryfall doesn't return pixel dims; use known constants per
+        // orientation so tiles get the right aspect ratio.
+        imageWidth = card.isLandscape ? 680 : 488
+        imageHeight = card.isLandscape ? 488 : 680
+        fetchState = .fetched
+        lastFetched = Date()
+    }
+
     init(
         scryfallID: String,
         name: String = "",
