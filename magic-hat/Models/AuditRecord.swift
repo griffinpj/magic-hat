@@ -32,6 +32,10 @@ final class AuditRecord {
     var scryfallID: String
     var cardName: String
     var collectionName: String = "My Collection"
+    /// Source binder from the import file. Historical only: binders are no
+    /// longer part of the collection model, but older records name them and
+    /// an append-only ledger does not rewrite its past. New records leave it
+    /// empty.
     var binderName: String
     var finishRaw: String
     var condition: String
@@ -55,7 +59,7 @@ final class AuditRecord {
         scryfallID: String,
         cardName: String,
         collectionName: String,
-        binderName: String,
+        binderName: String = "",
         finish: CardFinish,
         condition: String,
         quantityDelta: Int,

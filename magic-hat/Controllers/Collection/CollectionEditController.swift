@@ -48,7 +48,6 @@ enum CollectionEditController {
                 scryfallID: entry.scryfallID,
                 cardName: entry.name,
                 collectionName: entry.collectionName,
-                binderName: entry.binderName,
                 finish: entry.finish,
                 condition: entry.condition,
                 quantityDelta: -entry.quantity,

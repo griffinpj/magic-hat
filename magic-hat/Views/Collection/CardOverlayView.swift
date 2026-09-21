@@ -132,7 +132,6 @@ private struct InfoPanel: View {
             HStack(spacing: 6) {
                 chip(item.language.uppercased())
                 chip(item.condition.replacingOccurrences(of: "_", with: " ").capitalized)
-                if !item.binderName.isEmpty { chip(item.binderName, icon: "books.vertical") }
             }
 
             if let added = item.addedDate {

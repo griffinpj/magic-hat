@@ -28,7 +28,6 @@ struct CardItem: Identifiable, Hashable, Sendable {
     let finish: CardFinish
     let condition: String
     let language: String
-    let binderName: String
     let addedDate: Date?
     let owned: Bool
 
@@ -87,7 +86,6 @@ extension CardItem {
         self.finish = entry.finish
         self.condition = entry.condition
         self.language = entry.language
-        self.binderName = entry.binderName
         self.addedDate = entry.addedDate
         self.owned = true
         self.imageURL = meta?.imageNormalURL
@@ -121,7 +119,6 @@ extension CardItem {
         self.finish = .normal
         self.condition = "near_mint"
         self.language = "en"
-        self.binderName = ""
         self.addedDate = nil
         self.owned = owned
         self.imageURL = card.bestImageURIs?.normal

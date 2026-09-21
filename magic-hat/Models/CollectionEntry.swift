@@ -2,10 +2,11 @@
 //  CollectionEntry.swift
 //  magic-hat
 //
-//  One row of owned copies: a specific card in a specific binder with a
-//  specific finish/condition. Mirrors a ManaBox CSV row. Fields from the
-//  CSV are denormalized here so the collection is browsable before any
-//  Scryfall hydration happens.
+//  One row of owned copies: a specific card, in a specific collection, with a
+//  specific finish/condition. Mirrors a ManaBox CSV row minus its binder —
+//  the collection IS the binder here, so the source binder is used only to
+//  choose which rows to import and is not kept. Fields from the CSV are
+//  denormalized so the collection is browsable before any Scryfall hydration.
 //
 
 import Foundation
@@ -41,9 +42,6 @@ final class CollectionEntry {
     /// migrates into a single collection.
     var collectionName: String = "My Collection"
 
-    var binderName: String
-    var binderType: String
-
     // Denormalized identity from the CSV (usable before hydration).
     var name: String
     var setCode: String
@@ -66,18 +64,23 @@ final class CollectionEntry {
         set { finishRaw = newValue.rawValue }
     }
 
-    /// Stable key for merge/upsert: same card + collection + binder + finish
-    /// + condition.
+    /// Stable key for merge/upsert: same card + collection + finish +
+    /// condition. Deliberately no binder — two copies of the same printing
+    /// are the same row no matter which binder in the file they came from.
     var mergeKey: String {
-        "\(scryfallID)|\(collectionName)|\(binderName)|\(finishRaw)|\(condition)"
+        Self.mergeKey(scryfallID: scryfallID, collectionName: collectionName,
+                      finish: finishRaw, condition: condition)
+    }
+
+    static func mergeKey(scryfallID: String, collectionName: String,
+                         finish: String, condition: String) -> String {
+        "\(scryfallID)|\(collectionName)|\(finish)|\(condition)"
     }
 
     init(
         id: UUID = UUID(),
         scryfallID: String,
         collectionName: String,
-        binderName: String,
-        binderType: String = "binder",
         name: String = "",
         setCode: String = "",
         setName: String = "",
@@ -95,8 +98,6 @@ final class CollectionEntry {
         self.id = id
         self.scryfallID = scryfallID
         self.collectionName = collectionName
-        self.binderName = binderName
-        self.binderType = binderType
         self.name = name
         self.setCode = setCode
         self.setName = setName

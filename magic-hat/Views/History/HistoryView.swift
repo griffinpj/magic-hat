@@ -16,7 +16,9 @@ private struct ActionGroup: Identifiable {
     let timestamp: Date
     let added: Int
     let removed: Int
-    let binders: [String]
+    /// Collections touched by the action. Older records also carry a source
+    /// binder name; it is folded in here so pre-migration history still reads.
+    let scopes: [String]
     let action: AuditAction
     var id: UUID { actionID }
 }
@@ -29,13 +31,14 @@ struct HistoryView: View {
         return grouped.values.map { recs -> ActionGroup in
             let added = recs.filter { $0.quantityDelta > 0 }.reduce(0) { $0 + $1.quantityDelta }
             let removed = recs.filter { $0.quantityDelta < 0 }.reduce(0) { $0 + $1.quantityDelta }
-            let binders = Set(recs.map(\.binderName)).sorted()
+            var scopes = Set(recs.map(\.collectionName))
+            scopes.formUnion(recs.map(\.binderName).filter { !$0.isEmpty })
             return ActionGroup(
                 actionID: recs[0].actionID,
                 timestamp: recs.map(\.timestamp).max() ?? .distantPast,
                 added: added,
                 removed: -removed,
-                binders: binders,
+                scopes: scopes.sorted(),
                 action: recs[0].action
             )
         }
@@ -81,7 +84,7 @@ private struct HistoryRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).font(.body.weight(.medium))
-                Text(group.binders.joined(separator: ", "))
+                Text(group.scopes.joined(separator: ", "))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

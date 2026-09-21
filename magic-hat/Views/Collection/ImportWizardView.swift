@@ -3,9 +3,10 @@
 //  magic-hat
 //
 //  Second half of the import flow: given already-parsed ManaBox rows, choose
-//  a destination collection (new or existing) and which binders to import,
-//  then apply via ImportController (which records the change in the audit
-//  ledger). File picking/parsing happens in CollectionsView before this opens.
+//  a destination collection (new or existing) and which of the file's binders
+//  to take cards from, then apply via ImportController. The binders are only
+//  a way to pick rows — everything selected lands in one collection with no
+//  grouping inside it. File picking/parsing happens in CollectionsView.
 //
 
 import SwiftUI
@@ -176,21 +177,21 @@ struct ImportWizardView: View {
 
         if destination == .existing {
             Section {
-                Picker("For selected binders", selection: $mode) {
-                    Text("Add to binder").tag(ImportMode.add)
-                    Text("Replace binder").tag(ImportMode.replace)
+                Picker("Existing cards", selection: $mode) {
+                    Text("Add to collection").tag(ImportMode.add)
+                    Text("Replace collection").tag(ImportMode.replace)
                 }
                 .pickerStyle(.segmented)
             } footer: {
                 Text(mode == .add
-                     ? "New copies merge into matching binders; quantities add up."
-                     : "Selected binders in this collection are cleared, then filled from the file.")
+                     ? "Imported cards merge into the collection; matching copies add up."
+                     : "Everything in the collection is removed first, then replaced with the imported cards.")
             }
         }
     }
 
     private var bindersSection: some View {
-        Section("Binders (\(rows.count) rows)") {
+        Section {
             ForEach(binderCounts, id: \.name) { binder in
                 Button {
                     toggle(binder.name)
@@ -207,6 +208,10 @@ struct ImportWizardView: View {
                     }
                 }
             }
+        } header: {
+            Text("Take cards from")
+        } footer: {
+            Text("Binders in the file. Everything you tick goes into the one collection above — the binder split isn't kept.")
         }
     }
 
@@ -216,7 +221,7 @@ struct ImportWizardView: View {
         } description: {
             Text("“\(summary.collectionName)” — added \(summary.added) copies"
                  + (summary.removed > 0 ? ", removed \(summary.removed)." : ".")
-                 + "\nBinders: \(summary.binders.joined(separator: ", "))")
+                 + "\nFrom: \(summary.sourceBinders.joined(separator: ", "))")
         } actions: {
             Button("Done") { dismiss() }
                 .buttonStyle(.borderedProminent)
