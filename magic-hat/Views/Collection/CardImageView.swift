@@ -21,7 +21,7 @@ struct CardImageView: View {
     /// Holographic sheen for foil printings (see FoilSheen).
     var foil: Bool = false
     var foilAnimated: Bool = false
-    var foilIntensity: Double = 0.22
+    var foilIntensity: Double = 0.32
 
     @Environment(\.displayScale) private var displayScale
 
