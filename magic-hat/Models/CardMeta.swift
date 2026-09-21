@@ -49,6 +49,15 @@ final class CardMeta {
     /// the (immutable) card metadata.
     var pricesUpdatedAt: Date?
 
+    /// Format legality, e.g. ["commander": "legal"]. Scryfall returns this in
+    /// the same batch response we already make, so it costs nothing extra.
+    var legalities: [String: String]?
+    var edhrecRank: Int?
+    /// TCGplayer's product id — the join key for real LOW/MID pricing later,
+    /// handed to us by Scryfall so no UUID mapping is needed.
+    var tcgplayerID: Int?
+    var purchaseURIs: [String: String]?
+
     /// Pixel dimensions of the `normal` image so tiles match the true
     /// aspect ratio (most cards are 488x680; battle/planar are landscape).
     var imageWidth: Int

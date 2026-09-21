@@ -58,6 +58,7 @@ struct CardDetailView: View {
             VStack(spacing: 0) {
                 hero
                 gameplay
+                legalityStrip
                 tabBar
                 if selectedTab == .versions { versionsSection } else { rulingSection }
             }
@@ -67,6 +68,7 @@ struct CardDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadPrintings() }
         .onChange(of: ownedEntries, initial: true) { _, _ in rebuildOwned() }
+        .onChange(of: filterText) { _, _ in rebuildGroups() }
         .overlay {
             if let index = overlayIndex, printingItems.indices.contains(index) {
                 CardOverlayView(
@@ -140,6 +142,37 @@ struct CardDetailView: View {
         }
     }
 
+    /// Format legality and EDHREC rank — both already present in the Scryfall
+    /// response we fetch, so they cost no extra request.
+    @ViewBuilder private var legalityStrip: some View {
+        let formats = item.legalFormats
+        if !formats.isEmpty || item.edhrecRank != nil {
+            VStack(alignment: .leading, spacing: 8) {
+                if !formats.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(formats, id: \.self) { format in
+                                Text(format.capitalized)
+                                    .font(.caption2.weight(.semibold))
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .background(Color.green.opacity(0.18), in: Capsule())
+                                    .foregroundStyle(.green)
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                }
+                if let rank = item.edhrecRank {
+                    Text("EDHREC rank #\(rank)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+        }
+    }
+
     // MARK: Versions / Ruling tabs
 
     private var tabBar: some View {
@@ -180,13 +213,25 @@ struct CardDetailView: View {
 
     // MARK: Versions (printings)
 
-    private var filteredGroups: [(set: String, code: String, cards: [ScryfallCard])] {
+    /// Cached rather than computed: this filtered, grouped and sorted every
+    /// printing on each body pass — including on every keystroke in the filter
+    /// field and on unrelated state changes.
+    @State private var filteredGroups: [PrintingGroup] = []
+
+    struct PrintingGroup: Identifiable {
+        let setName: String
+        let code: String
+        let cards: [ScryfallCard]
+        var id: String { setName }
+    }
+
+    private func rebuildGroups() {
         let filtered = filterText.isEmpty ? printings : printings.filter {
             $0.setName.localizedCaseInsensitiveContains(filterText)
                 || $0.set.localizedCaseInsensitiveContains(filterText)
         }
-        let grouped = Dictionary(grouping: filtered) { $0.setName }
-        return grouped.map { (set: $0.key, code: $0.value.first?.set.uppercased() ?? "", cards: $0.value) }
+        filteredGroups = Dictionary(grouping: filtered) { $0.setName }
+            .map { PrintingGroup(setName: $0.key, code: $0.value.first?.set.uppercased() ?? "", cards: $0.value) }
             .sorted { ($0.cards.first?.releasedAt ?? "") > ($1.cards.first?.releasedAt ?? "") }
     }
 
@@ -213,7 +258,7 @@ struct CardDetailView: View {
                 Text(loadError).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding()
             } else {
-                ForEach(filteredGroups, id: \.set) { group in
+                ForEach(filteredGroups) { group in
                     setGroup(group)
                 }
             }
@@ -221,11 +266,11 @@ struct CardDetailView: View {
         .padding(.bottom, 24)
     }
 
-    private func setGroup(_ group: (set: String, code: String, cards: [ScryfallCard])) -> some View {
+    private func setGroup(_ group: PrintingGroup) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 SetSymbolView(setCode: group.code, size: 22, tint: .primary)
-                Text(group.set).font(.headline)
+                Text(group.setName).font(.headline)
                 Text("(\(group.code))").font(.subheadline).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
@@ -260,6 +305,7 @@ struct CardDetailView: View {
             guard !oracle.isEmpty else { loadError = "No printings found."; return }
             printings = try await PrintingsCache.shared.printings(oracleID: oracle)
             rebuildPrintingItems()
+            rebuildGroups()
         } catch {
             loadError = error.localizedDescription
         }

@@ -9,7 +9,7 @@
 import Foundation
 
 /// Scryfall image URLs for a single card face.
-struct ScryfallImageURIs: Decodable {
+struct ScryfallImageURIs: Codable {
     let small: String?
     let normal: String?
     let large: String?
@@ -25,7 +25,7 @@ struct ScryfallImageURIs: Decodable {
 }
 
 /// One face of a (possibly multi-faced) card.
-struct ScryfallCardFace: Decodable {
+struct ScryfallCardFace: Codable {
     let name: String?
     let typeLine: String?
     let manaCost: String?
@@ -45,7 +45,7 @@ struct ScryfallCardFace: Decodable {
 
 /// Scryfall market prices (USD). Low/mid tiers aren't provided by Scryfall —
 /// those come from TCGplayer and are mocked in the UI.
-struct ScryfallPrices: Decodable {
+struct ScryfallPrices: Codable {
     let usd: String?
     let usdFoil: String?
     let usdEtched: String?
@@ -58,7 +58,7 @@ struct ScryfallPrices: Decodable {
 }
 
 /// A Scryfall card object (subset of fields).
-struct ScryfallCard: Decodable, Identifiable {
+struct ScryfallCard: Codable, Identifiable {
     let id: String
     let oracleID: String?
     let name: String
@@ -73,12 +73,16 @@ struct ScryfallCard: Decodable, Identifiable {
     let power: String?
     let toughness: String?
     let releasedAt: String?
+    let legalities: [String: String]?
+    let edhrecRank: Int?
+    let tcgplayerID: Int?
+    let purchaseURIs: [String: String]?
     let imageURIs: ScryfallImageURIs?
     let cardFaces: [ScryfallCardFace]?
     let prices: ScryfallPrices?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, set, rarity, layout, power, toughness, prices
+        case id, name, set, rarity, layout, power, toughness, prices, legalities
         case oracleID = "oracle_id"
         case setName = "set_name"
         case collectorNumber = "collector_number"
@@ -86,6 +90,9 @@ struct ScryfallCard: Decodable, Identifiable {
         case manaCost = "mana_cost"
         case oracleText = "oracle_text"
         case releasedAt = "released_at"
+        case edhrecRank = "edhrec_rank"
+        case tcgplayerID = "tcgplayer_id"
+        case purchaseURIs = "purchase_uris"
         case imageURIs = "image_uris"
         case cardFaces = "card_faces"
     }

@@ -30,6 +30,10 @@ final class CardHydrationController {
     private var hydrated: Set<String> = []
 
     /// Progress of a full-collection sync (see `hydrateAll`).
+    /// Bumped whenever metadata is written. Views observe this to rebuild,
+    /// instead of holding a second unbounded @Query over every CardMeta row.
+    private(set) var revision = 0
+
     private(set) var isSyncing = false
     private(set) var syncedCount = 0
     private(set) var syncTotal = 0
@@ -193,6 +197,10 @@ final class CardHydrationController {
             meta.priceUSD = card.prices?.usd.flatMap(Double.init)
             meta.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
             meta.pricesUpdatedAt = Date()
+            meta.legalities = card.legalities
+            meta.edhrecRank = card.edhrecRank
+            meta.tcgplayerID = card.tcgplayerID
+            meta.purchaseURIs = card.purchaseURIs
             let uris = card.bestImageURIs
             meta.imageSmallURL = uris?.small
             meta.imageNormalURL = uris?.normal
@@ -210,7 +218,23 @@ final class CardHydrationController {
             meta.fetchState = .fetched
             meta.lastFetched = Date()
         }
+
+        link(metaByID: byID, context: context)
         try? context.save()
+        revision &+= 1
+    }
+
+    /// Points entries at their CardMeta. Also backfills rows imported before
+    /// the relationship existed, as the sync walks the collection.
+    private func link(metaByID: [String: CardMeta], context: ModelContext) {
+        let ids = Array(metaByID.keys)
+        let descriptor = FetchDescriptor<CollectionEntry>(
+            predicate: #Predicate { ids.contains($0.scryfallID) }
+        )
+        guard let entries = try? context.fetch(descriptor) else { return }
+        for entry in entries where entry.card == nil {
+            entry.card = metaByID[entry.scryfallID]
+        }
     }
 
     private func markFailed(_ ids: Set<String>, context: ModelContext) {
