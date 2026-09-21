@@ -14,7 +14,7 @@ import SwiftUI
 struct FoilSheen: ViewModifier {
     var active: Bool
     var animated: Bool = false
-    var intensity: Float = 0.32
+    var intensity: Float = 0.16
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
