@@ -183,40 +183,7 @@ final class CardHydrationController {
                 return m
             }()
 
-            meta.name = card.name
-            meta.setCode = card.set
-            meta.setName = card.setName
-            meta.collectorNumber = card.collectorNumber
-            meta.rarity = card.rarity
-            meta.oracleID = card.oracleID
-            meta.typeLine = card.bestTypeLine
-            meta.manaCost = card.bestManaCost
-            meta.oracleText = card.bestOracleText
-            meta.power = card.power
-            meta.toughness = card.toughness
-            meta.priceUSD = card.prices?.usd.flatMap(Double.init)
-            meta.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
-            meta.pricesUpdatedAt = Date()
-            meta.legalities = card.legalities
-            meta.edhrecRank = card.edhrecRank
-            meta.tcgplayerID = card.tcgplayerID
-            meta.purchaseURIs = card.purchaseURIs
-            let uris = card.bestImageURIs
-            meta.imageSmallURL = uris?.small
-            meta.imageNormalURL = uris?.normal
-            meta.imageLargeURL = uris?.large
-            meta.artCropURL = uris?.artCrop
-            // Scryfall doesn't return pixel dims; use known constants per
-            // orientation so tiles get the right aspect ratio.
-            if card.isLandscape {
-                meta.imageWidth = 680
-                meta.imageHeight = 488
-            } else {
-                meta.imageWidth = 488
-                meta.imageHeight = 680
-            }
-            meta.fetchState = .fetched
-            meta.lastFetched = Date()
+            meta.apply(card)
         }
 
         link(metaByID: byID, context: context)

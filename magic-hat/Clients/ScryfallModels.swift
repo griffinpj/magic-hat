@@ -9,7 +9,7 @@
 import Foundation
 
 /// Scryfall image URLs for a single card face.
-struct ScryfallImageURIs: Codable {
+nonisolated struct ScryfallImageURIs: Codable, Sendable {
     let small: String?
     let normal: String?
     let large: String?
@@ -25,7 +25,7 @@ struct ScryfallImageURIs: Codable {
 }
 
 /// One face of a (possibly multi-faced) card.
-struct ScryfallCardFace: Codable {
+nonisolated struct ScryfallCardFace: Codable, Sendable {
     let name: String?
     let typeLine: String?
     let manaCost: String?
@@ -45,7 +45,7 @@ struct ScryfallCardFace: Codable {
 
 /// Scryfall market prices (USD). Low/mid tiers aren't provided by Scryfall —
 /// those come from TCGplayer and are mocked in the UI.
-struct ScryfallPrices: Codable {
+nonisolated struct ScryfallPrices: Codable, Sendable {
     let usd: String?
     let usdFoil: String?
     let usdEtched: String?
@@ -58,7 +58,7 @@ struct ScryfallPrices: Codable {
 }
 
 /// A Scryfall card object (subset of fields).
-struct ScryfallCard: Codable, Identifiable {
+nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     let id: String
     let oracleID: String?
     let name: String
@@ -126,7 +126,7 @@ struct ScryfallCard: Codable, Identifiable {
 }
 
 /// A Scryfall set object (subset). `iconSVGURI` is an SVG (no raster form).
-struct ScryfallSet: Decodable {
+nonisolated struct ScryfallSet: Decodable {
     let code: String
     let name: String?
     let iconSVGURI: String?
@@ -138,7 +138,7 @@ struct ScryfallSet: Decodable {
 }
 
 /// Response wrapper for GET /cards/search (paginated list).
-struct ScryfallListResponse: Decodable {
+nonisolated struct ScryfallListResponse: Decodable {
     let data: [ScryfallCard]
     let hasMore: Bool?
     let nextPage: String?
@@ -151,7 +151,7 @@ struct ScryfallListResponse: Decodable {
 }
 
 /// Response wrapper for POST /cards/collection.
-struct ScryfallCollectionResponse: Decodable {
+nonisolated struct ScryfallCollectionResponse: Decodable {
     let data: [ScryfallCard]
     let notFound: [ScryfallCardIdentifier]?
 

@@ -19,6 +19,7 @@ struct CardDetailView: View {
     let item: CardItem
 
     @Query private var ownedEntries: [CollectionEntry]
+    @Query private var allRulings: [CardRuling]
 
     @State private var printings: [ScryfallCard] = []
     @State private var isLoading = false
@@ -51,6 +52,14 @@ struct CardDetailView: View {
         var d = FetchDescriptor<CollectionEntry>()
         d.propertiesToFetch = [\.scryfallID]
         _ownedEntries = Query(d)
+
+        // Scoped to this card's oracle id so we never load the whole ruling
+        // table just to show a handful of lines.
+        let oracle = item.oracleID ?? ""
+        _allRulings = Query(
+            filter: #Predicate<CardRuling> { $0.oracleID == oracle },
+            sort: \CardRuling.publishedAt
+        )
     }
 
 
@@ -203,13 +212,43 @@ struct CardDetailView: View {
         .overlay(Capsule().stroke(.tint, lineWidth: selectedTab == tab ? 0 : 1.5))
     }
 
-    private var rulingSection: some View {
-        ContentUnavailableView(
-            "Rulings Coming Soon",
-            systemImage: "text.book.closed",
-            description: Text("Official rulings will appear here.")
-        )
-        .padding(.top, 40)
+    /// Rulings come from the bulk `rulings` file, ingested at launch, so this
+    /// works offline and costs no request.
+    @ViewBuilder private var rulingSection: some View {
+        let rulings = matchingRulings
+        if rulings.isEmpty {
+            ContentUnavailableView(
+                "No Rulings",
+                systemImage: "text.book.closed",
+                description: Text(allRulings.isEmpty
+                                  ? "Rulings arrive with the card catalog."
+                                  : "This card has no official rulings.")
+            )
+            .padding(.top, 40)
+        } else {
+            VStack(alignment: .leading, spacing: 14) {
+                ForEach(rulings) { ruling in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(ruling.comment)
+                            .font(.callout)
+                        Text("\(ruling.source.capitalized) · \(ruling.publishedAt)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private var matchingRulings: [CardRuling] {
+        guard let oracleID = item.oracleID else { return [] }
+        return allRulings
+            .filter { $0.oracleID == oracleID }
+            .sorted { $0.publishedAt < $1.publishedAt }
     }
 
     // MARK: Versions (printings)

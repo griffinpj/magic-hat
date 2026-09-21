@@ -163,19 +163,29 @@ download does not affect image storage — images keep streaming lazily into the
 existing disk cache. Lines also carry `prices`, so a catalog refresh doubles
 as a price refresh.
 
-Not yet implemented. The shape it should take:
-1. `GET /bulk-data`, compare `updated_at` with the stored value; skip if same.
-2. Stream `URLSession.bytes`, inflate with the `Compression` framework
-   (the file is `.gz`, served without `Content-Encoding`, so Foundation will
-   not decompress it for us — strip the gzip header and raw-inflate).
-3. Decode one line at a time, upsert `CardMeta` in batches of ~500 with
-   `Task.yield()`, showing determinate progress against `compressed_size`.
+Implemented by `CatalogSyncController`, which ingests `default_cards` (every
+English printing) and `rulings` (always — it is small and it makes the detail
+screen's Rulings tab work offline):
 
-`oracle_cards` (25MB) is the right first target: it powers the empty Search
-tab, at a third the size. It holds one printing per oracle id, so it does NOT
-cover the specific printings a collection references — owned cards keep using
-batched `/cards/collection`. It should be **opt-in and Wi-Fi-preferred**, not
-an automatic first-launch download.
+1. `GET /bulk-data`; each dataset's `updated_at` is compared with the stored
+   value, so nothing downloads unless it actually changed.
+2. A real `URLSessionDownloadTask` (bytes land in a file, not memory) with
+   delegate progress. `allowsExpensiveNetworkAccess` and
+   `allowsConstrainedNetworkAccess` are false and `waitsForConnectivity` is
+   true, so a ~79MB catalog waits for Wi-Fi rather than spending cellular.
+3. `GzipLineReader` pulls the file a line at a time. It is hand-rolled because
+   Foundation only gunzips when the server sends `Content-Encoding: gzip`
+   (these are files whose content is gzip), and Compression speaks raw DEFLATE,
+   so the gzip header is parsed and skipped by hand.
+4. Parsing runs on a detached task; each decoded batch is awaited onto the main
+   actor to be written. SwiftData models are main-actor-bound here, so this
+   keeps JSON off the main thread while writes stay where they must be — and
+   awaiting each batch throttles the reader, so memory stays flat.
+
+`CatalogSyncBar` narrates it above whichever tab is showing. Two things that
+matter for scrolling: the bar observes the controller itself (reading `phase`
+from `MainTabView` would re-render every tab on each batch), and ingest
+progress is reported once per ~10 batches rather than per batch.
 
 MTGJSON **set files carry no prices** (verified) — only `identifiers`,
 `legalities`, `foreignData`, `purchaseUrls` and similar. Prices live solely in

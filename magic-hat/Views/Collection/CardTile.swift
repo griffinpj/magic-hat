@@ -2,16 +2,17 @@
 //  CardTile.swift
 //  magic-hat
 //
-//  One card in the reusable grid: the art, a couple of badges on it, and a
-//  compact caption underneath (set symbol, set code + collector number, and
-//  the change in value since it was bought).
+//  One card in the reusable grid: just the art, with three small badges on
+//  it — quantity top-left, set and collector number bottom-left, market price
+//  bottom-right tinted by how it has moved since purchase. No caption beneath,
+//  so the grid stays a wall of card art.
 //
-//  On Liquid Glass: Apple's guidance is that glass belongs to the interactive
-//  and navigation layer, not to content — so the floating sort button and the
-//  overlay's action bar use it, while these badges use plain translucent
-//  capsules. That reading also happens to be what keeps scrolling smooth: a
-//  glass (or material) badge is a blur pass, and there are six of them per
-//  row. The tile earns its look from typography and spacing instead.
+//  Badges are plain translucent capsules rather than glass or material. Glass
+//  belongs to the interactive layer (the floating sort button, the overlay's
+//  action bar); a blur per badge would be six blur passes per row, which is
+//  exactly what made this grid stutter before. Deliberately no SetSymbolView
+//  here either: each distinct set spawns a WKWebView rasterization, and the
+//  grid can show dozens of sets in a single scroll.
 //
 //  Driven by the value-type CardItem so it is cheaply Equatable — applied
 //  with `.equatable()` at the call site, unchanged tiles skip re-rendering.
@@ -32,53 +33,72 @@ struct CardTile: View, Equatable {
             && lhs.item.purchasePrice == rhs.item.purchasePrice
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio)
-                .overlay(alignment: .bottomLeading) { quantityBadge }
-                .overlay(alignment: .bottomTrailing) { priceBadge }
-                .overlay(alignment: .topLeading) { placeholderName }
-                .opacity(item.owned ? 1 : 0.55)
-
-            caption
-        }
+    /// Green when it has gained, red when it has lost, white when flat or
+    /// when we have nothing to compare against.
+    private var priceColor: Color {
+        guard let change = item.gainLoss, change.amount != 0 else { return .white }
+        return change.amount > 0 ? .green : .red
     }
 
-    // MARK: On the art
+    var body: some View {
+        CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio)
+            .overlay(alignment: .topLeading) { quantityBadge }
+            .overlay(alignment: .bottomLeading) { setBadge }
+            .overlay(alignment: .bottomTrailing) { priceBadge }
+            .overlay(alignment: .topTrailing) { foilBadge }
+            .overlay(alignment: .center) { placeholderName }
+            .opacity(item.owned ? 1 : 0.55)
+    }
 
     private var quantityBadge: some View {
         Text("\(item.quantity)")
             .font(.caption2.weight(.bold))
             .monospacedDigit()
             .foregroundStyle(.white)
-            .frame(minWidth: 16)
+            .frame(minWidth: 15)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(Color.black.opacity(0.62), in: Capsule())
             .padding(5)
     }
 
+    @ViewBuilder private var foilBadge: some View {
+        if item.finish != .normal {
+            Text("F")
+                .font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(.black)
+                .frame(width: 14, height: 14)
+                .background(Color.orange, in: Circle())
+                .padding(5)
+        }
+    }
+
+    private var setBadge: some View {
+        HStack(spacing: 3) {
+            Text(item.setCode.uppercased())
+                .fontWeight(.semibold)
+            Text("#\(item.collectorNumber)")
+                .foregroundStyle(.white.opacity(0.72))
+        }
+        .font(.caption2)
+        .foregroundStyle(.white)
+        .lineLimit(1)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(Color.black.opacity(0.62), in: Capsule())
+        .padding(5)
+    }
+
     @ViewBuilder private var priceBadge: some View {
-        if item.marketPrice != nil || item.finish != .normal {
-            HStack(spacing: 3) {
-                if item.finish != .normal {
-                    Text("F")
-                        .font(.system(size: 9, weight: .heavy))
-                        .foregroundStyle(.black)
-                        .frame(width: 13, height: 13)
-                        .background(Color.orange, in: Circle())
-                }
-                if let price = item.marketPrice {
-                    Text(PriceFormat.compact(price))
-                        .font(.caption2.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.white)
-                }
-            }
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(Color.black.opacity(0.62), in: Capsule())
-            .padding(5)
+        if let price = item.marketPrice {
+            Text(PriceFormat.compact(price))
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(priceColor)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.black.opacity(0.62), in: Capsule())
+                .padding(5)
         }
     }
 
@@ -87,33 +107,8 @@ struct CardTile: View, Equatable {
             Text(item.name)
                 .font(.caption2)
                 .lineLimit(3)
-                .multilineTextAlignment(.leading)
+                .multilineTextAlignment(.center)
                 .padding(8)
         }
-    }
-
-    // MARK: Under the art
-
-    private var caption: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 3) {
-                SetSymbolView(setCode: item.setCode, size: 12, tint: .secondary)
-                Text(item.setCode.uppercased())
-                    .font(.caption2.weight(.semibold))
-                Text("#\(item.collectorNumber)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .lineLimit(1)
-
-            if let change = item.gainLoss {
-                Text(PriceFormat.change(change.amount, change.percent))
-                    .font(.caption2.weight(.medium))
-                    .monospacedDigit()
-                    .foregroundStyle(change.amount >= 0 ? .green : .red)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 2)
     }
 }
