@@ -86,7 +86,9 @@ struct CardOverlayView: View {
             // Consume taps on the card so only the backdrop closes the overlay.
             .onTapGesture {}
         }
-        .frame(height: UIScreen.main.bounds.height * 0.5)
+        // Sized against the container, not UIScreen: correct on rotation,
+        // iPad and multitasking.
+        .containerRelativeFrame(.vertical) { height, _ in height * 0.52 }
     }
 }
 

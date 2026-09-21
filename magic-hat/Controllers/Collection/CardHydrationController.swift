@@ -21,6 +21,48 @@ final class CardHydrationController {
     /// circuit without a SwiftData fetch on the main thread.
     private var hydrated: Set<String> = []
 
+    /// Progress of a full-collection sync (see `hydrateAll`).
+    private(set) var isSyncing = false
+    private(set) var syncedCount = 0
+    private(set) var syncTotal = 0
+    var syncFraction: Double {
+        syncTotal > 0 ? Double(syncedCount) / Double(syncTotal) : 0
+    }
+
+    /// Hydrates metadata for EVERY id in the collection, in batches of 75.
+    ///
+    /// Viewport-only hydration left most cards without a price or rarity, so
+    /// sorting by those keys operated on mostly-empty data. Fetching the whole
+    /// collection once (then cached in SwiftData forever) makes every sort
+    /// correct and makes collection value computable. Applies per chunk so the
+    /// grid fills in progressively.
+    func hydrateAll(scryfallIDs: [String], context: ModelContext) async {
+        guard !isSyncing else { return }
+        let all = Set(scryfallIDs).subtracting(hydrated)
+        guard !all.isEmpty else { return }
+
+        let needed = neededIDs(from: all, context: context)
+        hydrated.formUnion(all.subtracting(needed))
+        guard !needed.isEmpty else { return }
+
+        isSyncing = true
+        syncTotal = needed.count
+        syncedCount = 0
+        defer { isSyncing = false }
+
+        for chunk in Array(needed).chunked(into: ScryfallClient.collectionBatchSize) {
+            if Task.isCancelled { return }
+            do {
+                let response = try await client.collection(ids: chunk)
+                apply(cards: response.data, context: context)
+                hydrated.formUnion(chunk)
+            } catch {
+                markFailed(Set(chunk), context: context)
+            }
+            syncedCount += chunk.count
+        }
+    }
+
     /// Hydrates any of `scryfallIDs` whose CardMeta is still pending/failed.
     /// Safe to call on every tile's onAppear; already-known and in-flight IDs
     /// are skipped with pure set math (no DB query).

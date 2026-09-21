@@ -42,6 +42,7 @@ struct CollectionCardsView: View {
     @State private var hydrator = CardHydrationController()
     @State private var items: [CardItem] = []
     @State private var sort: CardSort = .name
+    @State private var didStartSync = false
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
@@ -73,23 +74,59 @@ struct CollectionCardsView: View {
         }
     }
 
+    /// Rarity ordering, low → high. Unknown rarity sorts lowest.
+    private static let rarityRank = [
+        "common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 4, "bonus": 5
+    ]
+
+    /// Every comparator defines a TOTAL order (always falling through to name
+    /// then id). Swift's sort is not stable, so without a tie-breaker the
+    /// thousands of cards sharing a key — e.g. every card with no price yet —
+    /// came back in arbitrary, shuffling order.
     private static func sorted(_ items: [CardItem], by sort: CardSort) -> [CardItem] {
+        func byName(_ a: CardItem, _ b: CardItem) -> Bool {
+            let c = a.name.localizedCaseInsensitiveCompare(b.name)
+            if c != .orderedSame { return c == .orderedAscending }
+            return a.id < b.id
+        }
         switch sort {
         case .name:
-            return items.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            return items.sorted(by: byName)
         case .setCode:
             return items.sorted {
-                ($0.setCode, $0.name) < ($1.setCode, $1.name)
+                if $0.setCode != $1.setCode { return $0.setCode < $1.setCode }
+                let l = Int($0.collectorNumber) ?? Int.max
+                let r = Int($1.collectorNumber) ?? Int.max
+                if l != r { return l < r }
+                return byName($0, $1)
             }
         case .rarity:
-            let order = ["common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 4, "bonus": 5]
-            return items.sorted { (order[$0.rarity, default: -1], $0.name) > (order[$1.rarity, default: -1], $1.name) }
+            return items.sorted {
+                let l = rarityRank[$0.rarity.lowercased()] ?? -1
+                let r = rarityRank[$1.rarity.lowercased()] ?? -1
+                if l != r { return l > r }
+                return byName($0, $1)
+            }
         case .priceHigh:
-            return items.sorted { ($0.marketPrice ?? -1) > ($1.marketPrice ?? -1) }
+            return items.sorted {
+                // Unpriced sorts to the bottom, then alphabetically.
+                let l = $0.marketPrice ?? 0
+                let r = $1.marketPrice ?? 0
+                if l != r { return l > r }
+                return byName($0, $1)
+            }
         case .quantity:
-            return items.sorted { $0.quantity > $1.quantity }
+            return items.sorted {
+                if $0.quantity != $1.quantity { return $0.quantity > $1.quantity }
+                return byName($0, $1)
+            }
         case .recent:
-            return items.sorted { ($0.addedDate ?? .distantPast) > ($1.addedDate ?? .distantPast) }
+            return items.sorted {
+                let l = $0.addedDate ?? .distantPast
+                let r = $1.addedDate ?? .distantPast
+                if l != r { return l > r }
+                return byName($0, $1)
+            }
         }
     }
 
@@ -105,7 +142,12 @@ struct CollectionCardsView: View {
                 CardGridView(
                     items: items,
                     onAppearIndex: { prefetch(around: $0) },
-                    accessory: { sortButton }
+                    accessory: {
+                        VStack(alignment: .trailing, spacing: 10) {
+                            if hydrator.isSyncing { syncPill }
+                            sortButton
+                        }
+                    }
                 )
             }
         }
@@ -117,6 +159,32 @@ struct CollectionCardsView: View {
             items = Self.sorted(items, by: sort)
         }
         .task { prefetch(around: 0) }
+        // Fetch metadata for the WHOLE collection once, so sorting by price or
+        // rarity works on complete data rather than the handful of cards that
+        // happened to scroll past.
+        .task(id: entries.count) {
+            guard !didStartSync, !entries.isEmpty else { return }
+            didStartSync = true
+            await hydrator.hydrateAll(
+                scryfallIDs: entries.map(\.scryfallID),
+                context: modelContext
+            )
+            items = Self.sorted(items, by: sort)
+        }
+    }
+
+    // Progress while the full-collection metadata sync runs.
+    private var syncPill: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Syncing \(hydrator.syncedCount)/\(hydrator.syncTotal)")
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.trailing, 20)
     }
 
     // Floating Liquid Glass sort control; padded to sit above the tab bar.

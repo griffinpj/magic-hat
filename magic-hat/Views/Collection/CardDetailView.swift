@@ -29,9 +29,20 @@ struct CardDetailView: View {
 
     private enum Tab: Hashable { case versions, ruling }
 
-    /// All printings as overlay-ready items, marking the ones we own.
-    private var printingItems: [CardItem] {
-        printings.map { CardItem(scryfallCard: $0, owned: ownedIDs.contains($0.id)) }
+    /// Cached, not computed: these were rebuilt on every body pass (and the
+    /// owned Set once per printing row), which made the screen crawl.
+    @State private var ownedIDs: Set<String> = []
+    @State private var printingItems: [CardItem] = []
+
+    private func rebuildOwned() {
+        ownedIDs = Set(ownedEntries.map(\.scryfallID))
+        rebuildPrintingItems()
+    }
+
+    private func rebuildPrintingItems() {
+        printingItems = printings.map {
+            CardItem(scryfallCard: $0, owned: ownedIDs.contains($0.id))
+        }
     }
 
     init(item: CardItem) {
@@ -41,7 +52,6 @@ struct CardDetailView: View {
         _ownedEntries = Query(d)
     }
 
-    private var ownedIDs: Set<String> { Set(ownedEntries.map(\.scryfallID)) }
 
     var body: some View {
         ScrollView {
@@ -56,6 +66,7 @@ struct CardDetailView: View {
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadPrintings() }
+        .onChange(of: ownedEntries, initial: true) { _, _ in rebuildOwned() }
         .overlay {
             if let index = overlayIndex, printingItems.indices.contains(index) {
                 CardOverlayView(
@@ -248,6 +259,7 @@ struct CardDetailView: View {
             }
             guard !oracle.isEmpty else { loadError = "No printings found."; return }
             printings = try await ScryfallClient.shared.printings(oracleID: oracle)
+            rebuildPrintingItems()
         } catch {
             loadError = error.localizedDescription
         }
@@ -317,6 +329,7 @@ private struct PrintingRow: View {
 /// Fills its frame with card art (aspect-fill), decoded off-main.
 private struct CardArtImage: View {
     let urlString: String?
+    @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
 
     var body: some View {
@@ -336,7 +349,8 @@ private struct CardArtImage: View {
 
     private func load() async {
         guard let urlString, !urlString.isEmpty else { return }
-        let px = UIScreen.main.bounds.width * UIScreen.main.scale
+        // Hero is full-width; 1200px covers every phone at native scale.
+        let px = min(1200, 430 * displayScale)
         if let cached = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, px)) {
             image = cached; return
         }
