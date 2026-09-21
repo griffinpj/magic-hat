@@ -18,6 +18,7 @@ final class SetSymbolLoader {
     private var svgURLByCode: [String: String] = [:]
     private let imageCache = NSCache<NSString, UIImage>()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    private var failed: Set<String> = []
 
     /// Returns a white, transparent-background raster of the set symbol at
     /// `size` pixels, suitable for use as a `.template` image. Nil on failure.
@@ -25,6 +26,7 @@ final class SetSymbolLoader {
         let code = setCode.lowercased()
         let key = "\(code)|\(Int(size))"
         if let cached = imageCache.object(forKey: key as NSString) { return cached }
+        if failed.contains(key) { return nil }
         if let existing = inFlight[key] { return await existing.value }
 
         let task = Task { () -> UIImage? in
@@ -53,6 +55,7 @@ final class SetSymbolLoader {
         inFlight[key] = task
         let result = await task.value
         inFlight[key] = nil
+        if result == nil { failed.insert(key) }
         return result
     }
 }
@@ -87,13 +90,17 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
         self.completion = completion
         self.keepAlive = self
 
-        // Attach to the window (on-screen, but effectively invisible) so
-        // WebKit actually paints — offscreen web views snapshot blank.
-        if let window = SVGRasterizer.keyWindow {
-            webView.frame = CGRect(x: 0, y: 0, width: size, height: size)
-            webView.alpha = 0.02
-            window.addSubview(webView)
+        // WebKit only paints a web view that lives in a window, but an
+        // alpha-faded view snapshots faded (the old 0.02 alpha is why symbols
+        // came out invisible). Render at full alpha into a dedicated window
+        // sitting behind the app's own, so nothing is ever visible on screen.
+        guard let window = SVGRasterizer.hostWindow else {
+            finish(nil)
+            return
         }
+        webView.frame = CGRect(x: 0, y: 0, width: size, height: size)
+        webView.alpha = 1
+        window.addSubview(webView)
 
         let svg = String(data: svgData, encoding: .utf8) ?? ""
         let px = Int(size)
@@ -135,12 +142,22 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
         keepAlive = nil
     }
 
-    private static var keyWindow: UIWindow? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap { $0.windows }
-            .first { $0.isKeyWindow }
-    }
+    /// Offscreen-by-layering render host: a real window (so WebKit paints)
+    /// placed below the app's window, so the user never sees it.
+    private static var hostWindow: UIWindow? = {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+        else { return nil }
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .normal - 1
+        window.backgroundColor = .clear
+        window.isUserInteractionEnabled = false
+        window.frame = CGRect(x: 0, y: 0, width: 512, height: 512)
+        window.isHidden = false
+        return window
+    }()
 }
 
 /// SwiftUI view that shows a set symbol, tinted. Falls back to a system glyph
@@ -169,10 +186,7 @@ struct SetSymbolView: View {
         }
         .frame(width: size, height: size)
         .task(id: setCode) {
-            image = await SetSymbolLoader.shared.symbol(
-                setCode: setCode,
-                size: size * UIScreen.main.scale
-            )
+            image = await SetSymbolLoader.shared.symbol(setCode: setCode, size: size)
         }
     }
 }

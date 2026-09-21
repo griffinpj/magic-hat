@@ -23,14 +23,26 @@ nonisolated final class ImageMemoryCache: @unchecked Sendable {
     static let shared = ImageMemoryCache()
     private let cache = NSCache<NSString, UIImage>()
 
-    init() { cache.countLimit = 600 }
+    init() {
+        cache.countLimit = 400
+        // Bound by bytes too: an overlay-sized card decodes to several MB, so
+        // a count-only limit could hold hundreds of MB and thrash.
+        cache.totalCostLimit = 192 * 1024 * 1024
+    }
+
+    private static func cost(of image: UIImage) -> Int {
+        guard let cg = image.cgImage else { return 1 }
+        return cg.bytesPerRow * cg.height
+    }
 
     static func key(_ urlString: String, _ maxPixel: CGFloat) -> String {
         "\(urlString)|\(Int(maxPixel))"
     }
 
     func image(_ key: String) -> UIImage? { cache.object(forKey: key as NSString) }
-    func set(_ image: UIImage, _ key: String) { cache.setObject(image, forKey: key as NSString) }
+    func set(_ image: UIImage, _ key: String) {
+        cache.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
+    }
 }
 
 actor ImageLoader {

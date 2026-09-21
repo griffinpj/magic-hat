@@ -16,13 +16,15 @@ struct CardImageView: View {
     /// Longest-edge target in points; scaled to pixels for downsampling.
     var targetWidth: CGFloat = 150
 
+    @Environment(\.displayScale) private var displayScale
+
     @State private var image: UIImage?
     @State private var didFail = false
 
     private var maxPixel: CGFloat {
-        // 3-wide grid tile is ~130pt; scale to device pixels and round up so
-        // images stay crisp without decoding at full resolution.
-        targetWidth * UIScreen.main.scale
+        // 3-wide grid tile is ~130pt; scale to device pixels so images stay
+        // crisp without decoding at full resolution.
+        targetWidth * displayScale
     }
 
     var body: some View {
