@@ -63,6 +63,12 @@ enum TestSupport {
         return n
     }
 
+    /// Keep the returned container alive for the whole test. `mainContext`
+    /// does not retain it, and a context whose container has been freed
+    /// traps inside SwiftData on its first fetch — which, because the unit
+    /// tests share a process, takes every other running suite down with it.
+    /// So: `let container = try makeContainer(); let ctx = container.mainContext`,
+    /// never `makeContainer().mainContext`.
     @MainActor
     static func makeContainer() throws -> ModelContainer {
         let schema = Schema([
@@ -110,7 +116,7 @@ enum TestSupport {
             id: id, scryfallID: id, oracleID: nil, name: name, setCode: set,
             setName: set.uppercased(), collectorNumber: number, rarity: rarity,
             quantity: quantity, finish: finish, condition: "near_mint",
-            language: "en", addedDate: added, owned: true, imageURL: nil,
+            language: "en", addedDate: added, owned: true, collectionName: "Main", imageURL: nil,
             artCropURL: nil, aspectRatio: 488.0 / 680.0, typeLine: nil,
             manaCost: nil, oracleText: nil, power: nil, toughness: nil,
             priceUSD: price, priceUSDFoil: nil, purchasePrice: paid,

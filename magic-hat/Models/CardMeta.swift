@@ -21,6 +21,10 @@ nonisolated final class CardMeta {
     /// Scryfall UUID (e.g. "69b215fe-0d97-4ca1-9490-174220fd454b").
     @Attribute(.unique) var scryfallID: String
 
+    // No #Index on oracleID: it is Optional, and SwiftData traps at runtime
+    // when a compound/optional attribute is indexed (took the whole test
+    // process down). printingIDs(oracleID:) scans; it runs off-main.
+
     var name: String
     var setCode: String
     var setName: String

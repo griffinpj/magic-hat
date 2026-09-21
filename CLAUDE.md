@@ -318,6 +318,30 @@ overlay card; off under Reduce Motion. Building `.metal` files needs Xcode's
 Metal Toolchain component: `xcodebuild -downloadComponent MetalToolchain`
 (~700MB, installed here on 2026-09-20).
 
+## Adding, editing and removing cards
+
+`CollectionEditController.add / update / remove / createCollection`, all
+writing AuditRecords under one actionID and bumping the tracker. Identity is
+`mergeKey`, the same rule the import uses: adding a printing that matches an
+existing row raises its quantity; editing a row so its identity matches
+another row merges them. The collection can never hold two rows that mean
+the same thing.
+
+UI (`AddCardView`, from the overlay's middle action): one sheet holding a
+`NavigationStack` + `Form`. The printing picker and collection picker are
+*pushed*, searchable screens, not stacked sheets. Finish is a segmented
+picker, language/condition are menu pickers, quantity is a `Stepper`,
+purchase price is a currency `TextField` that defaults to Scryfall's market
+price for the chosen finish and follows finish/printing changes until the
+user types. New collection = native alert with a text field. Removal always
+confirms (`confirmationDialog`), and owned rows also support swipe actions.
+The sheet stays open after Add so several printings can go in; a success
+haptic marks each. `EditEntryView` reuses `EntryFormSections`.
+
+The overlay action bar: pencil = edit (owned only), middle = add (any card,
+including printings from the detail screen), trash = remove (owned only,
+confirms, then closes the overlay). Deck and mark actions remain stubs.
+
 ## Data flow notes
 
 - **Card metadata is fetched for the whole collection, not just what scrolls
