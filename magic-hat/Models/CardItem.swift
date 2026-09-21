@@ -63,6 +63,13 @@ struct CardItem: Identifiable, Hashable, Sendable {
     var marketPrice: Double? {
         finish == .normal ? priceUSD : (priceUSDFoil ?? priceUSD)
     }
+
+    /// Change in value against the price paid at import.
+    var gainLoss: (amount: Double, percent: Double)? {
+        guard let market = marketPrice, let paid = purchasePrice, paid > 0 else { return nil }
+        let diff = market - paid
+        return (diff, diff / paid * 100)
+    }
 }
 
 extension CardItem {
