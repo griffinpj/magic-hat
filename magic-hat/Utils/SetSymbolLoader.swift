@@ -39,8 +39,11 @@ final class SetSymbolLoader {
                 return nil
             }
 
-            guard let url = URL(string: svgURLString),
-                  let (data, _) = try? await URLSession.shared.data(from: url) else {
+            guard let url = URL(string: svgURLString) else { return nil }
+            var request = URLRequest(url: url)
+            request.setValue("MagicHat/1.0", forHTTPHeaderField: "User-Agent")
+            request.setValue("image/svg+xml,*/*", forHTTPHeaderField: "Accept")
+            guard let (data, _) = try? await URLSession.shared.data(for: request) else {
                 return nil
             }
             let image = await SVGRasterizer.rasterize(svgData: data, size: size)
@@ -84,9 +87,11 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
         self.completion = completion
         self.keepAlive = self
 
-        // Attach offscreen to a window so takeSnapshot renders reliably.
+        // Attach to the window (on-screen, but effectively invisible) so
+        // WebKit actually paints — offscreen web views snapshot blank.
         if let window = SVGRasterizer.keyWindow {
-            webView.frame = CGRect(x: -size - 20, y: 0, width: size, height: size)
+            webView.frame = CGRect(x: 0, y: 0, width: size, height: size)
+            webView.alpha = 0.02
             window.addSubview(webView)
         }
 

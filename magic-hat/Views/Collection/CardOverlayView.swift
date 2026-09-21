@@ -17,7 +17,6 @@ struct CardOverlayView: View {
     let onOpenDetail: (CardItem) -> Void
 
     @State private var currentID: String?
-    @State private var dragOffset: CGFloat = 0
 
     init(
         items: [CardItem],
@@ -39,11 +38,12 @@ struct CardOverlayView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            // Dimmed backdrop. Intentionally NOT tap-to-dismiss.
+        ZStack {
+            // Dimmed backdrop; tapping it closes the overlay.
             Color.black.opacity(0.6)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
+                .onTapGesture { onClose() }
 
             VStack(spacing: 16) {
                 Spacer(minLength: 0)
@@ -55,38 +55,7 @@ struct CardOverlayView: View {
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 24)
-            .offset(y: dragOffset)
-
-            closeButton
         }
-        .gesture(dismissDrag)
-    }
-
-    private var closeButton: some View {
-        Button(action: onClose) {
-            Image(systemName: "xmark")
-                .font(.system(size: 16, weight: .bold))
-                .frame(width: 36, height: 36)
-                .foregroundStyle(.primary)
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: Circle())
-        .padding(.trailing, 20)
-        .padding(.top, 8)
-    }
-
-    // Swipe down to dismiss; ignores mostly-horizontal drags (pager scrolls).
-    private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onChanged { v in
-                if v.translation.height > 0, abs(v.translation.height) > abs(v.translation.width) {
-                    dragOffset = v.translation.height
-                }
-            }
-            .onEnded { v in
-                if v.translation.height > 120 { onClose() }
-                else { withAnimation(.spring) { dragOffset = 0 } }
-            }
     }
 
     private var pager: some View {
