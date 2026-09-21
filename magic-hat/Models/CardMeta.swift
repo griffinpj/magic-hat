@@ -45,6 +45,9 @@ final class CardMeta {
     /// Scryfall (TCGplayer only) and are mocked in the UI.
     var priceUSD: Double?
     var priceUSDFoil: Double?
+    /// When prices were last refreshed, so they can go stale independently of
+    /// the (immutable) card metadata.
+    var pricesUpdatedAt: Date?
 
     /// Pixel dimensions of the `normal` image so tiles match the true
     /// aspect ratio (most cards are 488x680; battle/planar are landscape).

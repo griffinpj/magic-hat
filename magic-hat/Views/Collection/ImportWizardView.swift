@@ -222,6 +222,18 @@ struct ImportWizardView: View {
                     progress.fraction = fraction
                 }
                 summary = result
+                // Import is an attended action — carry straight on into
+                // fetching card metadata so the collection is browsable and
+                // sortable by the time the user opens it. Idempotent, so an
+                // interrupted run just resumes when the collection is opened.
+                Task {
+                    await CardHydrationController.shared.hydrateAll(
+                        scryfallIDs: rows
+                            .filter { selected.contains($0.binderName) }
+                            .map(\.scryfallID),
+                        context: modelContext
+                    )
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
