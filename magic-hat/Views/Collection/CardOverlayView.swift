@@ -83,6 +83,8 @@ struct CardOverlayView: View {
             .scrollPosition(id: $currentID)
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollIndicators(.hidden)
+            // Consume taps on the card so only the backdrop closes the overlay.
+            .onTapGesture {}
         }
         .frame(height: UIScreen.main.bounds.height * 0.5)
     }
@@ -174,7 +176,7 @@ private struct ActionBar: View {
     let onEye: () -> Void
 
     var body: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 10) {
             action("pencil") {}
             action("rectangle.stack.badge.plus") {}
             action("plus.rectangle.on.rectangle") {}
@@ -182,8 +184,8 @@ private struct ActionBar: View {
             action("checkmark.circle") {}
             action("trash") {}
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
         .glassEffect(.regular, in: Capsule())
     }
 
@@ -191,6 +193,8 @@ private struct ActionBar: View {
         Button(action: run) {
             Image(systemName: symbol)
                 .font(.system(size: 18, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
                 .foregroundStyle(prominent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)
