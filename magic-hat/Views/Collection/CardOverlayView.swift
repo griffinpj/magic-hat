@@ -148,7 +148,7 @@ struct CardOverlayView: View {
                             // Animated only for the card in the middle; neighbours
                             // stay static so the pager isn't redrawing three cards.
                             foilAnimated: isCurrent,
-                            foilIntensity: 0.42
+                            foilIntensity: 0.21
                         )
                         .frame(width: cardWidth)
                         .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
