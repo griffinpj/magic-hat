@@ -57,6 +57,61 @@ nonisolated struct MTGJSONIdentifiers: Decodable, Sendable {
     let mcmId: String?
 }
 
+// MARK: - Meta (113 bytes — cheap staleness check before any real download)
+
+nonisolated struct MTGJSONMetaResponse: Decodable, Sendable {
+    let data: MTGJSONMeta
+}
+
+nonisolated struct MTGJSONMeta: Decodable, Sendable {
+    let date: String
+    let version: String
+}
+
+// MARK: - Preconstructed decks
+
+/// Entry in `/api/v5/DeckList.json` (634KB for all 3,000+ precons).
+nonisolated struct MTGJSONDeckSummary: Decodable, Sendable, Identifiable, Hashable {
+    let code: String
+    let fileName: String
+    let name: String
+    let releaseDate: String?
+    let type: String?
+
+    var id: String { fileName }
+}
+
+nonisolated struct MTGJSONDeckListResponse: Decodable, Sendable {
+    let data: [MTGJSONDeckSummary]
+}
+
+nonisolated struct MTGJSONDeckResponse: Decodable, Sendable {
+    let data: MTGJSONDeck
+}
+
+/// One precon, ~150KB. Each card carries `identifiers.scryfallId`, so a deck
+/// maps straight onto the cards we already store.
+nonisolated struct MTGJSONDeck: Decodable, Sendable {
+    let code: String
+    let name: String
+    let type: String?
+    let releaseDate: String?
+    let commander: [MTGJSONDeckCard]?
+    let mainBoard: [MTGJSONDeckCard]
+    let sideBoard: [MTGJSONDeckCard]?
+}
+
+nonisolated struct MTGJSONDeckCard: Decodable, Sendable {
+    let name: String
+    let count: Int
+    let uuid: String
+    let number: String?
+    let setCode: String?
+    let identifiers: MTGJSONIdentifiers
+
+    var scryfallID: String? { identifiers.scryfallId }
+}
+
 // MARK: - Prices (`AllPricesToday.json`)
 
 /// Envelope for `/api/v5/AllPricesToday.json`: uuid -> per-game price data.
