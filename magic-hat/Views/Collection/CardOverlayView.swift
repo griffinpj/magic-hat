@@ -247,15 +247,15 @@ private struct ActionBar: View {
         .glassEffect(.regular, in: Capsule())
     }
 
-    private func action(_ symbol: String, prominent: Bool = false, run: @escaping () -> Void) -> some View {
+    private func action(_ symbol: String, run: @escaping () -> Void) -> some View {
         Button(action: run) {
             Image(systemName: symbol)
                 .font(.system(size: 18, weight: .semibold))
                 .frame(width: 40, height: 40)
                 .contentShape(Rectangle())
-                .foregroundStyle(prominent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
+                .foregroundStyle(.primary)
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier(prominent ? "overlay-eye" : "overlay-\(symbol)")
+        .accessibilityIdentifier("overlay-\(symbol)")
     }
 }
