@@ -81,7 +81,8 @@ struct CardOverlayView: View {
                             urlString: item.imageURL,
                             aspectRatio: item.aspectRatio,
                             cornerRadius: 18,
-                            targetWidth: 480
+                            targetWidth: 480,
+                            fallbackTargetWidth: 150
                         )
                         .frame(width: cardWidth)
                         .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
@@ -206,24 +207,6 @@ private struct ActionBar: View {
                 .foregroundStyle(prominent ? AnyShapeStyle(.tint) : AnyShapeStyle(.primary))
         }
         .buttonStyle(.plain)
-    }
-}
-
-/// Formats Scryfall USD prices; nil shows a dash.
-enum PriceFormat {
-    static func string(_ value: Double?) -> String {
-        guard let value else { return "—" }
-        return String(format: "$%.2f", value)
-    }
-
-    /// Tight form for the grid, where three digits of cents are noise.
-    static func compact(_ value: Double) -> String {
-        value >= 100 ? String(format: "$%.0f", value) : String(format: "$%.2f", value)
-    }
-
-    /// "+2.03 (+5.61%)" — signed, for value change since purchase.
-    static func change(_ amount: Double, _ percent: Double) -> String {
-        let sign = amount >= 0 ? "+" : "-"
-        return String(format: "%@%.2f (%@%.1f%%)", sign, abs(amount), sign, abs(percent))
+        .accessibilityIdentifier(prominent ? "overlay-eye" : "overlay-\(symbol)")
     }
 }

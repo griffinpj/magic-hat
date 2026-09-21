@@ -11,6 +11,7 @@ import SwiftData
 @main
 struct magic_hatApp: App {
     var sharedModelContainer: ModelContainer = {
+        let isUITest = ProcessInfo.processInfo.arguments.contains("-uitest-seed")
         let schema = Schema([
             MTGCollection.self,
             CollectionEntry.self,
@@ -18,10 +19,12 @@ struct magic_hatApp: App {
             AuditRecord.self,
             CardRuling.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isUITest)
 
         do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            if isUITest { UITestSeed.populate(container) }
+            return container
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
         }
@@ -29,7 +32,7 @@ struct magic_hatApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MainTabView()
+            RootView()
         }
         .modelContainer(sharedModelContainer)
     }

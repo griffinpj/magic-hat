@@ -31,6 +31,7 @@ final class CatalogSyncController {
     enum Phase: Equatable {
         case idle
         case checking
+        case waitingForWiFi(BulkDataset)
         case downloading(BulkDataset, fraction: Double)
         case ingesting(BulkDataset, done: Int)
         case failed(String)
@@ -45,6 +46,23 @@ final class CatalogSyncController {
 
     private(set) var phase: Phase = .idle
 
+    /// True once the card catalog has been ingested at least once. Drives
+    /// the first-launch setup screen; observable, unlike UserDefaults.
+    private(set) var catalogReady: Bool
+
+    /// User opted to download the large catalog over cellular.
+    var allowCellular: Bool {
+        didSet { defaults.set(allowCellular, forKey: "bulk.allowCellular") }
+    }
+
+    private init() {
+        catalogReady = UserDefaults.standard.string(forKey: "bulk.version.default_cards") != nil
+        allowCellular = UserDefaults.standard.bool(forKey: "bulk.allowCellular")
+    }
+
+    /// Test hook: pretend the catalog is present so UI tests skip setup.
+    func markCatalogReadyForTesting() { catalogReady = true }
+
     /// 0...1 for the bar, or nil while indeterminate.
     var fraction: Double? {
         if case .downloading(_, let f) = phase { return f }
@@ -55,6 +73,7 @@ final class CatalogSyncController {
         switch phase {
         case .idle: return ""
         case .checking: return "Checking card data…"
+        case .waitingForWiFi: return "Waiting for Wi-Fi"
         case .downloading(let set, let f): return "Downloading \(set.displayName) — \(Int(f * 100))%"
         case .ingesting(let set, let done): return "Adding \(set.displayName) — \(done.formatted())"
         case .failed(let message): return message
@@ -63,12 +82,27 @@ final class CatalogSyncController {
 
     private let defaults = UserDefaults.standard
     private var isRunning = false
-    private var batchSize: Int { 500 }
 
     private func versionKey(_ dataset: BulkDataset) -> String { "bulk.version.\(dataset.rawValue)" }
+    private func ingestedAtKey(_ dataset: BulkDataset) -> String { "bulk.ingestedAt.\(dataset.rawValue)" }
 
     func hasIngested(_ dataset: BulkDataset) -> Bool {
         defaults.string(forKey: versionKey(dataset)) != nil
+    }
+
+    /// Whether to take a new build of `dataset`. Never ingested → yes. Same
+    /// build as last time → no. Newer build → only if our copy is older than
+    /// the dataset's refresh interval; Scryfall rebuilds daily and a 79MB
+    /// catalog every day is not worth it when owned-card prices already
+    /// refresh via the cheap batched call.
+    private func shouldIngest(_ entry: ScryfallBulkEntry, _ dataset: BulkDataset) -> Bool {
+        guard let have = defaults.string(forKey: versionKey(dataset)) else { return true }
+        guard have != entry.updatedAt else { return false }
+        let last = defaults.object(forKey: ingestedAtKey(dataset)) as? Date ?? .distantPast
+        let interval = dataset == .rulings
+            ? DataPolicy.rulingsRefreshInterval
+            : DataPolicy.catalogRefreshInterval
+        return Date().timeIntervalSince(last) >= interval
     }
 
     /// Ingests any dataset that is missing or stale. Safe to call on launch.
@@ -91,7 +125,7 @@ final class CatalogSyncController {
             guard let entry = manifest.first(where: { $0.type == dataset.rawValue }),
                   let uriString = entry.jsonlDownloadURI,
                   let uri = URL(string: uriString),
-                  defaults.string(forKey: versionKey(dataset)) != entry.updatedAt
+                  shouldIngest(entry, dataset)
             else { continue }
 
             do {
@@ -99,6 +133,8 @@ final class CatalogSyncController {
                 defer { try? FileManager.default.removeItem(at: file) }
                 try await ingest(file, dataset: dataset, container: container)
                 defaults.set(entry.updatedAt, forKey: versionKey(dataset))
+                defaults.set(Date(), forKey: ingestedAtKey(dataset))
+                if dataset == .defaultCards { catalogReady = true }
             } catch is CancellationError {
                 return
             } catch {
@@ -111,12 +147,22 @@ final class CatalogSyncController {
     // MARK: Download
 
     private func download(_ url: URL, dataset: BulkDataset) async throws -> URL {
+        // Rulings are ~5MB — fine anywhere. The catalog waits for Wi-Fi unless
+        // the user has said otherwise, and says so instead of sitting at 0%.
+        let mayUseCellular = dataset == .rulings || allowCellular
+        if !mayUseCellular {
+            let network = NetworkMonitor.shared
+            while network.isMetered && !allowCellular {
+                phase = .waitingForWiFi(dataset)
+                try await Task.sleep(for: .seconds(1))
+                try Task.checkCancellation()
+            }
+        }
         phase = .downloading(dataset, fraction: 0)
 
         let config = URLSessionConfiguration.default
-        // Large and not urgent: don't spend the user's cellular data on it.
-        config.allowsExpensiveNetworkAccess = false
-        config.allowsConstrainedNetworkAccess = false
+        config.allowsExpensiveNetworkAccess = dataset == .rulings || allowCellular
+        config.allowsConstrainedNetworkAccess = dataset == .rulings || allowCellular
         config.waitsForConnectivity = true
         let session = URLSession(configuration: config)
         defer { session.finishTasksAndInvalidate() }
@@ -142,85 +188,11 @@ final class CatalogSyncController {
 
     private func ingest(_ file: URL, dataset: BulkDataset, container: ModelContainer) async throws {
         phase = .ingesting(dataset, done: 0)
-        let size = batchSize
-
-        // Parsing happens here, off the main actor; each decoded batch is
-        // awaited onto the main actor to be written, which also throttles the
-        // reader — it can't run ahead and pile up in memory.
-        try await Task.detached(priority: .utility) {
-            let reader = try GzipLineReader(url: file)
-            defer { reader.close() }
-            let decoder = JSONDecoder()
-            var done = 0
-
-            while true {
-                try Task.checkCancellation()
-                let lines = try reader.nextBatch(size)
-                if lines.isEmpty { break }
-
-                switch dataset {
-                case .defaultCards:
-                    let cards = lines.compactMap { try? decoder.decode(ScryfallCard.self, from: $0) }
-                    if !cards.isEmpty {
-                        await MainActor.run { Self.upsert(cards: cards, container: container) }
-                    }
-                case .rulings:
-                    let rulings = lines
-                        .compactMap { try? decoder.decode(ScryfallRulingLine.self, from: $0) }
-                        .filter { $0.oracleId != nil }
-                    if !rulings.isEmpty {
-                        await MainActor.run { Self.insert(rulings: rulings, container: container) }
-                    }
-                }
-
-                done += lines.count
-                // Report sparsely: this drives a view, and at one update per
-                // batch it would redraw ten times a second for minutes.
-                if done % (size * 10) == 0 || lines.count < size {
-                    let progress = done
-                    await MainActor.run {
-                        CatalogSyncController.shared.phase = .ingesting(dataset, done: progress)
-                    }
-                }
+        try await BulkIngester.ingest(file: file, dataset: dataset, container: container) { done in
+            Task { @MainActor in
+                CatalogSyncController.shared.phase = .ingesting(dataset, done: done)
             }
-        }.value
-    }
-
-    private static func upsert(cards: [ScryfallCard], container: ModelContainer) {
-        let context = container.mainContext
-        let ids = cards.map(\.id)
-        let existing = (try? context.fetch(
-            FetchDescriptor<CardMeta>(predicate: #Predicate { ids.contains($0.scryfallID) })
-        )) ?? []
-        var byID = Dictionary(existing.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
-
-        for card in cards {
-            let meta: CardMeta
-            if let found = byID[card.id] {
-                meta = found
-            } else {
-                let created = CardMeta(scryfallID: card.id)
-                context.insert(created)
-                byID[card.id] = created
-                meta = created
-            }
-            meta.apply(card)
         }
-        try? context.save()
-    }
-
-    private static func insert(rulings: [ScryfallRulingLine], container: ModelContainer) {
-        let context = container.mainContext
-        for line in rulings {
-            guard let oracleID = line.oracleId else { continue }
-            context.insert(CardRuling(
-                oracleID: oracleID,
-                source: line.source ?? "scryfall",
-                publishedAt: line.publishedAt ?? "",
-                comment: line.comment ?? ""
-            ))
-        }
-        try? context.save()
     }
 }
 

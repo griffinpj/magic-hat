@@ -13,7 +13,7 @@ import SwiftData
 import CryptoKit
 
 @Model
-final class CardRuling {
+nonisolated final class CardRuling {
     /// Stable identity so re-ingesting the bulk file updates rather than
     /// duplicates: oracle id + source + date + the text itself.
     @Attribute(.unique) var id: String

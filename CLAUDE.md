@@ -107,6 +107,32 @@ Enforced in `RateLimiter`. `/cards/search|named|random|collection` 2/sec,
 `/cards/manifest` 10/min, everything else (incl. images) 10/sec. All requests
 send an accurate `User-Agent` (`MagicHat/1.0`) and an `Accept` header.
 
+## Reads go through CollectionStore; writes bump the tracker
+
+Views do **not** hold `@Query` over large tables (entries, card metadata).
+That fetch runs synchronously on the main thread during the view's first
+render — which is exactly when a navigation push is trying to animate, and
+on the Collections tab it meant loading the whole store to draw the home
+screen. Instead:
+
+- `CollectionStore` (a `@ModelActor`) does the fetch + map + sort on a
+  background context and returns Sendable values: `CollectionSnapshot`
+  (items plus the ids still pending metadata and the ids with stale prices),
+  `[CollectionSummary]`, `ownedScryfallIDs()`. The view shows a placeholder
+  and fills in.
+- Every write path (import, delete, later deck moves) calls
+  `CollectionChangeTracker.shared.bump()` once when done. Views key a
+  `.task(id: tracker.revision)` on it to refetch.
+- Hydration bumps `CardHydrationController.revision` per 75-card batch;
+  views refetch on a **debounce** (longer while a sync is running) and merge
+  in place without reordering, so the grid doesn't reshuffle mid-sync.
+- Small tables (`MTGCollection`, per-oracle rulings) are fine as `@Query`.
+
+For this to compile, the `@Model` classes, `CardItem` (and its extensions),
+and the enums they use are all `nonisolated` — opted out of the project's
+default MainActor isolation. Without that no data work can leave the main
+thread. New model/value types must follow suit.
+
 ## Keep work off the main thread
 
 Responsiveness is a hard requirement: the UI must never lag or freeze. Any
@@ -250,6 +276,30 @@ own alpha — so the render host is a real `UIWindow` layered *behind* the app
 (`windowLevel = .normal - 1`) at **full alpha**. Rendering it faded produced a
 near-transparent image that, as a template, was invisible.
 
+## First launch and catalog refreshes
+
+Two different surfaces for the same sync, because they're different moments:
+
+- **First launch** — `RootView` shows `CatalogSetupView` *instead of* the
+  tabs until `default_cards` has been ingested once. Blocking by default
+  (the app is far more useful with the catalog) but escapable: "Continue in
+  background" hands off to the bar. This is the pattern of apps that need a
+  one-time asset pull (games, dictionary/reference apps): a single explained
+  screen with real progress, never a spinner with no words.
+- **Later refreshes** — `CatalogSyncBar`, a thin glass strip above whichever
+  tab is showing. Non-modal; the app stays usable on the data it has.
+
+Network: the catalog refuses metered paths unless the user opts in. That is
+made *visible* — `.waitingForWiFi` phase, "Use cellular data (80 MB)" button
+— because `waitsForConnectivity` alone left the bar at 0% forever with no
+explanation. Rulings (~5MB) are allowed anywhere. `NetworkMonitor` wraps
+`NWPathMonitor`.
+
+Refresh policy (`DataPolicy`): a newer bulk build is taken only if our copy
+is older than 7 days (catalog) / 1 day (rulings). Scryfall rebuilds daily
+and 79MB a day is not worth it; owned-card prices already refresh every 6h
+through the cheap batched call.
+
 ## Data flow notes
 
 - **Card metadata is fetched for the whole collection, not just what scrolls
@@ -277,9 +327,68 @@ near-transparent image that, as a template, was invisible.
   emits one SwiftData save per 75-card batch, and remapping thousands of items
   on each would thrash the main thread.
 
+## Tests
+
+`magic-hatTests` (Swift Testing) and `magic-hatUITests` (XCTest). Run:
+
+```
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcrun xcodebuild test -project magic-hat.xcodeproj -scheme magic-hat \
+  -destination 'platform=iOS Simulator,id=<UDID of an iOS 26 device>' \
+  -only-testing:magic-hatTests          # unit
+  -only-testing:magic-hatUITests        # flow + performance
+```
+
+Use a device on the **iOS 26** runtime (`xcrun simctl list devices available`).
+The app targets iOS 26, so xcodebuild silently filters out simulators on
+older runtimes and then reports a baffling "visionOS not installed" error
+rather than "no eligible device".
+
+Tests never touch the network. `magic-hatTests/Fixtures/` holds real data:
+
+- `ManaBox_Collection.csv` — a real export: 3,872 rows, eight binders, CRLF
+  endings, 17 printings spanning more than one binder.
+  `RealCollectionImportTests` imports it end to end and asserts the merged
+  shape (3,846 rows, 6,563 copies, one row per merge key, one audit record
+  per source row).
+- `default_cards.slice.jsonl.gz` (2.2MB) and `rulings.slice.jsonl.gz`
+  (0.5MB) — Scryfall bulk data filtered to exactly the printings that export
+  references (3,467 cards, 7,411 rulings), plus `bulk-data.json`, the
+  manifest. `BulkIngestTests` runs them through the real gzip reader,
+  decoder and upsert (`BulkIngester`), then imports the CSV on top and checks
+  the collection comes up fully hydrated.
+
+Regenerate the slices with `python3 scripts/make-fixtures.py` (streams the
+real bulk files once; takes a minute). Prefer extending these over inventing
+rows — every bug so far came from the shape of real data.
+
+The bulk *download* (`CatalogSyncController.download`) is the one thing not
+covered; it is a `URLSessionDownloadTask` and testing it means testing
+Foundation.
+
+If `xcodebuild test` fails with `unable to find utility "simctl"`, the
+active developer directory is CommandLineTools; run
+`sudo xcode-select -s /Applications/Xcode.app/Contents/Developer` once.
+`DEVELOPER_DIR` is not enough because xcodebuild spawns its own `xcrun`.
+
+Unit suites cover the pure and store-level logic that has actually broken:
+`CSVParser` (CRLF, quoting, duplicate headers), `mergeKey`, `CardSorting`
+(determinism under shuffle), `PriceFormat`, `ImportController` against an
+in-memory container (binder merge, add, replace, audit), `CollectionStore`,
+`GzipLineReader` (tiny chunks, FNAME header, unterminated tail).
+
+UI tests launch the app with `-uitest-seed`: `UITestSeed` fills an in-memory
+store with 900 image-less cards and marks the catalog ready, so nothing
+touches the network. `testGridScrollDoesNotHitch` uses
+`XCTOSSignpostMetric.scrollDecelerationMetric` — Apple's hitch counter; the
+first run sets a baseline in the scheme and later runs fail on regression.
+`testEnteringCollectionIsFast` clocks the push.
+
+A behaviour change to anything above lands with its test in the same commit.
+
 ## Sorting
 
-Every comparator in `CollectionCardsView.sorted` must define a **total order**,
+Every comparator in `CardSorting.sorted` must define a **total order**,
 falling through to name and then id. `Array.sorted` is not stable in Swift, so
 any key shared by many cards (e.g. every card with no price) otherwise comes
 back in arbitrary, reshuffling order. Missing prices sort as 0, to the bottom.

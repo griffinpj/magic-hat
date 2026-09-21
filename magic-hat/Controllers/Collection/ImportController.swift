@@ -2,23 +2,22 @@
 //  ImportController.swift
 //  magic-hat
 //
-//  Applies a parsed ManaBox import into the SwiftData store. Runs on its own
-//  background ModelContext (@ModelActor) so inserting thousands of records
-//  never blocks the main thread, and reports fractional progress so the UI
-//  can show a loading bar. Every change is recorded in the append-only
-//  AuditRecord ledger under a single actionID for grouping and future
-//  undo/redo.
+//  Applies a parsed ManaBox import into the SwiftData store and reports
+//  fractional progress for the wizard's bar. Every change is recorded in the
+//  append-only AuditRecord ledger under a single actionID for grouping and
+//  future undo/redo.
 //
-//  This project uses default MainActor isolation, so SwiftData models live on
-//  the main actor. Rather than fight that with a background context, the
-//  import runs on the main context but yields to the run loop between chunks
-//  so the UI stays responsive and the progress bar animates smoothly.
+//  Writes run on the main context, chunked with Task.yield() between batches
+//  so the run loop keeps animating. (Reads go through CollectionStore on a
+//  background context; writes stay here so @Query-backed views see them
+//  without a merge step.) When it finishes it bumps CollectionChangeTracker
+//  so snapshot-backed views refetch.
 //
 
 import Foundation
 import SwiftData
 
-enum ImportMode: Sendable {
+nonisolated enum ImportMode: Sendable {
     case add        // merge into the collection; matching rows sum quantities
     case replace    // clear the whole collection first, then insert
 }
@@ -200,6 +199,7 @@ enum ImportController {
 
         try modelContext.save()
         progress(1)
+        CollectionChangeTracker.shared.bump()
 
         return Summary(
             actionID: actionID,

@@ -15,6 +15,9 @@ struct CardImageView: View {
     var cornerRadius: CGFloat = 10
     /// Longest-edge target in points; scaled to pixels for downsampling.
     var targetWidth: CGFloat = 150
+    /// A smaller size that may already be decoded (e.g. the grid's), shown
+    /// immediately while the larger one decodes so nothing flashes to grey.
+    var fallbackTargetWidth: CGFloat? = nil
 
     @Environment(\.displayScale) private var displayScale
 
@@ -62,7 +65,13 @@ struct CardImageView: View {
             image = cached
             return
         }
-        image = nil
+        if let fallback = fallbackTargetWidth,
+           let smaller = ImageMemoryCache.shared.image(
+                ImageMemoryCache.key(urlString, fallback * displayScale)) {
+            image = smaller           // upscaled briefly; replaced below
+        } else {
+            image = nil
+        }
         do {
             image = try await ImageLoader.shared.image(for: urlString, maxPixel: px)
         } catch {

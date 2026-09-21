@@ -2,151 +2,39 @@
 //  CollectionCardsView.swift
 //  magic-hat
 //
-//  Shows every card in one collection using the reusable CardGridView (flat:
-//  binders are metadata, not a navigation level). Builds the grid's [CardItem]
-//  from owned entries + cached metadata, memoized so it only rebuilds when the
-//  data changes. A floating Liquid Glass sort control reorders the grid.
+//  Every card in one collection, in the reusable CardGridView. The view holds
+//  no @Query: it asks CollectionStore for a value snapshot off the main
+//  actor, so the navigation push animates while the fetch runs. It refetches
+//  when a write bumps CollectionChangeTracker, and (debounced) as hydration
+//  fills in metadata — without reordering mid-sync, so the grid doesn't
+//  reshuffle under the user's thumb.
 //
 
 import SwiftUI
 import SwiftData
 
-enum CardSort: String, CaseIterable, Identifiable {
-    case name = "Name"
-    case setCode = "Set"
-    case rarity = "Rarity"
-    case priceHigh = "Price (High)"
-    case quantity = "Quantity"
-    case recent = "Recently Added"
-
-    var id: String { rawValue }
-    var systemImage: String {
-        switch self {
-        case .name: return "textformat"
-        case .setCode: return "square.stack.3d.up"
-        case .rarity: return "sparkles"
-        case .priceHigh: return "dollarsign.circle"
-        case .quantity: return "number"
-        case .recent: return "clock"
-        }
-    }
-}
-
 struct CollectionCardsView: View {
     let collectionName: String
 
     @Environment(\.modelContext) private var modelContext
-    @Query private var entries: [CollectionEntry]
 
     private var hydrator: CardHydrationController { .shared }
-    @State private var refreshTask: Task<Void, Never>?
+    private var tracker: CollectionChangeTracker { .shared }
+
     @State private var items: [CardItem] = []
+    @State private var hasLoaded = false
     @State private var sort: CardSort = .name
-    @State private var didStartSync = false
+    @State private var refreshTask: Task<Void, Never>?
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
 
-    init(collectionName: String) {
-        self.collectionName = collectionName
-        var descriptor = FetchDescriptor<CollectionEntry>(
-            predicate: #Predicate { $0.collectionName == collectionName },
-            sortBy: [SortDescriptor(\.name)]
-        )
-        // One query, with the card metadata pulled in alongside it, instead of
-        // a second unbounded query over every CardMeta row plus a dictionary
-        // join rebuilt on every change.
-        descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        _entries = Query(descriptor)
-    }
-
-    /// Full rebuild + sort. Use on entries/sort changes only.
-    private func rebuildItems() {
-        items = Self.sorted(entries.map { CardItem(entry: $0, meta: $0.card) }, by: sort)
-    }
-
-    /// Refresh image/price fields as metadata hydrates WITHOUT reordering, so
-    /// the grid doesn't thrash while scrolling/hydrating.
-    private func refreshMeta() {
-        guard !items.isEmpty else { rebuildItems(); return }
-        let entryByID = Dictionary(entries.map { ($0.id.uuidString, $0) }) { a, _ in a }
-        items = items.map { item in
-            guard let entry = entryByID[item.id] else { return item }
-            return CardItem(entry: entry, meta: entry.card)
-        }
-    }
-
-    /// Coalesce the storm of metadata saves a full sync produces (one per
-    /// 75-card batch) into a single rebuild, instead of remapping every
-    /// CardItem dozens of times.
-    private func scheduleRefreshMeta() {
-        refreshTask?.cancel()
-        refreshTask = Task {
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            refreshMeta()
-        }
-    }
-
-    /// Rarity ordering, low → high. Unknown rarity sorts lowest.
-    private static let rarityRank = [
-        "common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 4, "bonus": 5
-    ]
-
-    /// Every comparator defines a TOTAL order (always falling through to name
-    /// then id). Swift's sort is not stable, so without a tie-breaker the
-    /// thousands of cards sharing a key — e.g. every card with no price yet —
-    /// came back in arbitrary, shuffling order.
-    private static func sorted(_ items: [CardItem], by sort: CardSort) -> [CardItem] {
-        func byName(_ a: CardItem, _ b: CardItem) -> Bool {
-            let c = a.name.localizedCaseInsensitiveCompare(b.name)
-            if c != .orderedSame { return c == .orderedAscending }
-            return a.id < b.id
-        }
-        switch sort {
-        case .name:
-            return items.sorted(by: byName)
-        case .setCode:
-            return items.sorted {
-                if $0.setCode != $1.setCode { return $0.setCode < $1.setCode }
-                let l = Int($0.collectorNumber) ?? Int.max
-                let r = Int($1.collectorNumber) ?? Int.max
-                if l != r { return l < r }
-                return byName($0, $1)
-            }
-        case .rarity:
-            return items.sorted {
-                let l = rarityRank[$0.rarity.lowercased()] ?? -1
-                let r = rarityRank[$1.rarity.lowercased()] ?? -1
-                if l != r { return l > r }
-                return byName($0, $1)
-            }
-        case .priceHigh:
-            return items.sorted {
-                // Unpriced sorts to the bottom, then alphabetically.
-                let l = $0.marketPrice ?? 0
-                let r = $1.marketPrice ?? 0
-                if l != r { return l > r }
-                return byName($0, $1)
-            }
-        case .quantity:
-            return items.sorted {
-                if $0.quantity != $1.quantity { return $0.quantity > $1.quantity }
-                return byName($0, $1)
-            }
-        case .recent:
-            return items.sorted {
-                let l = $0.addedDate ?? .distantPast
-                let r = $1.addedDate ?? .distantPast
-                if l != r { return l > r }
-                return byName($0, $1)
-            }
-        }
-    }
-
     var body: some View {
         Group {
-            if items.isEmpty {
+            if !hasLoaded {
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if items.isEmpty {
                 ContentUnavailableView {
                     Text("📭").font(.system(size: 64))
                 } description: {
@@ -167,29 +55,79 @@ struct CollectionCardsView: View {
         }
         .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: entries, initial: true) { _, _ in rebuildItems() }
-        // Hydration bumps a revision rather than us watching every CardMeta row.
-        .onChange(of: hydrator.revision) { _, _ in scheduleRefreshMeta() }
-        .onChange(of: sort) { _, _ in
-            items = Self.sorted(items, by: sort)
+        // Initial load, and again after any write (import/delete).
+        .task(id: "\(collectionName)|\(tracker.revision)") {
+            await load(thenSync: true)
         }
-        .task { prefetch(around: 0) }
-        // Fetch metadata for the WHOLE collection once, so sorting by price or
-        // rarity works on complete data rather than the handful of cards that
-        // happened to scroll past.
-        .task(id: entries.count) {
-            guard !didStartSync, !entries.isEmpty else { return }
-            didStartSync = true
-            let ids = entries.map(\.scryfallID)
-            await hydrator.hydrateAll(scryfallIDs: ids, context: modelContext)
-            // Metadata is immutable; prices are not. Refresh only the stale ones.
-            await hydrator.refreshStalePrices(scryfallIDs: ids, context: modelContext)
-            refreshMeta()
-            items = Self.sorted(items, by: sort)
+        // Metadata arriving: refresh fields in place, keep the order.
+        .onChange(of: hydrator.revision) { _, _ in scheduleRefresh() }
+        .onChange(of: sort) { _, _ in
+            items = CardSorting.sorted(items, by: sort)
         }
     }
 
-    // Progress while the full-collection metadata sync runs.
+    // MARK: Loading
+
+    private var store: CollectionStore { CollectionStore.shared(for: modelContext.container) }
+
+    /// Fetches the snapshot off-main. On the first load of a session also
+    /// kicks off metadata hydration for anything pending and a price refresh
+    /// for anything stale — both from ids the store already computed, so no
+    /// extra store round-trips on the main thread.
+    private func load(thenSync: Bool) async {
+        let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: sort)) ?? .empty
+        guard !Task.isCancelled else { return }
+        items = snapshot.items
+        hasLoaded = true
+        prefetch(around: 0)
+
+        guard thenSync, !snapshot.items.isEmpty else { return }
+        await hydrator.hydrate(pending: snapshot.pendingIDs, context: modelContext)
+        await hydrator.refreshPrices(stale: snapshot.stalePriceIDs, context: modelContext)
+        guard !Task.isCancelled else { return }
+        // Sync finished: now a full re-sort is welcome (prices/rarity landed).
+        if let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort) {
+            items = fresh.items
+        }
+    }
+
+    /// Debounced refresh during hydration. Longer while a full sync is
+    /// running (a save lands every ~500ms) so we don't refetch on each one.
+    private func scheduleRefresh() {
+        refreshTask?.cancel()
+        let delay: Duration = hydrator.isSyncing ? .milliseconds(1500) : .milliseconds(300)
+        refreshTask = Task {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await refreshInPlace()
+        }
+    }
+
+    /// Pulls fresh fields for the items we have, preserving current order.
+    private func refreshInPlace() async {
+        guard let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort),
+              !Task.isCancelled else { return }
+        let byID = Dictionary(fresh.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var seen = Set<String>()
+        var next: [CardItem] = []
+        next.reserveCapacity(fresh.items.count)
+        for item in items {
+            if let updated = byID[item.id] { next.append(updated); seen.insert(item.id) }
+        }
+        for item in fresh.items where !seen.contains(item.id) { next.append(item) }
+        items = next
+    }
+
+    /// Viewport lookahead: metadata for the next window of tiles.
+    private func prefetch(around index: Int) {
+        guard !items.isEmpty, index < items.count else { return }
+        let upper = min(index + lookahead, items.count)
+        let window = items[index..<upper].map(\.scryfallID)
+        hydrator.hydrate(scryfallIDs: window, context: modelContext)
+    }
+
+    // MARK: Accessories
+
     private var syncPill: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
@@ -203,7 +141,6 @@ struct CollectionCardsView: View {
         .padding(.trailing, 20)
     }
 
-    // Floating Liquid Glass sort control; padded to sit above the tab bar.
     private var sortButton: some View {
         Menu {
             Picker("Sort", selection: $sort) {
@@ -220,13 +157,5 @@ struct CollectionCardsView: View {
         .glassEffect(.regular.interactive(), in: Circle())
         .padding(.trailing, 20)
         .padding(.bottom, 20)
-    }
-
-    /// Hydrates the window of cards starting at `index` through the lookahead.
-    private func prefetch(around index: Int) {
-        guard !items.isEmpty else { return }
-        let upper = min(index + lookahead, items.count)
-        let window = items[index..<upper].map(\.scryfallID)
-        hydrator.hydrate(scryfallIDs: window, context: modelContext)
     }
 }

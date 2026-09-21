@@ -11,7 +11,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class MTGCollection {
+nonisolated final class MTGCollection {
     @Attribute(.unique) var id: UUID
     @Attribute(.unique) var name: String
     var createdDate: Date

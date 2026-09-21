@@ -10,14 +10,14 @@ import Foundation
 import SwiftData
 
 /// Hydration state for a card's Scryfall metadata.
-enum CardFetchState: Int, Codable {
+nonisolated enum CardFetchState: Int, Codable, Sendable {
     case pending    // never fetched
     case fetched    // metadata + image URLs available
     case failed     // last fetch failed; safe to retry
 }
 
 @Model
-final class CardMeta {
+nonisolated final class CardMeta {
     /// Scryfall UUID (e.g. "69b215fe-0d97-4ca1-9490-174220fd454b").
     @Attribute(.unique) var scryfallID: String
 
