@@ -11,12 +11,21 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
-/// Aggregated stats for one collection.
+/// Aggregated stats for one collection, including its most valuable cards.
 private struct CollectionSummary: Identifiable {
     let name: String
     let uniqueCards: Int
     let totalCopies: Int
+    let totalValue: Double
+    /// Highest-value cards, for the thumbnail fan.
+    let highlights: [Highlight]
     var id: String { name }
+
+    struct Highlight: Identifiable, Hashable {
+        let id: String
+        let imageURL: String?
+        let aspectRatio: Double
+    }
 }
 
 struct CollectionsView: View {
@@ -29,7 +38,9 @@ struct CollectionsView: View {
 
     init() {
         var descriptor = FetchDescriptor<CollectionEntry>()
-        descriptor.propertiesToFetch = [\.collectionName, \.quantity]
+        // Pull the card metadata alongside: the summary needs prices and
+        // images for the value total and the thumbnail fan.
+        descriptor.relationshipKeyPathsForPrefetching = [\.card]
         _entries = Query(descriptor)
     }
 
@@ -50,10 +61,32 @@ struct CollectionsView: View {
         let byCollection = Dictionary(grouping: entries, by: \.collectionName)
         summaries = collections.map { collection in
             let rows = byCollection[collection.name] ?? []
+
+            var total = 0.0
+            var valued: [(value: Double, entry: CollectionEntry)] = []
+            valued.reserveCapacity(rows.count)
+            for row in rows {
+                let unit = row.finish == .normal
+                    ? row.card?.priceUSD
+                    : (row.card?.priceUSDFoil ?? row.card?.priceUSD)
+                let value = (unit ?? 0) * Double(row.quantity)
+                total += value
+                if value > 0 { valued.append((value, row)) }
+            }
+            let top = valued.sorted { $0.value > $1.value }.prefix(5).map { pair in
+                CollectionSummary.Highlight(
+                    id: pair.entry.id.uuidString,
+                    imageURL: pair.entry.card?.imageNormalURL,
+                    aspectRatio: pair.entry.card?.aspectRatio ?? (488.0 / 680.0)
+                )
+            }
+
             return CollectionSummary(
                 name: collection.name,
                 uniqueCards: rows.count,
-                totalCopies: rows.reduce(0) { $0 + $1.quantity }
+                totalCopies: rows.reduce(0) { $0 + $1.quantity },
+                totalValue: total,
+                highlights: Array(top)
             )
         }
     }
@@ -144,20 +177,11 @@ struct CollectionsView: View {
             NavigationLink {
                 CollectionCardsView(collectionName: collection.name)
             } label: {
-                HStack {
-                    Image(systemName: "tray.full.fill")
-                        .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(collection.name)
-                            .font(.body.weight(.medium))
-                        if let s = summary(for: collection.name) {
-                            Text("\(s.totalCopies) cards · \(s.uniqueCards) unique")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                CollectionCard(summary: summary(for: collection.name), name: collection.name)
             }
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
             .swipeActions(edge: .trailing) {
                 Button(role: .destructive) {
                     pendingDelete = collection.name
@@ -166,6 +190,7 @@ struct CollectionsView: View {
                 }
             }
         }
+        .listStyle(.plain)
         .confirmationDialog(
             "Delete “\(pendingDelete ?? "")”?",
             isPresented: deleteBinding,
@@ -177,6 +202,75 @@ struct CollectionsView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Removes every card in this collection. The change is recorded in History.")
+        }
+    }
+
+    /// Collection card: what the collection is worth, how big it is, and a fan
+    /// of its most valuable cards. Glass is affordable here — there are a
+    /// handful of these, and each is a navigation target, unlike the hundreds
+    /// of content tiles in the grid.
+    private struct CollectionCard: View {
+        let summary: CollectionSummary?
+        let name: String
+
+        private var valueText: String {
+            guard let value = summary?.totalValue, value > 0 else { return "—" }
+            return value >= 1000
+                ? String(format: "$%.0f", value)
+                : String(format: "$%.2f", value)
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(name)
+                            .font(.title3.weight(.semibold))
+                            .lineLimit(1)
+                        if let s = summary {
+                            Text("\(s.totalCopies) cards · \(s.uniqueCards) unique")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 12)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(valueText)
+                            .font(.title3.weight(.bold))
+                            .monospacedDigit()
+                        Text("MARKET")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let highlights = summary?.highlights, !highlights.isEmpty {
+                    highlightFan(highlights)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+
+        /// Overlapped like a hand of cards, most valuable in front.
+        private func highlightFan(_ highlights: [CollectionSummary.Highlight]) -> some View {
+            HStack(spacing: -22) {
+                ForEach(Array(highlights.enumerated().reversed()), id: \.element.id) { index, card in
+                    CardImageView(
+                        urlString: card.imageURL,
+                        aspectRatio: card.aspectRatio,
+                        cornerRadius: 5,
+                        targetWidth: 80
+                    )
+                    .frame(width: 50)
+                    .rotationEffect(.degrees(Double(index) * -2.5))
+                    .shadow(color: .black.opacity(0.28), radius: 3, y: 1)
+                    .zIndex(Double(highlights.count - index))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 2)
         }
     }
 
