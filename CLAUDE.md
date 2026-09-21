@@ -37,17 +37,31 @@ are cross-cutting, not owned by one feature.
 - `Controllers/<Feature>/` — feature logic that orchestrates models + clients
   (e.g. `ImportController`, `CardHydrationController`).
 - `Models/` — SwiftData `@Model` types and plain value types.
-  - Structure is flat: `MTGCollection` → cards. A collection shows all its
-    cards in one grid; binder is stored on each entry as metadata, not a
-    navigation level.
+  - Structure is flat: `MTGCollection` → cards. **The collection is the
+    binder.** A ManaBox file's binders exist only inside the import wizard, as
+    a way to choose which rows to take; once imported, rows carry no binder
+    and identical printings from different binders merge into one row.
   - `MTGCollection` — a named collection (unique name). Import targets one
     collection: a new one, or an existing one to merge into.
   - `CardMeta` — cached Scryfall metadata (image URLs, dims), keyed by
     Scryfall ID; one per card, shared across collections.
-  - `CollectionEntry` — one owned row (collection + binder + finish +
-    condition + qty); mirrors a ManaBox CSV row. CSV fields are denormalized
-    so the collection is browsable before hydration. `binderName` is retained
-    as metadata (used to filter which rows to import) but not navigated.
+  - `CollectionEntry` — one owned row (collection + finish + condition +
+    qty); mirrors a ManaBox CSV row minus its binder. Identity for merging is
+    `CollectionEntry.mergeKey` = `scryfallID|collection|finish|condition` —
+    deliberately without binder. CSV fields are denormalized so the collection
+    is browsable before hydration.
+  - Import modes against an existing collection: **Add** merges (matching
+    rows sum quantities, including duplicates within one file); **Replace**
+    clears the whole collection first. There is no per-binder replace because
+    there are no binders to scope it to.
+  - `AuditRecord.binderName` still exists. It is historical: the ledger is
+    append-only and older records name their source binder. New records
+    leave it empty; History labels actions by collection.
+  - Planned, not built — decks: a built deck will *hold* entries rather than
+    move them. The intended shape is a nullable `heldByDeck` reference on
+    `CollectionEntry`; the collection grid filters to unheld rows and an "All
+    Collections" view ignores the hold. It is an allocation, not identity, so
+    it must NOT join `mergeKey`.
   - `AuditRecord` — append-only ledger. Records sharing an `actionID` come
     from one user action; each has a signed `quantityDelta`. Backs the
     History tab and future undo/redo.

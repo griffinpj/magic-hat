@@ -19,8 +19,8 @@ import Foundation
 import SwiftData
 
 enum ImportMode: Sendable {
-    case add        // merge/upsert into existing binders
-    case replace    // clear selected binders first, then insert
+    case add        // merge into the collection; matching rows sum quantities
+    case replace    // clear the whole collection first, then insert
 }
 
 @MainActor
@@ -30,12 +30,16 @@ enum ImportController {
         let added: Int      // total copies added
         let removed: Int    // total copies removed (replace mode)
         let collectionName: String
-        let binders: [String]
+        /// Which binders in the file were chosen. Informational only.
+        let sourceBinders: [String]
     }
 
-    /// Imports `rows` limited to `selectedBinders` using `mode`, reporting
-    /// progress in [0, 1] as records are written. Yields between chunks so
-    /// the main thread never stalls on a large import.
+    /// Imports the rows whose file-binder is in `selectedBinders` into one
+    /// collection. The binder is a selection filter and nothing more: once a
+    /// row is in, it is indistinguishable from any other row in the collection,
+    /// and identical printings from different binders merge into one row.
+    /// Reports progress in [0, 1]; yields between chunks so the main thread
+    /// never stalls on a large import.
     static func apply(
         rows: [ManaBoxRow],
         selectedBinders: Set<String>,
@@ -64,14 +68,14 @@ enum ImportController {
             modelContext.insert(MTGCollection(name: collectionName))
         }
 
-        // 1. Replace mode: clear existing entries in the target binders within
-        //    this collection, logging a removal for each copy.
+        // 1. Replace mode: clear the entire collection, logging a removal for
+        //    each copy so History and a future undo can account for it.
         if mode == .replace {
             let descriptor = FetchDescriptor<CollectionEntry>(
                 predicate: #Predicate { $0.collectionName == collectionName }
             )
             let existing = try modelContext.fetch(descriptor)
-            for entry in existing where selectedBinders.contains(entry.binderName) {
+            for entry in existing {
                 removedCount += entry.quantity
                 modelContext.insert(AuditRecord(
                     actionID: actionID,
@@ -80,7 +84,6 @@ enum ImportController {
                     scryfallID: entry.scryfallID,
                     cardName: entry.name,
                     collectionName: entry.collectionName,
-                    binderName: entry.binderName,
                     finish: entry.finish,
                     condition: entry.condition,
                     quantityDelta: -entry.quantity,
@@ -90,8 +93,9 @@ enum ImportController {
             }
         }
 
-        // 2. Build a lookup of surviving entries for upsert (add mode), scoped
-        //    to the target collection.
+        // 2. Add mode: index everything already in the collection so incoming
+        //    rows merge into it. Keyed without binder, so a row that arrived
+        //    from a different binder in an earlier import still merges.
         var existingByKey: [String: CollectionEntry] = [:]
         if mode == .add {
             let all = try modelContext.fetch(
@@ -99,9 +103,7 @@ enum ImportController {
                     predicate: #Predicate { $0.collectionName == collectionName }
                 )
             )
-            for entry in all where selectedBinders.contains(entry.binderName) {
-                existingByKey[entry.mergeKey] = entry
-            }
+            for entry in all { existingByKey[entry.mergeKey] = entry }
         }
 
         // 3. Ensure a CardMeta placeholder exists per Scryfall ID (hydrated
@@ -137,16 +139,19 @@ enum ImportController {
             }
 
             let entry: CollectionEntry
-            let key = "\(row.scryfallID)|\(collectionName)|\(row.binderName)|\(row.finish.rawValue)|\(row.condition)"
-            if mode == .add, let existing = existingByKey[key] {
+            let key = CollectionEntry.mergeKey(
+                scryfallID: row.scryfallID, collectionName: collectionName,
+                finish: row.finish.rawValue, condition: row.condition
+            )
+            // Also merges duplicates *within* one import: the same printing
+            // listed under two selected binders lands as one row.
+            if let existing = existingByKey[key] {
                 existing.quantity += row.quantity
                 entry = existing
             } else {
                 entry = CollectionEntry(
                     scryfallID: row.scryfallID,
                     collectionName: collectionName,
-                    binderName: row.binderName,
-                    binderType: row.binderType,
                     name: row.name,
                     setCode: row.setCode,
                     setName: row.setName,
@@ -162,7 +167,7 @@ enum ImportController {
                     addedDate: row.added
                 )
                 modelContext.insert(entry)
-                if mode == .add { existingByKey[key] = entry }
+                existingByKey[key] = entry
             }
             if entry.card == nil {
                 entry.card = meta
@@ -176,7 +181,6 @@ enum ImportController {
                 scryfallID: row.scryfallID,
                 cardName: row.name,
                 collectionName: collectionName,
-                binderName: row.binderName,
                 finish: row.finish,
                 condition: row.condition,
                 quantityDelta: row.quantity,
@@ -202,7 +206,7 @@ enum ImportController {
             added: addedCount,
             removed: removedCount,
             collectionName: collectionName,
-            binders: Array(selectedBinders).sorted()
+            sourceBinders: Array(selectedBinders).sorted()
         )
     }
 }
