@@ -4,9 +4,9 @@
 //
 //  Full-bleed overlay shown when a card is tapped. The enlarged card sits in
 //  a horizontal pager that peeks the neighbours; swiping flows through the
-//  batch. Dismiss with the floating glass X or a swipe down — tapping the
-//  dimmed backdrop does NOT dismiss, so a mis-tap near the action bar can't
-//  accidentally close it.
+//  batch. Tapping the centred card (or its corner eye) opens the detail
+//  screen; tapping a peeking neighbour scrolls to it; tapping the dimmed
+//  backdrop closes the overlay.
 //
 
 import SwiftUI
@@ -50,7 +50,7 @@ struct CardOverlayView: View {
                 pager
                 if let item = currentItem {
                     InfoPanel(item: item)
-                    ActionBar(onEye: { onOpenDetail(item) })
+                    ActionBar()
                 }
                 Spacer(minLength: 0)
             }
@@ -77,6 +77,7 @@ struct CardOverlayView: View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 14) {
                     ForEach(items) { item in
+                        let isCurrent = item.id == currentID
                         CardImageView(
                             urlString: item.imageURL,
                             aspectRatio: item.aspectRatio,
@@ -86,6 +87,21 @@ struct CardOverlayView: View {
                         )
                         .frame(width: cardWidth)
                         .shadow(color: .black.opacity(0.4), radius: 16, y: 8)
+                        // The whole card is the detail target; the eye in the
+                        // corner is the affordance that says so.
+                        .overlay(alignment: .topTrailing) {
+                            if isCurrent { detailButton(for: item) }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .onTapGesture {
+                            if isCurrent {
+                                onOpenDetail(item)
+                            } else {
+                                // A peeking neighbour: bring it to the centre
+                                // rather than navigating to the wrong card.
+                                withAnimation(.snappy) { currentID = item.id }
+                            }
+                        }
                         .id(item.id)
                     }
                 }
@@ -95,12 +111,24 @@ struct CardOverlayView: View {
             .scrollPosition(id: $currentID)
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollIndicators(.hidden)
-            // Consume taps on the card so only the backdrop closes the overlay.
-            .onTapGesture {}
         }
         // Sized against the container, not UIScreen: correct on rotation,
         // iPad and multitasking.
         .containerRelativeFrame(.vertical) { height, _ in height * 0.52 }
+    }
+
+    private func detailButton(for item: CardItem) -> some View {
+        Button { onOpenDetail(item) } label: {
+            Image(systemName: "eye")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 38)
+                .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .padding(10)
+        .accessibilityIdentifier("overlay-eye")
+        .accessibilityLabel("Show card details")
     }
 }
 
@@ -147,6 +175,10 @@ private struct InfoPanel: View {
         .padding(16)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .padding(.horizontal, 20)
+        // Not a target of anything; swallow taps so they can't fall through
+        // to the backdrop and close the overlay.
+        .contentShape(Rectangle())
+        .onTapGesture {}
     }
 
     private var priceLine: some View {
@@ -182,14 +214,11 @@ private struct InfoPanel: View {
 // MARK: - Action bar
 
 private struct ActionBar: View {
-    let onEye: () -> Void
-
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 14) {
             action("pencil") {}
             action("rectangle.stack.badge.plus") {}
             action("plus.rectangle.on.rectangle") {}
-            action("eye", prominent: true, run: onEye)
             action("checkmark.circle") {}
             action("trash") {}
         }
