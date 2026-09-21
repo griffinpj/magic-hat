@@ -53,12 +53,25 @@ are cross-cutting, not owned by one feature.
     History tab and future undo/redo.
   - `ManaBoxRow` — parsed CSV row (the on-disk import schema).
 - `Clients/` — API clients. Only describe endpoints + request/response
-  shapes. `ScryfallClient` (`/cards/:id`, batched `/cards/collection`,
-  `/cards/search` for all printings by oracle id).
+  shapes.
+  - `ScryfallClient` — `/cards/:id`, batched `/cards/collection`,
+    `/cards/search` (printings by oracle id), `/sets/:code`. Primary source
+    for card data, images and a single market price per finish.
+  - `MTGJSONClient` — second provider, bulk-only (no per-card endpoint):
+    `<SET>.json` per set and `AllPricesToday.json`. Its value is the full
+    retail picture (low/mid/market/buylist across TCGplayer, Cardmarket,
+    Card Kingdom) that Scryfall does not expose. Prices are keyed by MTGJSON
+    UUID, so join via `identifiers.scryfallId` from a set file
+    (`scryfallToUUID(setCode:)`). `AllPricesToday.json` is tens of MB —
+    only ever fetch it from an explicit user action with progress.
 - `Utils/` — cross-cutting infrastructure, no API-specific logic.
   - `HTTPClient` — transport, required headers (User-Agent/Accept), decoding.
   - `RateLimiter` — actor enforcing Scryfall per-endpoint limits.
   - `CSVParser` — RFC-4180-ish parser + ManaBox mapping.
+  - `PrintingsCache` — "all printings of this card" by oracle id, with a
+    6h TTL and in-flight dedupe. `/cards/search` is the slowest endpoint
+    family (2/sec) and returns the same answer every time.
+  - `SetSymbolLoader` — see Set symbols below.
   - `ImageLoader` — card image cache: original bytes on disk (Caches/),
     decoded+downsampled UIImages in memory keyed by URL+size. Decode and
     downsample run on the actor (off-main) via ImageIO so scrolling never
@@ -115,13 +128,39 @@ Pricing: Scryfall provides only a single market price per finish
 overlay shows the gain/loss vs the price paid at import (`CollectionEntry
 .purchasePrice`) as `(±$Δ, ±%)`.
 
-Set symbols: Scryfall serves set icons as SVG only. `SetSymbolLoader`
-rasterizes the SVG once via an offscreen WKWebView snapshot (white on
-transparent), caches it, and `SetSymbolView` renders it as a `.template`
-tinted with `.primary` so it adapts to light/dark.
+Set symbols: Scryfall serves set icons as SVG only, and SwiftUI cannot decode
+a remote SVG. `SetSymbolLoader` rasterizes it once via a WKWebView snapshot,
+caches it, and `SetSymbolView` renders it as a `.template` tinted `.primary`
+so it adapts to light/dark. Two non-obvious constraints: WebKit only paints a
+web view that is **in a window**, and `takeSnapshot` captures the view at its
+own alpha — so the render host is a real `UIWindow` layered *behind* the app
+(`windowLevel = .normal - 1`) at **full alpha**. Rendering it faded produced a
+near-transparent image that, as a template, was invisible.
 
 ## Data flow notes
 
-- Import does not fetch card data. Metadata/images are hydrated lazily when a
-  binder is viewed, prefetching a lookahead window so scrolling stays smooth.
+- **Card metadata is fetched for the whole collection, not just what scrolls
+  past.** `CardHydrationController.hydrateAll` batches every id through
+  `/cards/collection` (75 per request), applying per chunk so the grid fills
+  progressively. Viewport-only hydration left most cards with no price or
+  rarity, which silently broke every sort that keys on them.
+- The sync starts **right after an import finishes** and resumes when a
+  collection is opened. It is idempotent (`neededIDs` skips what is already
+  fetched), so an interrupted run simply continues. It holds a background-task
+  assertion so it survives the app being backgrounded briefly. `BGTaskScheduler`
+  was deliberately not used: iOS gives no timing guarantee, and the work is
+  attended and resumable.
+- **Prices go stale, metadata does not.** `CardMeta.pricesUpdatedAt` drives
+  `refreshStalePrices`, which re-fetches only cards older than
+  `CardHydrationController.priceTTL` (6h) through the same batched endpoint.
 - Images live on disk (Caches/), not in SwiftData, to keep the store small.
+- The grid rebuilds its `[CardItem]` on a **debounced** schedule: a full sync
+  emits one SwiftData save per 75-card batch, and remapping thousands of items
+  on each would thrash the main thread.
+
+## Sorting
+
+Every comparator in `CollectionCardsView.sorted` must define a **total order**,
+falling through to name and then id. `Array.sorted` is not stable in Swift, so
+any key shared by many cards (e.g. every card with no price) otherwise comes
+back in arbitrary, reshuffling order. Missing prices sort as 0, to the bottom.

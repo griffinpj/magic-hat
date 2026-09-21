@@ -11,10 +11,18 @@
 
 import Foundation
 import SwiftData
+import UIKit
 
 @MainActor
 @Observable
 final class CardHydrationController {
+    /// Shared so an import and the collection screen cooperate on one
+    /// `hydrated` set instead of refetching each other's work.
+    static let shared = CardHydrationController()
+
+    /// How long Scryfall prices stay fresh before a refresh is offered.
+    static let priceTTL: TimeInterval = 6 * 3600
+
     private let client = ScryfallClient.shared
     private var inFlight: Set<String> = []
     /// IDs known-fetched this session, so repeated scroll prefetches short
@@ -48,7 +56,14 @@ final class CardHydrationController {
         isSyncing = true
         syncTotal = needed.count
         syncedCount = 0
-        defer { isSyncing = false }
+
+        // Keep going for a short while if the user backgrounds the app; the
+        // work is idempotent, so whatever doesn't finish resumes on next open.
+        let assertion = UIApplication.shared.beginBackgroundTask(withName: "card-sync")
+        defer {
+            isSyncing = false
+            if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
+        }
 
         for chunk in Array(needed).chunked(into: ScryfallClient.collectionBatchSize) {
             if Task.isCancelled { return }
@@ -61,6 +76,46 @@ final class CardHydrationController {
             }
             syncedCount += chunk.count
         }
+    }
+
+    /// Re-fetches prices for cards whose prices are older than `priceTTL`.
+    /// Card metadata is effectively immutable, so this exists separately: only
+    /// the money moves. Uses the same batched endpoint and reports progress.
+    @discardableResult
+    func refreshStalePrices(scryfallIDs: [String], context: ModelContext) async -> Int {
+        guard !isSyncing else { return 0 }
+        let cutoff = Date().addingTimeInterval(-Self.priceTTL)
+        let idSet = Set(scryfallIDs)
+        let idList = Array(idSet)
+
+        let descriptor = FetchDescriptor<CardMeta>(
+            predicate: #Predicate { idList.contains($0.scryfallID) }
+        )
+        guard let metas = try? context.fetch(descriptor) else { return 0 }
+        let stale = metas
+            .filter { $0.fetchState == .fetched && ($0.pricesUpdatedAt ?? .distantPast) < cutoff }
+            .map(\.scryfallID)
+        guard !stale.isEmpty else { return 0 }
+
+        isSyncing = true
+        syncTotal = stale.count
+        syncedCount = 0
+        let assertion = UIApplication.shared.beginBackgroundTask(withName: "price-refresh")
+        defer {
+            isSyncing = false
+            if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
+        }
+
+        var updated = 0
+        for chunk in stale.chunked(into: ScryfallClient.collectionBatchSize) {
+            if Task.isCancelled { return updated }
+            if let response = try? await client.collection(ids: chunk) {
+                apply(cards: response.data, context: context)
+                updated += response.data.count
+            }
+            syncedCount += chunk.count
+        }
+        return updated
     }
 
     /// Hydrates any of `scryfallIDs` whose CardMeta is still pending/failed.
@@ -137,6 +192,7 @@ final class CardHydrationController {
             meta.toughness = card.toughness
             meta.priceUSD = card.prices?.usd.flatMap(Double.init)
             meta.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+            meta.pricesUpdatedAt = Date()
             let uris = card.bestImageURIs
             meta.imageSmallURL = uris?.small
             meta.imageNormalURL = uris?.normal

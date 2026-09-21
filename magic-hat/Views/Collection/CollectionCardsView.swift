@@ -39,7 +39,8 @@ struct CollectionCardsView: View {
     @Query private var entries: [CollectionEntry]
     @Query private var allMeta: [CardMeta]
 
-    @State private var hydrator = CardHydrationController()
+    private var hydrator: CardHydrationController { .shared }
+    @State private var refreshTask: Task<Void, Never>?
     @State private var items: [CardItem] = []
     @State private var sort: CardSort = .name
     @State private var didStartSync = false
@@ -71,6 +72,18 @@ struct CollectionCardsView: View {
         items = items.map { item in
             guard let entry = entryByID[item.id] else { return item }
             return CardItem(entry: entry, meta: metaByID[item.scryfallID])
+        }
+    }
+
+    /// Coalesce the storm of metadata saves a full sync produces (one per
+    /// 75-card batch) into a single rebuild, instead of remapping every
+    /// CardItem dozens of times.
+    private func scheduleRefreshMeta() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            refreshMeta()
         }
     }
 
@@ -154,7 +167,7 @@ struct CollectionCardsView: View {
         .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: entries, initial: true) { _, _ in rebuildItems() }
-        .onChange(of: allMeta) { _, _ in refreshMeta() }
+        .onChange(of: allMeta) { _, _ in scheduleRefreshMeta() }
         .onChange(of: sort) { _, _ in
             items = Self.sorted(items, by: sort)
         }
@@ -165,10 +178,11 @@ struct CollectionCardsView: View {
         .task(id: entries.count) {
             guard !didStartSync, !entries.isEmpty else { return }
             didStartSync = true
-            await hydrator.hydrateAll(
-                scryfallIDs: entries.map(\.scryfallID),
-                context: modelContext
-            )
+            let ids = entries.map(\.scryfallID)
+            await hydrator.hydrateAll(scryfallIDs: ids, context: modelContext)
+            // Metadata is immutable; prices are not. Refresh only the stale ones.
+            await hydrator.refreshStalePrices(scryfallIDs: ids, context: modelContext)
+            refreshMeta()
             items = Self.sorted(items, by: sort)
         }
     }

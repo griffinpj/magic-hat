@@ -258,7 +258,7 @@ struct CardDetailView: View {
                 oracle = try await ScryfallClient.shared.card(id: item.scryfallID).oracleID ?? ""
             }
             guard !oracle.isEmpty else { loadError = "No printings found."; return }
-            printings = try await ScryfallClient.shared.printings(oracleID: oracle)
+            printings = try await PrintingsCache.shared.printings(oracleID: oracle)
             rebuildPrintingItems()
         } catch {
             loadError = error.localizedDescription
