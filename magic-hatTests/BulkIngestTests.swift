@@ -42,7 +42,11 @@ struct BulkIngestTests {
 
     @Test @MainActor func rulingsSliceIngestsAndIsIdempotent() async throws {
         let file = try TestSupport.fixtureURL("rulings.slice.jsonl.gz")
-        let expected = try TestSupport.lineCount(file)
+        // Scryfall's file contains a few byte-identical duplicate rulings; the
+        // stable CardRuling id collapses them, so expect distinct, not lines.
+        let lines = try TestSupport.lineCount(file)
+        let expected = try TestSupport.distinctRulingCount(file)
+        #expect(expected <= lines && expected > lines - 20)
         let container = try TestSupport.makeContainer()
         try await BulkIngester.ingest(file: file, dataset: .rulings, container: container)
         let rulings = try container.mainContext.fetch(FetchDescriptor<CardRuling>())

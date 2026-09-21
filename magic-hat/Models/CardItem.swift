@@ -109,7 +109,7 @@ nonisolated extension CardItem {
     init(scryfallCard card: ScryfallCard, owned: Bool) {
         self.id = card.id
         self.scryfallID = card.id
-        self.oracleID = card.oracleID
+        self.oracleID = card.bestOracleID
         self.name = card.name
         self.setCode = card.set
         self.setName = card.setName

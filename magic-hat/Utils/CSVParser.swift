@@ -90,7 +90,27 @@ nonisolated enum ManaBoxParseError: Error, LocalizedError {
 }
 
 nonisolated extension CSVParser {
-    private static let isoFormatter = ISO8601DateFormatter()
+    /// ManaBox writes "2024-04-14T23:32:26.393Z". The default ISO8601 formatter
+    /// rejects fractional seconds, which silently left every imported card
+    /// with no added date (and "Recently Added" sorting nothing). Try the
+    /// fractional form first, then plain, then date-only.
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoPlain = ISO8601DateFormatter()
+    private static let isoDateOnly: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withFullDate]
+        return f
+    }()
+
+    static func parseDate(_ text: String) -> Date? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        return isoFractional.date(from: t) ?? isoPlain.date(from: t) ?? isoDateOnly.date(from: t)
+    }
 
     /// Parses ManaBox CSV text into rows, validating the header.
     static func parseManaBox(_ text: String) throws -> [ManaBoxRow] {
@@ -141,7 +161,7 @@ nonisolated extension CSVParser {
                 condition: value(fields, "Condition"),
                 language: value(fields, "Language"),
                 purchasePriceCurrency: value(fields, "Purchase price currency"),
-                added: isoFormatter.date(from: addedStr)
+                added: parseDate(addedStr)
             )
         }
     }
