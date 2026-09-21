@@ -65,7 +65,7 @@ struct CardDetailView: View {
                         withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = nil }
                     },
                     onOpenDetail: { tapped in
-                        overlayIndex = nil
+                        // Keep the overlay so popping detail returns to it.
                         detailPush = tapped
                     }
                 )

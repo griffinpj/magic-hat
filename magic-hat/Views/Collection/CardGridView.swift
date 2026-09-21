@@ -11,9 +11,12 @@
 
 import SwiftUI
 
-struct CardGridView: View {
+struct CardGridView<Accessory: View>: View {
     let items: [CardItem]
     var onAppearIndex: (Int) -> Void = { _ in }
+    /// Floating accessory (e.g. a sort button), shown only when no overlay is
+    /// open so it never covers the enlarged card.
+    @ViewBuilder var accessory: () -> Accessory
 
     @State private var selectedIndex: Int?
     @State private var detailItem: CardItem?
@@ -37,6 +40,9 @@ struct CardGridView: View {
             }
             .padding(10)
         }
+        .overlay(alignment: .bottomTrailing) {
+            if selectedIndex == nil { accessory() }
+        }
         .overlay {
             if let index = selectedIndex, items.indices.contains(index) {
                 CardOverlayView(
@@ -46,7 +52,7 @@ struct CardGridView: View {
                         withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = nil }
                     },
                     onOpenDetail: { item in
-                        selectedIndex = nil
+                        // Keep the overlay state so popping detail returns to it.
                         detailItem = item
                     }
                 )
@@ -56,5 +62,11 @@ struct CardGridView: View {
         .navigationDestination(item: $detailItem) { item in
             CardDetailView(item: item)
         }
+    }
+}
+
+extension CardGridView where Accessory == EmptyView {
+    init(items: [CardItem], onAppearIndex: @escaping (Int) -> Void = { _ in }) {
+        self.init(items: items, onAppearIndex: onAppearIndex, accessory: { EmptyView() })
     }
 }
