@@ -116,6 +116,29 @@ actor CollectionStore {
         return Set(try modelContext.fetch(descriptor).map(\.scryfallID))
     }
 
+    /// Scryfall ids of every printing we know for an oracle id.
+    func printingIDs(oracleID: String) throws -> [String] {
+        var descriptor = FetchDescriptor<CardMeta>(predicate: #Predicate { $0.oracleID == oracleID })
+        descriptor.propertiesToFetch = [\.scryfallID]
+        return try modelContext.fetch(descriptor).map(\.scryfallID)
+    }
+
+    /// Owned rows for any of the given printings, across all collections.
+    func ownedItems(scryfallIDs: [String]) throws -> [CardItem] {
+        let ids = scryfallIDs
+        var descriptor = FetchDescriptor<CollectionEntry>(
+            predicate: #Predicate { ids.contains($0.scryfallID) },
+            sortBy: [SortDescriptor(\.collectionName), SortDescriptor(\.setCode), SortDescriptor(\.collectorNumber)]
+        )
+        descriptor.relationshipKeyPathsForPrefetching = [\.card]
+        return try modelContext.fetch(descriptor).map { CardItem(entry: $0, meta: $0.card) }
+    }
+
+    /// Names of all collections, sorted.
+    func collectionNames() throws -> [String] {
+        try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)])).map(\.name)
+    }
+
     /// Collection names present on entries (for backfilling MTGCollection rows).
     func entryCollectionNames() throws -> Set<String> {
         var descriptor = FetchDescriptor<CollectionEntry>()

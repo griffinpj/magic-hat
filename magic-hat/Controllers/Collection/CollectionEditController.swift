@@ -2,11 +2,16 @@
 //  CollectionEditController.swift
 //  magic-hat
 //
-//  Structural edits to a collection. Deletion writes the removal into the
-//  append-only AuditRecord ledger first, one record per entry, so History
-//  still explains where the cards went and a future undo has something to
-//  work from. Like the import it chunks and yields, because deleting a few
-//  thousand rows on the main context would otherwise stall the run loop.
+//  Edits to a collection that aren't an import: adding a printing, changing
+//  an entry, removing one, deleting a whole collection. Every change writes
+//  to the append-only AuditRecord ledger under one actionID and bumps
+//  CollectionChangeTracker so snapshot-backed views refetch.
+//
+//  Identity is CollectionEntry.mergeKey (card + collection + finish +
+//  condition). Adding a printing that already matches a row raises its
+//  quantity; editing a row so its identity now matches another row merges
+//  them. That is the same rule the import uses, so the collection can never
+//  hold two rows that mean the same thing.
 //
 
 import Foundation
@@ -85,5 +90,237 @@ enum CollectionEditController {
             removedCopies: removedCopies,
             removedRows: entries.count
         )
+    }
+}
+
+// MARK: - Single-entry edits
+
+nonisolated enum CollectionEditError: Error, LocalizedError {
+    case invalidQuantity
+    case missingCollection
+    case entryNotFound
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidQuantity: return "Quantity must be at least 1."
+        case .missingCollection: return "Choose a collection."
+        case .entryNotFound: return "That card is no longer in the collection."
+        }
+    }
+}
+
+extension CollectionEditController {
+    struct AddRequest: Sendable {
+        var printing: PrintingSelection
+        var collectionName: String
+        var quantity: Int = 1
+        var finish: CardFinish = .normal
+        var condition: String = CardCondition.nearMint.rawValue
+        var language: String = "en"
+        var purchasePrice: Double?
+    }
+
+    struct EntryEdits: Sendable {
+        var quantity: Int
+        var finish: CardFinish
+        var condition: String
+        var language: String
+        var purchasePrice: Double?
+    }
+
+    /// Adds copies of a printing to a collection. Merges into an existing
+    /// row with the same identity; otherwise creates one. Returns the
+    /// actionID the audit records were written under.
+    @discardableResult
+    static func add(_ request: AddRequest, context modelContext: ModelContext) throws -> UUID {
+        guard request.quantity > 0 else { throw CollectionEditError.invalidQuantity }
+        let collectionName = request.collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !collectionName.isEmpty else { throw CollectionEditError.missingCollection }
+
+        let actionID = UUID()
+        let now = Date()
+        try ensureCollection(named: collectionName, context: modelContext)
+        let meta = try ensureMeta(for: request.printing, context: modelContext)
+
+        let key = CollectionEntry.mergeKey(
+            scryfallID: request.printing.scryfallID, collectionName: collectionName,
+            finish: request.finish.rawValue, condition: request.condition
+        )
+        let scryfallID = request.printing.scryfallID
+        let candidates = try modelContext.fetch(FetchDescriptor<CollectionEntry>(
+            predicate: #Predicate { $0.collectionName == collectionName && $0.scryfallID == scryfallID }
+        ))
+
+        let entry: CollectionEntry
+        if let existing = candidates.first(where: { $0.mergeKey == key }) {
+            existing.quantity += request.quantity
+            if existing.purchasePrice == nil { existing.purchasePrice = request.purchasePrice }
+            entry = existing
+        } else {
+            entry = CollectionEntry(
+                scryfallID: scryfallID,
+                collectionName: collectionName,
+                name: request.printing.name,
+                setCode: request.printing.setCode,
+                setName: request.printing.setName,
+                collectorNumber: request.printing.collectorNumber,
+                rarity: request.printing.rarity,
+                finish: request.finish,
+                quantity: request.quantity,
+                condition: request.condition,
+                language: request.language,
+                purchasePrice: request.purchasePrice,
+                purchasePriceCurrency: request.purchasePrice == nil ? nil : "USD",
+                addedDate: now
+            )
+            modelContext.insert(entry)
+        }
+        if entry.card == nil { entry.card = meta }
+
+        modelContext.insert(AuditRecord(
+            actionID: actionID, action: .manualAdd, timestamp: now,
+            scryfallID: scryfallID, cardName: request.printing.name,
+            collectionName: collectionName, finish: request.finish,
+            condition: request.condition, quantityDelta: request.quantity,
+            collectionEntryID: entry.id
+        ))
+        try modelContext.save()
+        CollectionChangeTracker.shared.bump()
+        return actionID
+    }
+
+    /// Applies edits to one entry. If the edits change its identity to match
+    /// another row in the same collection, the two merge.
+    static func update(entryID: UUID, edits: EntryEdits, context modelContext: ModelContext) throws {
+        guard edits.quantity > 0 else { throw CollectionEditError.invalidQuantity }
+        guard let entry = try fetchEntry(entryID, context: modelContext) else {
+            throw CollectionEditError.entryNotFound
+        }
+        let actionID = UUID()
+        let now = Date()
+        let oldKey = entry.mergeKey
+        let oldQuantity = entry.quantity
+        let oldFinish = entry.finish
+        let oldCondition = entry.condition
+
+        entry.quantity = edits.quantity
+        entry.finish = edits.finish
+        entry.condition = edits.condition
+        entry.language = edits.language
+        entry.purchasePrice = edits.purchasePrice
+        if edits.purchasePrice != nil, entry.purchasePriceCurrency == nil { entry.purchasePriceCurrency = "USD" }
+
+        let identityChanged = entry.mergeKey != oldKey
+        if identityChanged {
+            let collectionName = entry.collectionName
+            let scryfallID = entry.scryfallID
+            let newKey = entry.mergeKey
+            let siblings = try modelContext.fetch(FetchDescriptor<CollectionEntry>(
+                predicate: #Predicate { $0.collectionName == collectionName && $0.scryfallID == scryfallID }
+            ))
+            // Ledger: the old identity loses its copies, the new one gains them.
+            modelContext.insert(AuditRecord(
+                actionID: actionID, action: .manualRemove, timestamp: now,
+                scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
+                finish: oldFinish, condition: oldCondition, quantityDelta: -oldQuantity,
+                collectionEntryID: entry.id
+            ))
+            if let other = siblings.first(where: { $0.id != entry.id && $0.mergeKey == newKey }) {
+                other.quantity += entry.quantity
+                if other.purchasePrice == nil { other.purchasePrice = entry.purchasePrice }
+                modelContext.insert(AuditRecord(
+                    actionID: actionID, action: .manualAdd, timestamp: now,
+                    scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
+                    finish: edits.finish, condition: edits.condition, quantityDelta: entry.quantity,
+                    collectionEntryID: other.id
+                ))
+                modelContext.delete(entry)
+            } else {
+                modelContext.insert(AuditRecord(
+                    actionID: actionID, action: .manualAdd, timestamp: now,
+                    scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
+                    finish: edits.finish, condition: edits.condition, quantityDelta: entry.quantity,
+                    collectionEntryID: entry.id
+                ))
+            }
+        } else if entry.quantity != oldQuantity {
+            let delta = entry.quantity - oldQuantity
+            modelContext.insert(AuditRecord(
+                actionID: actionID, action: delta > 0 ? .manualAdd : .manualRemove, timestamp: now,
+                scryfallID: entry.scryfallID, cardName: entry.name, collectionName: entry.collectionName,
+                finish: entry.finish, condition: entry.condition, quantityDelta: delta,
+                collectionEntryID: entry.id
+            ))
+        }
+
+        try modelContext.save()
+        CollectionChangeTracker.shared.bump()
+    }
+
+    /// Removes one entry entirely, recording the removal.
+    static func remove(entryID: UUID, context modelContext: ModelContext) throws {
+        guard let entry = try fetchEntry(entryID, context: modelContext) else {
+            throw CollectionEditError.entryNotFound
+        }
+        modelContext.insert(AuditRecord(
+            actionID: UUID(), action: .manualRemove, timestamp: Date(),
+            scryfallID: entry.scryfallID, cardName: entry.name, collectionName: entry.collectionName,
+            finish: entry.finish, condition: entry.condition, quantityDelta: -entry.quantity,
+            collectionEntryID: entry.id
+        ))
+        modelContext.delete(entry)
+        try modelContext.save()
+        CollectionChangeTracker.shared.bump()
+    }
+
+    /// Creates an empty collection. Returns false if the name is taken
+    /// (case-insensitively) or blank.
+    @discardableResult
+    static func createCollection(named raw: String, context modelContext: ModelContext) throws -> Bool {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return false }
+        let all = try modelContext.fetch(FetchDescriptor<MTGCollection>())
+        guard !all.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+            return false
+        }
+        modelContext.insert(MTGCollection(name: name))
+        try modelContext.save()
+        CollectionChangeTracker.shared.bump()
+        return true
+    }
+
+    // MARK: Helpers
+
+    private static func fetchEntry(_ id: UUID, context: ModelContext) throws -> CollectionEntry? {
+        try context.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    private static func ensureCollection(named name: String, context: ModelContext) throws {
+        let existing = try context.fetch(FetchDescriptor<MTGCollection>(predicate: #Predicate { $0.name == name }))
+        if existing.isEmpty { context.insert(MTGCollection(name: name)) }
+    }
+
+    /// The shared CardMeta for a printing; created as a pending placeholder
+    /// (carrying what the selection already knows) if we've never seen it,
+    /// so the grid can show it immediately and hydration fills the rest.
+    private static func ensureMeta(for printing: PrintingSelection, context: ModelContext) throws -> CardMeta {
+        let id = printing.scryfallID
+        if let existing = try context.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.scryfallID == id })).first {
+            return existing
+        }
+        let meta = CardMeta(
+            scryfallID: id, name: printing.name, setCode: printing.setCode,
+            setName: printing.setName, collectorNumber: printing.collectorNumber,
+            rarity: printing.rarity,
+            imageWidth: printing.aspectRatio > 1 ? 680 : 488,
+            imageHeight: printing.aspectRatio > 1 ? 488 : 680
+        )
+        meta.oracleID = printing.oracleID
+        meta.imageNormalURL = printing.imageURL
+        meta.artCropURL = printing.artCropURL
+        meta.priceUSD = printing.priceUSD
+        meta.priceUSDFoil = printing.priceUSDFoil
+        context.insert(meta)
+        return meta
     }
 }

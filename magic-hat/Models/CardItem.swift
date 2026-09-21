@@ -30,6 +30,8 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let language: String
     let addedDate: Date?
     let owned: Bool
+    /// Owning collection; empty for cards that aren't ours (search, printings).
+    let collectionName: String
 
     // Visuals + gameplay text (may be nil before hydration).
     let imageURL: String?
@@ -88,6 +90,7 @@ nonisolated extension CardItem {
         self.language = entry.language
         self.addedDate = entry.addedDate
         self.owned = true
+        self.collectionName = entry.collectionName
         self.imageURL = meta?.imageNormalURL
         self.artCropURL = meta?.artCropURL
         self.aspectRatio = meta?.aspectRatio ?? (488.0 / 680.0)
@@ -121,6 +124,7 @@ nonisolated extension CardItem {
         self.language = "en"
         self.addedDate = nil
         self.owned = owned
+        self.collectionName = ""
         self.imageURL = card.bestImageURIs?.normal
         self.artCropURL = card.bestImageURIs?.artCrop
         self.aspectRatio = card.isLandscape ? 680.0/488.0 : 488.0/680.0

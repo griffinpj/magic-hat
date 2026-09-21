@@ -50,6 +50,48 @@ final class CollectionFlowTests: XCTestCase {
         XCTAssertTrue(eye.waitForExistence(timeout: 5), "popping detail should return to the overlay")
     }
 
+    /// Overlay → Add → Add to collection → Done: the card's quantity goes up
+    /// and the overlay's info card reflects it without leaving the screen.
+    @MainActor
+    func testAddFromOverlayIncrementsQuantity() {
+        let app = launch()
+        _ = openCollection(app)
+        app.staticTexts["Card 0"].firstMatch.tap()
+
+        let add = app.buttons["overlay-plus.rectangle.on.rectangle"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5), "overlay action bar")
+        add.tap()
+
+        let confirm = app.buttons["add-card-confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10), "add sheet")
+        confirm.tap()
+        app.buttons["add-card-done"].tap()
+
+        XCTAssertTrue(app.staticTexts["2× Card 0"].waitForExistence(timeout: 10),
+                      "overlay should show the merged quantity")
+    }
+
+    /// Overlay → trash → confirm: the card leaves the grid.
+    @MainActor
+    func testRemoveFromOverlayDeletesTheCard() {
+        let app = launch()
+        _ = openCollection(app)
+        let tile = app.staticTexts["Card 1"].firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.tap()
+
+        let trash = app.buttons["overlay-trash"]
+        XCTAssertTrue(trash.waitForExistence(timeout: 5))
+        trash.tap()
+
+        let confirm = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove'")).firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "confirmation dialog")
+        confirm.tap()
+
+        XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10),
+                      "removed card should leave the grid")
+    }
+
     @MainActor
     func testGridScrollDoesNotHitch() {
         let app = launch()

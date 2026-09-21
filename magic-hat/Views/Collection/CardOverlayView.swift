@@ -17,7 +17,12 @@ struct CardOverlayView: View {
     let onOpenDetail: (CardItem) -> Void
 
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.modelContext) private var modelContext
     @State private var currentID: String?
+    @State private var adding: CardItem?
+    @State private var editing: CardItem?
+    @State private var pendingDelete: CardItem?
+    @State private var deleteError: String?
 
     init(
         items: [CardItem],
@@ -51,7 +56,12 @@ struct CardOverlayView: View {
                 pager
                 if let item = currentItem {
                     InfoPanel(item: item, onDetail: { onOpenDetail(item) })
-                    ActionBar()
+                    ActionBar(
+                        canEdit: item.owned,
+                        onEdit: { editing = item },
+                        onAdd: { adding = item },
+                        onDelete: { pendingDelete = item }
+                    )
                 }
                 Spacer(minLength: 0)
             }
@@ -71,6 +81,37 @@ struct CardOverlayView: View {
             async let printings: Void = Self.prefetchPrintings(for: item)
             async let art: Void = Self.prefetchArt(for: item, maxPixel: heroPixels)
             _ = await (printings, art)
+        }
+        .sheet(item: $adding) { AddCardView(item: $0) }
+        .sheet(item: $editing) { EditEntryView(item: $0) }
+        .confirmationDialog(
+            "Remove \(pendingDelete?.name ?? "")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { item in
+            Button("Remove \(item.quantity) from \(item.collectionName)", role: .destructive) { remove(item) }
+            Button("Cancel", role: .cancel) {}
+        } message: { item in
+            Text("\(item.setName) #\(item.collectorNumber) · \(item.finish.displayName). Recorded in History.")
+        }
+        .alert("Couldn't remove", isPresented: Binding(get: { deleteError != nil },
+                                                      set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
+    }
+
+    /// Deletes the entry behind an owned item, then closes: the grid refetches
+    /// on the tracker bump and the item is gone from it.
+    private func remove(_ item: CardItem) {
+        guard let id = UUID(uuidString: item.id) else { return }
+        do {
+            try CollectionEditController.remove(entryID: id, context: modelContext)
+            onClose()
+        } catch {
+            deleteError = error.localizedDescription
         }
     }
 
@@ -234,13 +275,21 @@ private struct InfoPanel: View {
 // MARK: - Action bar
 
 private struct ActionBar: View {
+    /// Edit and remove only make sense for a row we own. Add works for any
+    /// card (it's how a printing from the detail screen gets into a
+    /// collection). Deck and "mark" actions are still placeholders.
+    let canEdit: Bool
+    let onEdit: () -> Void
+    let onAdd: () -> Void
+    let onDelete: () -> Void
+
     var body: some View {
         HStack(spacing: 14) {
-            action("pencil") {}
+            action("pencil", run: onEdit).disabled(!canEdit)
             action("rectangle.stack.badge.plus") {}
-            action("plus.rectangle.on.rectangle") {}
+            action("plus.rectangle.on.rectangle", run: onAdd)
             action("checkmark.circle") {}
-            action("trash") {}
+            action("trash", run: onDelete).disabled(!canEdit)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
