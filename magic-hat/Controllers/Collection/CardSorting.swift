@@ -37,14 +37,10 @@ nonisolated enum CardSort: String, CaseIterable, Identifiable, Sendable {
 }
 
 nonisolated enum CardSorting {
-    /// Rarity ordering, low → high. Unknown rarity sorts lowest.
-    static let rarityRank: [String: Int] = [
-        "common": 0, "uncommon": 1, "rare": 2, "mythic": 3, "special": 4, "bonus": 5
-    ]
-
+    /// Name order with a total tie-break on id. Uses the precomputed folded
+    /// key: plain `<` on two Strings instead of a locale-aware comparison.
     static func byName(_ a: CardItem, _ b: CardItem) -> Bool {
-        let c = a.name.localizedCaseInsensitiveCompare(b.name)
-        if c != .orderedSame { return c == .orderedAscending }
+        if a.sortKey != b.sortKey { return a.sortKey < b.sortKey }
         return a.id < b.id
     }
 
@@ -55,16 +51,14 @@ nonisolated enum CardSorting {
         case .setCode:
             return items.sorted {
                 if $0.setCode != $1.setCode { return $0.setCode < $1.setCode }
-                let l = Int($0.collectorNumber) ?? Int.max
-                let r = Int($1.collectorNumber) ?? Int.max
-                if l != r { return l < r }
+                if $0.collectorNumberValue != $1.collectorNumberValue {
+                    return $0.collectorNumberValue < $1.collectorNumberValue
+                }
                 return byName($0, $1)
             }
         case .rarity:
             return items.sorted {
-                let l = rarityRank[$0.rarity.lowercased()] ?? -1
-                let r = rarityRank[$1.rarity.lowercased()] ?? -1
-                if l != r { return l > r }
+                if $0.rarityRankValue != $1.rarityRankValue { return $0.rarityRankValue > $1.rarityRankValue }
                 return byName($0, $1)
             }
         case .priceHigh:

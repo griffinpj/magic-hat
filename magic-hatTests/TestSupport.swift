@@ -119,7 +119,11 @@ enum TestSupport {
             language: "en", addedDate: added, owned: true, collectionName: "Main", imageURL: nil,
             artCropURL: nil, aspectRatio: 488.0 / 680.0, typeLine: nil,
             manaCost: nil, oracleText: nil, power: nil, toughness: nil,
-            priceUSD: price, priceUSDFoil: nil, purchasePrice: paid,
+            priceUSD: price, priceUSDFoil: nil,
+            sortKey: CardItem.sortKey(for: name),
+            collectorNumberValue: CardItem.collectorValue(number),
+            rarityRankValue: CardItem.rarityRank(rarity),
+            purchasePrice: paid,
             legalities: nil, edhrecRank: nil, purchaseURIs: nil
         )
     }

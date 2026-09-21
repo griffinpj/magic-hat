@@ -43,6 +43,30 @@ struct CardSortingTests {
         #expect(CardSorting.sorted(items, by: .setCode).map(\.id) == ["z", "y", "x"])
     }
 
+    @Test func sortKeysFoldCaseAndDiacriticsAndParseNumbers() {
+        #expect(CardItem.sortKey(for: "Élan") == CardItem.sortKey(for: "elan"))
+        #expect(CardItem.sortKey(for: "Zebra") > CardItem.sortKey(for: "apple"))
+        #expect(CardItem.collectorValue("216") == 216)
+        #expect(CardItem.collectorValue("216s") == 216, "variant suffix still orders by its number")
+        #expect(CardItem.collectorValue("★") == Int.max)
+        #expect(CardItem.rarityRank("Mythic") == 3)
+        #expect(CardItem.rarityRank("weird") == -1)
+    }
+
+    /// The whole reason for precomputed keys: sorting a real-sized grid must
+    /// be cheap enough to run on the main actor without a visible pause.
+    @Test func sortingFourThousandCardsIsFast() {
+        let items: [CardItem] = (0..<4000).map {
+            TestSupport.card(id: "c\($0)", name: "Card \($0 % 700)", set: ["one", "mom", "ltr"][$0 % 3],
+                             number: "\($0 % 300)", rarity: ["common", "rare", "mythic"][$0 % 3],
+                             price: $0 % 5 == 0 ? Double($0 % 90) : nil)
+        }
+        let start = ContinuousClock.now
+        for sort in CardSort.allCases { _ = CardSorting.sorted(items, by: sort) }
+        let elapsed = ContinuousClock.now - start
+        #expect(elapsed < .milliseconds(250), "all six sorts took \(elapsed)")
+    }
+
     @Test func raritySortsMythicFirst() {
         let items = [
             TestSupport.card(id: "1", name: "C", rarity: "common"),
