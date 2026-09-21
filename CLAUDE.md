@@ -57,11 +57,15 @@ are cross-cutting, not owned by one feature.
   - `AuditRecord.binderName` still exists. It is historical: the ledger is
     append-only and older records name their source binder. New records
     leave it empty; History labels actions by collection.
-  - Planned, not built — decks: a built deck will *hold* entries rather than
-    move them. The intended shape is a nullable `heldByDeck` reference on
-    `CollectionEntry`; the collection grid filters to unheld rows and an "All
-    Collections" view ignores the hold. It is an allocation, not identity, so
-    it must NOT join `mergeKey`.
+  - Planned, not built — decks are **hidden collections**, not a second
+    concept. `MTGCollection` gains a `kind` (`.collection` / `.deck`); the
+    Collections tab hides decks, an "All Collections" view shows everything.
+    Building a deck **moves** rows: the source row's quantity drops (split,
+    if only some copies go), a row is created in the deck collection carrying
+    price/condition/date, and `sourceCollectionName` is recorded on it so
+    unbuilding returns it home. Unbuild merges back via `mergeKey` — which
+    works precisely because binder is no longer in the key. Every move is
+    two AuditRecords (−n source, +n deck) under one actionID.
   - `AuditRecord` — append-only ledger. Records sharing an `actionID` come
     from one user action; each has a signed `quantityDelta`. Backs the
     History tab and future undo/redo.
