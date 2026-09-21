@@ -18,6 +18,10 @@ nonisolated final class CardRuling {
     /// duplicates: oracle id + source + date + the text itself.
     @Attribute(.unique) var id: String
 
+    // Every lookup is "rulings for this oracle id" against a table that will
+    // hold the whole catalog's rulings.
+    #Index<CardRuling>([\.oracleID])
+
     var oracleID: String
     var source: String
     var publishedAt: String

@@ -2,10 +2,20 @@
 //  SetSymbolLoader.swift
 //  magic-hat
 //
-//  Scryfall set symbols are SVG-only (no raster form), and SwiftUI can't
-//  decode a remote SVG. This rasterizes the SVG once via an offscreen
-//  WKWebView snapshot, caches the result, and exposes it as a tintable
-//  template image. `SetSymbolView` is the drop-in SwiftUI view.
+//  Scryfall set symbols are SVG-only, and SwiftUI can't decode a remote SVG,
+//  so they are rasterized through WebKit. Three things make that cheap:
+//
+//   * ONE persistent WKWebView, fed by a serial queue. The previous version
+//     created a web view per symbol; a detail screen listing 25 sets spun up
+//     25 web views on the main thread during the push, which was the jank.
+//   * Two-level disk cache under Caches/SetSymbols: the SVG bytes (so a set
+//     is fetched from Scryfall exactly once) and the rasterized PNG per size
+//     and scale (so after the first render a symbol never touches WebKit
+//     again, across launches).
+//   * Negative caching, so a failing set doesn't retry on every appearance.
+//
+//  Rendered white on transparent and shown as a `.template` image, so it
+//  tints with `.primary` and adapts to light/dark.
 //
 
 import SwiftUI
@@ -15,95 +25,108 @@ import WebKit
 final class SetSymbolLoader {
     static let shared = SetSymbolLoader()
 
-    private var svgURLByCode: [String: String] = [:]
-    private let imageCache = NSCache<NSString, UIImage>()
+    private var memory: [String: UIImage] = [:]
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
     private var failed: Set<String> = []
+    private var svgURLByCode: [String: String] = [:]
 
-    /// Returns a white, transparent-background raster of the set symbol at
-    /// `size` pixels, suitable for use as a `.template` image. Nil on failure.
+    private let fm = FileManager.default
+    private let directory: URL
+    private let rasterizer = SVGRasterizer()
+
+    private init() {
+        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        directory = caches.appendingPathComponent("SetSymbols", isDirectory: true)
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    /// A tintable raster of the set symbol at `size` points. Nil on failure.
     func symbol(setCode: String, size: CGFloat) async -> UIImage? {
         let code = setCode.lowercased()
-        let key = "\(code)|\(Int(size))"
-        if let cached = imageCache.object(forKey: key as NSString) { return cached }
+        let scale = rasterizer.scale
+        let key = "\(code)@\(Int(size))@\(Int(scale))"
+
+        if let cached = memory[key] { return cached }
         if failed.contains(key) { return nil }
         if let existing = inFlight[key] { return await existing.value }
 
+        let pngURL = directory.appendingPathComponent("\(key).png")
         let task = Task { () -> UIImage? in
-            let svgURLString: String
-            if let known = svgURLByCode[code] {
-                svgURLString = known
-            } else if let set = try? await ScryfallClient.shared.set(code: code),
-                      let uri = set.iconSVGURI {
-                svgURLByCode[code] = uri
-                svgURLString = uri
-            } else {
-                return nil
+            // 1. Rasterized before (any launch).
+            if let data = try? Data(contentsOf: pngURL), let image = UIImage(data: data, scale: scale) {
+                return image
             }
-
-            guard let url = URL(string: svgURLString) else { return nil }
-            var request = URLRequest(url: url)
-            request.setValue("MagicHat/1.0", forHTTPHeaderField: "User-Agent")
-            request.setValue("image/svg+xml,*/*", forHTTPHeaderField: "Accept")
-            guard let (data, _) = try? await URLSession.shared.data(for: request) else {
-                return nil
-            }
-            let image = await SVGRasterizer.rasterize(svgData: data, size: size)
-            if let image { imageCache.setObject(image, forKey: key as NSString) }
+            // 2. SVG bytes, from disk or Scryfall.
+            guard let svg = await svgData(for: code) else { return nil }
+            // 3. Rasterize on the shared web view, one at a time.
+            guard let image = await rasterizer.rasterize(svg: svg, size: size) else { return nil }
+            if let data = image.pngData() { try? data.write(to: pngURL, options: .atomic) }
             return image
         }
         inFlight[key] = task
         let result = await task.value
         inFlight[key] = nil
-        if result == nil { failed.insert(key) }
+        if let result { memory[key] = result } else { failed.insert(key) }
         return result
+    }
+
+    private func svgData(for code: String) async -> Data? {
+        let svgURL = directory.appendingPathComponent("\(code).svg")
+        if let data = try? Data(contentsOf: svgURL), !data.isEmpty { return data }
+
+        let uriString: String
+        if let known = svgURLByCode[code] {
+            uriString = known
+        } else if let set = try? await ScryfallClient.shared.set(code: code), let uri = set.iconSVGURI {
+            svgURLByCode[code] = uri
+            uriString = uri
+        } else {
+            return nil
+        }
+        guard let url = URL(string: uriString) else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("MagicHat/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("image/svg+xml,*/*", forHTTPHeaderField: "Accept")
+        guard let (data, _) = try? await URLSession.shared.data(for: request), !data.isEmpty else { return nil }
+        try? data.write(to: svgURL, options: .atomic)
+        return data
     }
 }
 
-/// Renders SVG data to a UIImage via an offscreen WKWebView snapshot.
+/// One WKWebView, one job at a time. WebKit only paints a web view that is
+/// in a window, and `takeSnapshot` captures at the view's own alpha, so the
+/// host is a real window layered *behind* the app at full alpha.
 @MainActor
 private final class SVGRasterizer: NSObject, WKNavigationDelegate {
-    private let webView: WKWebView
-    private let size: CGFloat
-    private var completion: ((UIImage?) -> Void)?
-    private var keepAlive: SVGRasterizer?
+    private struct Job {
+        let svg: Data
+        let size: CGFloat
+        let resume: (UIImage?) -> Void
+    }
 
-    static func rasterize(svgData: Data, size: CGFloat) async -> UIImage? {
+    private var host: UIWindow?
+    private var webView: WKWebView?
+    private var queue: [Job] = []
+    private var current: Job?
+
+    var scale: CGFloat { host?.screen.scale ?? UITraitCollection.current.displayScale }
+
+    func rasterize(svg: Data, size: CGFloat) async -> UIImage? {
         await withCheckedContinuation { continuation in
-            let r = SVGRasterizer(size: size)
-            r.render(svgData: svgData) { continuation.resume(returning: $0) }
+            queue.append(Job(svg: svg, size: size) { continuation.resume(returning: $0) })
+            pump()
         }
     }
 
-    private init(size: CGFloat) {
-        self.size = size
-        let config = WKWebViewConfiguration()
-        webView = WKWebView(frame: CGRect(x: 0, y: 0, width: size, height: size), configuration: config)
-        super.init()
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
-        webView.navigationDelegate = self
-    }
+    private func pump() {
+        guard current == nil, !queue.isEmpty else { return }
+        let job = queue.removeFirst()
+        current = job
+        guard let webView = ensureWebView() else { finish(nil); return }
 
-    private func render(svgData: Data, completion: @escaping (UIImage?) -> Void) {
-        self.completion = completion
-        self.keepAlive = self
-
-        // WebKit only paints a web view that lives in a window, but an
-        // alpha-faded view snapshots faded (the old 0.02 alpha is why symbols
-        // came out invisible). Render at full alpha into a dedicated window
-        // sitting behind the app's own, so nothing is ever visible on screen.
-        guard let window = SVGRasterizer.hostWindow else {
-            finish(nil)
-            return
-        }
-        webView.frame = CGRect(x: 0, y: 0, width: size, height: size)
-        webView.alpha = 1
-        window.addSubview(webView)
-
-        let svg = String(data: svgData, encoding: .utf8) ?? ""
-        let px = Int(size)
+        let px = Int(job.size)
+        webView.frame = CGRect(x: 0, y: 0, width: job.size, height: job.size)
+        let svg = String(data: job.svg, encoding: .utf8) ?? ""
         let html = """
         <!doctype html><html><head><meta name="viewport" content="width=\(px)">
         <style>html,body{margin:0;padding:0;background:transparent}
@@ -114,15 +137,41 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
         webView.loadHTMLString(html, baseURL: nil)
     }
 
+    private func ensureWebView() -> WKWebView? {
+        if let webView { return webView }
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+        else { return nil }
+
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .normal - 1
+        window.backgroundColor = .clear
+        window.isUserInteractionEnabled = false
+        window.frame = CGRect(x: 0, y: 0, width: 512, height: 512)
+        window.isHidden = false
+        host = window
+
+        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        view.isOpaque = false
+        view.backgroundColor = .clear
+        view.scrollView.backgroundColor = .clear
+        view.navigationDelegate = self
+        window.addSubview(view)
+        webView = view
+        return view
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // Let layout + paint settle before snapshotting the SVG.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, let job = self.current else { return }
             let config = WKSnapshotConfiguration()
-            config.rect = CGRect(x: 0, y: 0, width: self.size, height: self.size)
+            config.rect = CGRect(x: 0, y: 0, width: job.size, height: job.size)
             config.afterScreenUpdates = true
-            self.webView.takeSnapshot(with: config) { image, _ in
-                self.finish(image)
+            webView.takeSnapshot(with: config) { image, _ in
+                Task { @MainActor in self.finish(image) }
             }
         }
     }
@@ -136,32 +185,16 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
     }
 
     private func finish(_ image: UIImage?) {
-        webView.removeFromSuperview()
-        completion?(image)
-        completion = nil
-        keepAlive = nil
+        let job = current
+        current = nil
+        job?.resume(image)
+        pump()
     }
-
-    /// Offscreen-by-layering render host: a real window (so WebKit paints)
-    /// placed below the app's window, so the user never sees it.
-    private static var hostWindow: UIWindow? = {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first(where: { $0.activationState == .foregroundActive })
-            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
-        else { return nil }
-        let window = UIWindow(windowScene: scene)
-        window.windowLevel = .normal - 1
-        window.backgroundColor = .clear
-        window.isUserInteractionEnabled = false
-        window.frame = CGRect(x: 0, y: 0, width: 512, height: 512)
-        window.isHidden = false
-        return window
-    }()
 }
 
-/// SwiftUI view that shows a set symbol, tinted. Falls back to a system glyph
-/// while loading or on failure.
+/// SwiftUI view that shows a set symbol, tinted. Keyrune glyph when the font
+/// has the set (instant, offline); otherwise the WebKit-rasterized SVG;
+/// otherwise a system glyph.
 struct SetSymbolView: View {
     let setCode: String
     var size: CGFloat = 22
@@ -170,6 +203,18 @@ struct SetSymbolView: View {
     @State private var image: UIImage?
 
     var body: some View {
+        if let glyph = KeyruneFont.glyph(for: setCode), let font = KeyruneFont.fontName {
+            Text(glyph)
+                .font(.custom(font, size: size * 0.92))
+                .foregroundStyle(tint)
+                .frame(width: size, height: size)
+                .accessibilityLabel(setCode.uppercased())
+        } else {
+            rasterized
+        }
+    }
+
+    private var rasterized: some View {
         Group {
             if let image {
                 Image(uiImage: image)

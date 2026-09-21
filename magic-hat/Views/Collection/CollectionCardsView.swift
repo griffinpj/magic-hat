@@ -23,8 +23,12 @@ struct CollectionCardsView: View {
 
     @State private var items: [CardItem] = []
     @State private var hasLoaded = false
-    @State private var sort: CardSort = .name
     @State private var refreshTask: Task<Void, Never>?
+    @State private var sortTask: Task<Void, Never>?
+
+    /// Remembered across launches and collections.
+    @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
+    private var sort: CardSort { CardSort(rawValue: sortRaw) ?? .name }
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
@@ -61,9 +65,7 @@ struct CollectionCardsView: View {
         }
         // Metadata arriving: refresh fields in place, keep the order.
         .onChange(of: hydrator.revision) { _, _ in scheduleRefresh() }
-        .onChange(of: sort) { _, _ in
-            items = CardSorting.sorted(items, by: sort)
-        }
+        .onChange(of: sortRaw) { _, _ in applySort() }
     }
 
     // MARK: Loading
@@ -88,6 +90,22 @@ struct CollectionCardsView: View {
         // Sync finished: now a full re-sort is welcome (prices/rarity landed).
         if let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort) {
             items = fresh.items
+        }
+    }
+
+    /// Re-sorts off the main thread. CardItem is Sendable, so the array can
+    /// be handed to a detached task; 3,900 localized string compares on main
+    /// is a visible pause right as the menu closes.
+    private func applySort() {
+        sortTask?.cancel()
+        let snapshot = items
+        let by = sort
+        sortTask = Task {
+            let sorted = await Task.detached(priority: .userInitiated) {
+                CardSorting.sorted(snapshot, by: by)
+            }.value
+            guard !Task.isCancelled else { return }
+            items = sorted
         }
     }
 
@@ -143,9 +161,13 @@ struct CollectionCardsView: View {
 
     private var sortButton: some View {
         Menu {
-            Picker("Sort", selection: $sort) {
-                ForEach(CardSort.allCases) { option in
-                    Label(option.rawValue, systemImage: option.systemImage).tag(option)
+            // Plain buttons, not a Picker: a Picker inside a Menu builds a
+            // nested selection control and is noticeably slower to present.
+            ForEach(CardSort.allCases) { option in
+                Button {
+                    sortRaw = option.rawValue
+                } label: {
+                    Label(option.rawValue, systemImage: option == sort ? "checkmark" : option.systemImage)
                 }
             }
         } label: {

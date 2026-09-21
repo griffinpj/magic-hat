@@ -300,6 +300,24 @@ is older than 7 days (catalog) / 1 day (rulings). Scryfall rebuilds daily
 and 79MB a day is not worth it; owned-card prices already refresh every 6h
 through the cheap batched call.
 
+## Set symbols and foil
+
+Set symbols are **text**, from the bundled Keyrune font (`Resources/keyrune.ttf`,
+SIL OFL; `keyrune-map.json` generated from Keyrune's CSS). Registered at
+runtime with CoreText, so no Info.plist entry. Promo/token codes (`p…`, `t…`)
+fall back to the parent set's glyph, as Keyrune itself does. `KeyruneFontTests`
+draws a glyph and counts opaque pixels — the WebKit rasterizer could only ever
+be checked by eye, and failed that repeatedly. WebKit remains as a fallback for
+sets newer than the font: one persistent web view, SVG + PNG cached on disk.
+
+Foil sheen is a Metal shader (`Shaders/FoilSheen.metal`) applied with
+SwiftUI's `layerEffect` (`FoilSheen` modifier) to the card image's own layer:
+one GPU pass, samples the art, clipped with it. Static in the grid — the time
+uniform is constant so nothing redraws; animated at 30fps only on the centred
+overlay card; off under Reduce Motion. Building `.metal` files needs Xcode's
+Metal Toolchain component: `xcodebuild -downloadComponent MetalToolchain`
+(~700MB, installed here on 2026-09-20).
+
 ## Data flow notes
 
 - **Card metadata is fetched for the whole collection, not just what scrolls

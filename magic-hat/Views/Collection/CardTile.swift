@@ -31,6 +31,7 @@ struct CardTile: View, Equatable {
             && lhs.item.owned == rhs.item.owned
             && lhs.item.marketPrice == rhs.item.marketPrice
             && lhs.item.purchasePrice == rhs.item.purchasePrice
+            && lhs.item.finish == rhs.item.finish
     }
 
     /// Green when it has gained, red when it has lost, white when flat or
@@ -41,7 +42,9 @@ struct CardTile: View, Equatable {
     }
 
     var body: some View {
-        CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio)
+        // Sheen on foils, static here so the grid never redraws for it.
+        CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio,
+                      foil: item.finish != .normal)
             .overlay(alignment: .topLeading) { quantityBadge }
             .overlay(alignment: .bottomLeading) { setBadge }
             .overlay(alignment: .bottomTrailing) { priceBadge }
