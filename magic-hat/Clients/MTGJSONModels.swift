@@ -4,16 +4,23 @@
 //
 //  Decodable shapes for the MTGJSON v5 bulk API (https://mtgjson.com/api/v5/).
 //
-//  MTGJSON is our second metadata provider. It matters because Scryfall
-//  exposes a single market price per finish, while MTGJSON aggregates the
-//  full retail picture — low / mid / market (and buylist) across TCGplayer,
-//  Cardmarket and Card Kingdom — which is what the LOW/MID columns want.
+//  What MTGJSON actually provides, measured rather than assumed: for each
+//  card, per vendor (tcgplayer, cardkingdom, cardmarket, manapool,
+//  cardhoarder), a single `retail` and a single `buylist` number per finish
+//  per date. It does NOT publish low/mid/market tiers — those are TCGplayer's
+//  own API, reachable directly via `CardMeta.tcgplayerID`.
 //
-//  Two things to know about the shape of this API:
-//   * It is bulk-only. There is no "one card" endpoint; you fetch a set file
-//     or a prices file.
+//  MTGJSON's unique value is therefore buylist pricing (what a shop pays you)
+//  and multi-vendor/multi-currency retail, neither of which Scryfall has.
+//
+//  Three constraints shape any use of it:
+//   * Bulk-only — no "one card" endpoint; you fetch a set file or the whole
+//     prices file.
 //   * Prices are keyed by MTGJSON UUID, not Scryfall ID. Set files carry
-//     `identifiers.scryfallId`, which is how the two are bridged.
+//     `identifiers.scryfallId` (~1.1MB gzipped per set) to bridge them.
+//   * `AllPricesToday.json` is 5.2MB gzipped but 53MB decompressed and peaks
+//     around 660MB of RSS to parse whole — iOS would terminate the app. So
+//     this client is intended for a server-side job, not the device.
 //
 
 import Foundation
@@ -82,9 +89,11 @@ nonisolated struct MTGJSONFinishPrices: Decodable, Sendable {
 }
 
 /// Normalised price view the app consumes, independent of provider quirks.
+/// Mirrors what MTGJSON actually has: one retail and one buylist number.
 nonisolated struct CardPriceQuote: Sendable, Hashable {
-    let low: Double?
-    let mid: Double?
-    let market: Double?
+    let retail: Double?
+    /// What a vendor pays to buy the card from you. Scryfall has no equivalent.
+    let buylist: Double?
+    let vendor: String
     let currency: String
 }

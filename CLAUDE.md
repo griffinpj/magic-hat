@@ -129,14 +129,27 @@ reuse them later (they take plain values, not SwiftData/Scryfall models):
 Pricing: Scryfall provides only a single market price per finish
 (`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers).
 
-Why not MTGJSON for LOW/MID, measured rather than assumed: the prices file is
-cheap (`AllPricesToday.json.gz`, 5.5MB) but it is keyed by MTGJSON UUID, and
-mapping those to Scryfall ids costs 181MB (`AllPrintings.json.gz`), 113MB
-(`AllIdentifiers.json.xz`, and iOS has no built-in xz), or ~4MB per set —
-which for a collection spanning 480 sets is ~1.9GB. So MTGJSON prices are not
-viable on-device. `CardMeta.tcgplayerID` (handed to us free by Scryfall) is
-the real join key for TCGplayer's API, which is where LOW/MID actually come
-from. `MTGJSONClient` stays for a future server-side job. The
+Why LOW/MID is not available yet, measured rather than assumed:
+
+- **MTGJSON has no tiers.** Verified against `AllPricesToday`: the shape is
+  `paper.<vendor>.{retail|buylist}.{normal|foil|etched}.<date> = one float`.
+  One retail and one buylist number per vendor — no low/mid/market.
+- **It cannot be parsed on device anyway.** 5.2MB gzipped, 53MB decoded,
+  ~660MB peak RSS to parse. iOS would terminate the app. There is no per-set
+  or per-card price file, so it is all-or-nothing.
+- **The identifier join is affordable but moot.** Per-set files are ~1.1MB
+  gzipped and immutable once a set ships, so `scryfallId -> uuid` is cheap
+  per set; the blocker is the price file, not the mapping. (The MTGJSON uuid
+  is a v5 UUID but is not reproducible from Scryfall fields by concatenation,
+  and relying on an undocumented hash recipe would be brittle regardless.)
+
+So LOW/MID/MARKET comes from **TCGplayer's own API**, joined via
+`CardMeta.tcgplayerID`, which Scryfall hands us free in the batch call we
+already make — one request, no bulk download, no UUID mapping.
+
+`MTGJSONClient` remains for a **server-side** job. Its real unique value is
+buylist pricing (what a shop pays you) and multi-vendor/EUR retail, neither
+of which Scryfall publishes. The
 overlay shows the gain/loss vs the price paid at import (`CollectionEntry
 .purchasePrice`) as `(±$Δ, ±%)`.
 

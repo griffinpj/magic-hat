@@ -50,8 +50,8 @@ nonisolated struct MTGJSONClient {
     /// GET /api/v5/AllPricesToday.json — today's prices for every card, keyed
     /// by MTGJSON uuid.
     ///
-    /// This is a large download (tens of MB). Call it from an explicit user
-    /// action with progress, not implicitly.
+    /// 5.2MB gzipped, 53MB decoded, ~660MB peak RSS to parse whole. Intended
+    /// for a server-side job; parsing this on device will get the app killed.
     func pricesToday() async throws -> [String: MTGJSONCardPrices] {
         let url = baseURL.appendingPathComponent("AllPricesToday.json")
         return try await http.request(
@@ -59,9 +59,9 @@ nonisolated struct MTGJSONClient {
         ).data
     }
 
-    /// Flattens one card's provider prices into the app's quote shape,
-    /// preferring TCGplayer (the source ManaBox's LOW/MID/MARKET columns use)
-    /// and falling back to whichever provider answered.
+    /// Flattens one card's provider prices into the app's quote shape.
+    /// Note this yields retail + buylist, not low/mid/market — MTGJSON does
+    /// not publish tiers (verified against AllPricesToday).
     nonisolated static func quote(
         from prices: MTGJSONCardPrices,
         foil: Bool,
@@ -71,13 +71,10 @@ nonisolated struct MTGJSONClient {
         let chosen = paper[provider] ?? paper.values.first
         guard let chosen, let retail = chosen.retail else { return nil }
 
-        // MTGJSON retail carries the market number; low/mid are only present
-        // for providers that publish them, so both may be nil.
-        let market = retail.latest(foil: foil)
         return CardPriceQuote(
-            low: chosen.buylist?.latest(foil: foil),
-            mid: nil,
-            market: market,
+            retail: retail.latest(foil: foil),
+            buylist: chosen.buylist?.latest(foil: foil),
+            vendor: provider,
             currency: chosen.currency ?? "USD"
         )
     }
