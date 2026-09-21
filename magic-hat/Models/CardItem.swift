@@ -11,7 +11,7 @@
 
 import Foundation
 
-struct CardItem: Identifiable, Hashable, Sendable {
+nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     /// Stable identity for the grid (entry id for owned cards, else scryfallID).
     let id: String
     let scryfallID: String
@@ -71,7 +71,7 @@ struct CardItem: Identifiable, Hashable, Sendable {
     }
 }
 
-extension CardItem {
+nonisolated extension CardItem {
     /// Owned card built from a collection entry plus its (optional) cached meta.
     init(entry: CollectionEntry, meta: CardMeta?) {
         self.id = entry.id.uuidString

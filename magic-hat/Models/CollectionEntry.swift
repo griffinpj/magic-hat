@@ -27,7 +27,7 @@ nonisolated enum CardFinish: String, Codable, CaseIterable, Sendable {
 }
 
 @Model
-final class CollectionEntry {
+nonisolated final class CollectionEntry {
     @Attribute(.unique) var id: UUID
 
     /// Links to `CardMeta.scryfallID` for hydrated metadata/images.

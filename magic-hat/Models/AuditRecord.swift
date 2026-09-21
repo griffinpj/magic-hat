@@ -11,7 +11,7 @@
 import Foundation
 import SwiftData
 
-enum AuditAction: String, Codable {
+nonisolated enum AuditAction: String, Codable, Sendable {
     case importAdd      // rows created/increased by an import
     case importReplace  // rows removed because a binder was replaced
     case manualAdd
@@ -19,7 +19,7 @@ enum AuditAction: String, Codable {
 }
 
 @Model
-final class AuditRecord {
+nonisolated final class AuditRecord {
     @Attribute(.unique) var id: UUID
 
     /// Groups all records emitted by one user action.

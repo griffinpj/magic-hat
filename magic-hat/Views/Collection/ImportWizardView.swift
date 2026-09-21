@@ -16,6 +16,18 @@ struct ImportWizardView: View {
     let rows: [ManaBoxRow]
     /// Existing collection names, offered as import destinations.
     let existingCollectionNames: [String]
+    /// Card counts per binder in the parsed file. Computed once: as a
+    /// computed property it regrouped every row on each keystroke in the
+    /// collection-name field.
+    private let binderCounts: [(name: String, count: Int)]
+
+    init(rows: [ManaBoxRow], existingCollectionNames: [String]) {
+        self.rows = rows
+        self.existingCollectionNames = existingCollectionNames
+        self.binderCounts = Dictionary(grouping: rows, by: \.binderName)
+            .map { ($0.key, $0.value.reduce(0) { $0 + $1.quantity }) }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+    }
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -40,13 +52,6 @@ struct ImportWizardView: View {
         Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
     }
 
-    /// Card counts per binder in the parsed file.
-    private var binderCounts: [(name: String, count: Int)] {
-        Dictionary(grouping: rows, by: \.binderName)
-            .map { ($0.key, $0.value.reduce(0) { $0 + $1.quantity }) }
-            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
-    }
-
     /// The resolved destination collection name, or nil if invalid.
     private var resolvedCollectionName: String? {
         switch destination {
@@ -56,6 +61,11 @@ struct ImportWizardView: View {
         case .existing:
             return selectedCollection.isEmpty ? nil : selectedCollection
         }
+    }
+
+    private var newNameCollides: Bool {
+        guard destination == .new, let name = resolvedCollectionName else { return false }
+        return existingCollectionNames.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     private var canImport: Bool {
@@ -166,6 +176,12 @@ struct ImportWizardView: View {
             case .new:
                 TextField("Collection name", text: $newName)
                     .textInputAutocapitalization(.words)
+                if newNameCollides {
+                    Label("A collection with this name exists — cards will be added to it.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             case .existing:
                 Picker("Collection", selection: $selectedCollection) {
                     ForEach(existingCollectionNames, id: \.self) { name in

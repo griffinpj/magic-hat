@@ -20,9 +20,6 @@ final class CardHydrationController {
     /// `hydrated` set instead of refetching each other's work.
     static let shared = CardHydrationController()
 
-    /// How long Scryfall prices stay fresh before a refresh is offered.
-    static let priceTTL: TimeInterval = 6 * 3600
-
     private let client = ScryfallClient.shared
     private var inFlight: Set<String> = []
     /// IDs known-fetched this session, so repeated scroll prefetches short
@@ -57,15 +54,33 @@ final class CardHydrationController {
         hydrated.formUnion(all.subtracting(needed))
         guard !needed.isEmpty else { return }
 
+        await run(needed: needed, context: context)
+    }
+
+    /// Same as `hydrateAll`, but the caller already knows which ids are
+    /// pending (CollectionStore works it out while building the snapshot), so
+    /// no store round-trip is made here at all.
+    func hydrate(pending ids: [String], context: ModelContext) async {
+        guard !isSyncing else { return }
+        let needed = Set(ids).subtracting(hydrated)
+        guard !needed.isEmpty else { return }
+        await run(needed: needed, context: context)
+    }
+
+    private func run(needed: Set<String>, context: ModelContext) async {
         isSyncing = true
         syncTotal = needed.count
         syncedCount = 0
+        // Register with the viewport prefetcher so tiles appearing mid-sync
+        // don't request the same ids a second time.
+        inFlight.formUnion(needed)
 
         // Keep going for a short while if the user backgrounds the app; the
         // work is idempotent, so whatever doesn't finish resumes on next open.
         let assertion = UIApplication.shared.beginBackgroundTask(withName: "card-sync")
         defer {
             isSyncing = false
+            inFlight.subtract(needed)
             if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
         }
 
@@ -82,23 +97,13 @@ final class CardHydrationController {
         }
     }
 
-    /// Re-fetches prices for cards whose prices are older than `priceTTL`.
-    /// Card metadata is effectively immutable, so this exists separately: only
-    /// the money moves. Uses the same batched endpoint and reports progress.
+    /// Re-fetches prices for ids the caller already knows are stale (the store
+    /// computes them alongside the snapshot). Card metadata is effectively
+    /// immutable, so this exists separately: only the money moves.
     @discardableResult
-    func refreshStalePrices(scryfallIDs: [String], context: ModelContext) async -> Int {
+    func refreshPrices(stale ids: [String], context: ModelContext) async -> Int {
         guard !isSyncing else { return 0 }
-        let cutoff = Date().addingTimeInterval(-Self.priceTTL)
-        let idSet = Set(scryfallIDs)
-        let idList = Array(idSet)
-
-        let descriptor = FetchDescriptor<CardMeta>(
-            predicate: #Predicate { idList.contains($0.scryfallID) }
-        )
-        guard let metas = try? context.fetch(descriptor) else { return 0 }
-        let stale = metas
-            .filter { $0.fetchState == .fetched && ($0.pricesUpdatedAt ?? .distantPast) < cutoff }
-            .map(\.scryfallID)
+        let stale = Array(Set(ids))
         guard !stale.isEmpty else { return 0 }
 
         isSyncing = true

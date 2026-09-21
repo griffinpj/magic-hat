@@ -77,6 +77,7 @@ enum CollectionEditController {
 
         try modelContext.save()
         progress(1)
+        CollectionChangeTracker.shared.bump()
 
         return DeleteSummary(
             actionID: actionID,

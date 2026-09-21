@@ -3,29 +3,20 @@
 //  magic-hat
 //
 //  Root tab scaffold. Uses the modern `Tab` API so the app picks up the
-//  native Liquid Glass tab bar on iOS 26, with Search in the dedicated
-//  search role.
+//  native Liquid Glass tab bar on iOS 26.
 //
 
 import SwiftUI
 import SwiftData
 
 struct MainTabView: View {
-    @Environment(\.modelContext) private var modelContext
-
     var body: some View {
         tabs
-            // Rides above whichever tab is showing, so the catalog download is
-            // visible without blocking anything.
             // The bar observes the controller itself. Reading `phase` here
             // would subscribe the whole tab root, re-rendering every tab on
             // each ingest batch — straight into anything being scrolled.
+            // The sync is started by RootView.
             .overlay(alignment: .top) { CatalogSyncBar() }
-            .task {
-                await CatalogSyncController.shared.syncIfNeeded(
-                    container: modelContext.container
-                )
-            }
     }
 
     private var tabs: some View {
@@ -51,5 +42,5 @@ struct MainTabView: View {
 
 #Preview {
     MainTabView()
-        .modelContainer(for: [MTGCollection.self, CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
+        .modelContainer(for: [MTGCollection.self, CollectionEntry.self, CardMeta.self, AuditRecord.self, CardRuling.self], inMemory: true)
 }

@@ -18,7 +18,7 @@ import SwiftData
 struct CardDetailView: View {
     let item: CardItem
 
-    @Query private var ownedEntries: [CollectionEntry]
+    @Environment(\.modelContext) private var modelContext
     @Query private var allRulings: [CardRuling]
 
     @State private var printings: [ScryfallCard] = []
@@ -36,9 +36,15 @@ struct CardDetailView: View {
     @State private var ownedIDs: Set<String> = []
     @State private var printingItems: [CardItem] = []
 
-    private func rebuildOwned() {
-        ownedIDs = Set(ownedEntries.map(\.scryfallID))
-        rebuildPrintingItems()
+    /// Which printings we own, fetched off-main *after* the push has
+    /// animated. This used to be an unbounded @Query over every entry, run
+    /// synchronously during the transition.
+    private func loadOwned() async {
+        let store = CollectionStore.shared(for: modelContext.container)
+        if let ids = try? await store.ownedScryfallIDs(), !Task.isCancelled {
+            ownedIDs = ids
+            rebuildPrintingItems()
+        }
     }
 
     private func rebuildPrintingItems() {
@@ -49,10 +55,6 @@ struct CardDetailView: View {
 
     init(item: CardItem) {
         self.item = item
-        var d = FetchDescriptor<CollectionEntry>()
-        d.propertiesToFetch = [\.scryfallID]
-        _ownedEntries = Query(d)
-
         // Scoped to this card's oracle id so we never load the whole ruling
         // table just to show a handful of lines.
         let oracle = item.oracleID ?? ""
@@ -77,7 +79,7 @@ struct CardDetailView: View {
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
         .task { await loadPrintings() }
-        .onChange(of: ownedEntries, initial: true) { _, _ in rebuildOwned() }
+        .task(id: CollectionChangeTracker.shared.revision) { await loadOwned() }
         .onChange(of: filterText) { _, _ in rebuildGroups() }
         .overlay {
             if let index = overlayIndex, printingItems.indices.contains(index) {

@@ -11,38 +11,15 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
-/// Aggregated stats for one collection, including its most valuable cards.
-private struct CollectionSummary: Identifiable {
-    let name: String
-    let uniqueCards: Int
-    let totalCopies: Int
-    let totalValue: Double
-    /// Highest-value cards, for the thumbnail fan.
-    let highlights: [Highlight]
-    var id: String { name }
-
-    struct Highlight: Identifiable, Hashable {
-        let id: String
-        let imageURL: String?
-        let aspectRatio: Double
-    }
-}
-
 struct CollectionsView: View {
     @Environment(\.modelContext) private var modelContext
 
+    // Small table; fine as a live query and it gives the list its identity.
     @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
 
-    // Lightweight rows (only the columns needed to aggregate) for counts.
-    @Query private var entries: [CollectionEntry]
-
-    init() {
-        var descriptor = FetchDescriptor<CollectionEntry>()
-        // Pull the card metadata alongside: the summary needs prices and
-        // images for the value total and the thumbnail fan.
-        descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        _entries = Query(descriptor)
-    }
+    private var tracker: CollectionChangeTracker { .shared }
+    private var hydrator: CardHydrationController { .shared }
+    private var store: CollectionStore { CollectionStore.shared(for: modelContext.container) }
 
     @State private var showingFileImporter = false
     @State private var parsedRows: [ManaBoxRow] = []
@@ -50,6 +27,7 @@ struct CollectionsView: View {
     @State private var importError: String?
     @State private var isParsing = false
     @State private var summaries: [CollectionSummary] = []
+    @State private var summaryTask: Task<Void, Never>?
     @State private var pendingDelete: String?
     @State private var isDeleting = false
 
@@ -57,37 +35,16 @@ struct CollectionsView: View {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
     }
 
-    private func rebuildSummaries() {
-        let byCollection = Dictionary(grouping: entries, by: \.collectionName)
-        summaries = collections.map { collection in
-            let rows = byCollection[collection.name] ?? []
-
-            var total = 0.0
-            var valued: [(value: Double, entry: CollectionEntry)] = []
-            valued.reserveCapacity(rows.count)
-            for row in rows {
-                let unit = row.finish == .normal
-                    ? row.card?.priceUSD
-                    : (row.card?.priceUSDFoil ?? row.card?.priceUSD)
-                let value = (unit ?? 0) * Double(row.quantity)
-                total += value
-                if value > 0 { valued.append((value, row)) }
+    /// Totals + top cards, computed off-main by the store. Debounced because
+    /// hydration bumps its revision on every 75-card batch.
+    private func scheduleSummaries(delay: Duration) {
+        summaryTask?.cancel()
+        summaryTask = Task {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            if let fresh = try? await store.summaries(), !Task.isCancelled {
+                summaries = fresh
             }
-            let top = valued.sorted { $0.value > $1.value }.prefix(5).map { pair in
-                CollectionSummary.Highlight(
-                    id: pair.entry.id.uuidString,
-                    imageURL: pair.entry.card?.imageNormalURL,
-                    aspectRatio: pair.entry.card?.aspectRatio ?? (488.0 / 680.0)
-                )
-            }
-
-            return CollectionSummary(
-                name: collection.name,
-                uniqueCards: rows.count,
-                totalCopies: rows.reduce(0) { $0 + $1.quantity },
-                totalValue: total,
-                highlights: Array(top)
-            )
         }
     }
 
@@ -141,18 +98,21 @@ struct CollectionsView: View {
             } message: {
                 Text(importError ?? "")
             }
-            .onChange(of: entries, initial: true) { _, _ in rebuildSummaries() }
-            .onChange(of: collections, initial: true) { _, _ in rebuildSummaries() }
-            .task { backfillCollections() }
+            .task(id: tracker.revision) {
+                await backfillCollections()
+                scheduleSummaries(delay: .zero)
+            }
+            .onChange(of: hydrator.revision) { _, _ in
+                scheduleSummaries(delay: hydrator.isSyncing ? .seconds(2) : .milliseconds(300))
+            }
         }
     }
 
-    /// Ensures an MTGCollection row exists for every collection name present in
+    /// Ensures an MTGCollection row exists for every collection name present on
     /// entries. Covers data imported before collections were modeled.
-    private func backfillCollections() {
-        let names = Set(entries.map(\.collectionName)).filter { !$0.isEmpty }
-        let existing = Set(collections.map(\.name))
-        let missing = names.subtracting(existing)
+    private func backfillCollections() async {
+        guard let names = try? await store.entryCollectionNames() else { return }
+        let missing = names.subtracting(collections.map(\.name))
         guard !missing.isEmpty else { return }
         for name in missing { modelContext.insert(MTGCollection(name: name)) }
         try? modelContext.save()
