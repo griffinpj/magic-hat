@@ -31,6 +31,20 @@ final class CardMeta {
     var imageSmallURL: String?
     var imageNormalURL: String?
     var imageLargeURL: String?
+    var artCropURL: String?
+
+    /// Gameplay text (cached so the overlay/detail hero renders from cache).
+    var oracleID: String?
+    var typeLine: String?
+    var manaCost: String?
+    var oracleText: String?
+    var power: String?
+    var toughness: String?
+
+    /// Scryfall market prices (USD). Low/mid tiers are not provided by
+    /// Scryfall (TCGplayer only) and are mocked in the UI.
+    var priceUSD: Double?
+    var priceUSDFoil: Double?
 
     /// Pixel dimensions of the `normal` image so tiles match the true
     /// aspect ratio (most cards are 488x680; battle/planar are landscape).

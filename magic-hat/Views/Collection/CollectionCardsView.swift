@@ -2,11 +2,10 @@
 //  CollectionCardsView.swift
 //  magic-hat
 //
-//  A 3-wide card grid for every card in one collection (flat: binders are
-//  metadata, not a navigation level). Card metadata and images are hydrated
-//  lazily as tiles approach the viewport: when a tile appears we prefetch a
-//  lookahead window so images are usually ready before the user scrolls to
-//  them, avoiding visible loading.
+//  Shows every card in one collection using the reusable CardGridView (flat:
+//  binders are metadata, not a navigation level). Builds the grid's [CardItem]
+//  from owned entries + cached metadata, memoized so it only rebuilds when the
+//  data changes. Metadata/images are hydrated lazily as tiles approach view.
 //
 
 import SwiftUI
@@ -20,62 +19,50 @@ struct CollectionCardsView: View {
     @Query private var allMeta: [CardMeta]
 
     @State private var hydrator = CardHydrationController()
-    // Memoized meta lookup, rebuilt only when metadata changes.
-    @State private var metaByID: [String: CardMeta] = [:]
+    @State private var items: [CardItem] = []
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
 
-    private let columns = Array(
-        repeating: GridItem(.flexible(), spacing: 10), count: 3
-    )
-
     init(collectionName: String) {
         self.collectionName = collectionName
-
-        var entryDescriptor = FetchDescriptor<CollectionEntry>(
-            predicate: #Predicate { $0.collectionName == collectionName },
-            sortBy: [SortDescriptor(\.name)]
+        _entries = Query(
+            filter: #Predicate<CollectionEntry> { $0.collectionName == collectionName },
+            sort: \CollectionEntry.name
         )
-        // Only the columns tiles render are prefetched.
-        entryDescriptor.propertiesToFetch = [
-            \.scryfallID, \.name, \.setCode, \.collectorNumber, \.quantity
-        ]
-        _entries = Query(entryDescriptor)
-
-        var metaDescriptor = FetchDescriptor<CardMeta>()
-        metaDescriptor.propertiesToFetch = [
-            \.scryfallID, \.imageNormalURL, \.imageWidth, \.imageHeight
-        ]
-        _allMeta = Query(metaDescriptor)
     }
 
-    private func rebuildMeta() {
-        metaByID = Dictionary(allMeta.map { ($0.scryfallID, $0) }) { a, _ in a }
+    private func rebuildItems() {
+        let metaByID = Dictionary(allMeta.map { ($0.scryfallID, $0) }) { a, _ in a }
+        items = entries.map { CardItem(entry: $0, meta: metaByID[$0.scryfallID]) }
     }
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                    CardTile(entry: entry, meta: metaByID[entry.scryfallID])
-                        .equatable()
-                        .onAppear { prefetch(around: index) }
+        Group {
+            if items.isEmpty {
+                ContentUnavailableView {
+                    Text("📭").font(.system(size: 64))
+                } description: {
+                    Text("This collection has no cards.")
+                }
+            } else {
+                CardGridView(items: items) { index in
+                    prefetch(around: index)
                 }
             }
-            .padding(10)
         }
         .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: entries, initial: true) { _, _ in rebuildItems() }
+        .onChange(of: allMeta) { _, _ in rebuildItems() }
         .task { prefetch(around: 0) }
-        .onChange(of: allMeta, initial: true) { _, _ in rebuildMeta() }
     }
 
     /// Hydrates the window of cards starting at `index` through the lookahead.
     private func prefetch(around index: Int) {
-        guard !entries.isEmpty else { return }
-        let upper = min(index + lookahead, entries.count)
-        let window = entries[index..<upper].map(\.scryfallID)
+        guard !items.isEmpty else { return }
+        let upper = min(index + lookahead, items.count)
+        let window = items[index..<upper].map(\.scryfallID)
         hydrator.hydrate(scryfallIDs: window, context: modelContext)
     }
 }

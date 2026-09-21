@@ -87,10 +87,19 @@ final class CardHydrationController {
             meta.setName = card.setName
             meta.collectorNumber = card.collectorNumber
             meta.rarity = card.rarity
+            meta.oracleID = card.oracleID
+            meta.typeLine = card.bestTypeLine
+            meta.manaCost = card.bestManaCost
+            meta.oracleText = card.bestOracleText
+            meta.power = card.power
+            meta.toughness = card.toughness
+            meta.priceUSD = card.prices?.usd.flatMap(Double.init)
+            meta.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
             let uris = card.bestImageURIs
             meta.imageSmallURL = uris?.small
             meta.imageNormalURL = uris?.normal
             meta.imageLargeURL = uris?.large
+            meta.artCropURL = uris?.artCrop
             // Scryfall doesn't return pixel dims; use known constants per
             // orientation so tiles get the right aspect ratio.
             if card.isLandscape {
