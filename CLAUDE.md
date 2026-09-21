@@ -53,7 +53,8 @@ are cross-cutting, not owned by one feature.
     History tab and future undo/redo.
   - `ManaBoxRow` — parsed CSV row (the on-disk import schema).
 - `Clients/` — API clients. Only describe endpoints + request/response
-  shapes. `ScryfallClient` (`/cards/:id`, batched `/cards/collection`).
+  shapes. `ScryfallClient` (`/cards/:id`, batched `/cards/collection`,
+  `/cards/search` for all printings by oracle id).
 - `Utils/` — cross-cutting infrastructure, no API-specific logic.
   - `HTTPClient` — transport, required headers (User-Agent/Accept), decoding.
   - `RateLimiter` — actor enforcing Scryfall per-endpoint limits.
@@ -92,6 +93,27 @@ bulk data writes — belongs off the main thread.
   than blocking behind a spinner.
 - Long-running user actions should show progress and keep the UI interactive
   (or explicitly disable only the controls that must not change mid-operation).
+
+## Reusable card UI
+
+Card browsing is built from generic, source-agnostic components so Search can
+reuse them later (they take plain values, not SwiftData/Scryfall models):
+
+- `CardItem` (Models/) — presentation value type for one card. Build it from
+  `CollectionEntry`+`CardMeta` (owned) or, later, from a `ScryfallCard`
+  (search). Carries `owned` so non-owned results can dim.
+- `CardGridView` — 3-wide grid of `[CardItem]`; `onAppearIndex` lets the
+  parent hydrate/prefetch. Tap → overlay; overlay eye → detail push.
+- `CardOverlayView` — enlarged card in a horizontal pager that peeks
+  neighbours; swipe flows through the grid. Info panel + Liquid Glass action
+  bar (only the eye action is wired; others are placeholders).
+- `CardDetailView` — hero art header, gameplay text, Versions/Ruling tabs,
+  and all printings (grouped by set) with owned indicators.
+
+Pricing: Scryfall provides only a single market price per finish
+(`prices.usd` / `usd_foil`). LOW/MID tiers are TCGplayer-only — not fetched,
+shown as a mocked `$xx.xx` (see `PriceFormat`). Revisit if a TCGplayer feed
+is added.
 
 ## Data flow notes
 

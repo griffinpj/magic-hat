@@ -32,6 +32,36 @@ struct ScryfallClient {
         )
     }
 
+    /// GET /cards/search — all printings of a card, by oracle id, newest first.
+    /// Rate limited to 2/sec; follows pagination.
+    func printings(oracleID: String) async throws -> [ScryfallCard] {
+        var results: [ScryfallCard] = []
+        var comps = URLComponents(
+            url: baseURL.appendingPathComponent("cards").appendingPathComponent("search"),
+            resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: "oracleid:\(oracleID)"),
+            URLQueryItem(name: "unique", value: "prints"),
+            URLQueryItem(name: "order", value: "released"),
+            URLQueryItem(name: "dir", value: "desc")
+        ]
+        var nextURL = comps.url
+
+        while let url = nextURL {
+            let page = try await http.request(
+                ScryfallListResponse.self, url: url, rateLimit: .cardsSearch
+            )
+            results.append(contentsOf: page.data)
+            if page.hasMore == true, let next = page.nextPage {
+                nextURL = URL(string: next)
+            } else {
+                nextURL = nil
+            }
+        }
+        return results
+    }
+
     /// POST /cards/collection — up to 75 cards in one request by ID.
     /// Rate limited to 2/sec. Callers should chunk large lists themselves
     /// or use `cards(ids:)` which chunks automatically.
