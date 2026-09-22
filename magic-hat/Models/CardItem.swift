@@ -46,6 +46,10 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let oracleText: String?
     let power: String?
     let toughness: String?
+    let loyalty: String?
+    let colors: [ManaColor]
+    let colorIdentity: [ManaColor]
+    let artist: String?
 
     // Scryfall market prices (USD).
     let priceUSD: Double?
@@ -133,6 +137,10 @@ nonisolated extension CardItem {
         self.oracleText = meta?.oracleText
         self.power = meta?.power
         self.toughness = meta?.toughness
+        self.loyalty = meta?.loyalty
+        self.colors = Self.colors(fromLetters: meta?.colorsRaw)
+        self.colorIdentity = Self.colors(fromLetters: meta?.colorIdentityRaw)
+        self.artist = meta?.artist
         self.priceUSD = meta?.priceUSD
         self.priceUSDFoil = meta?.priceUSDFoil
         self.sortKey = Self.sortKey(for: self.name)
@@ -170,6 +178,10 @@ nonisolated extension CardItem {
         self.oracleText = card.bestOracleText
         self.power = card.power
         self.toughness = card.toughness
+        self.loyalty = card.loyalty
+        self.colors = Self.colors(fromLetters: CardMeta.letters(card.bestColors))
+        self.colorIdentity = Self.colors(fromLetters: CardMeta.letters(card.colorIdentity))
+        self.artist = card.artist
         self.priceUSD = card.prices?.usd.flatMap(Double.init)
         self.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
         self.sortKey = Self.sortKey(for: card.name)
@@ -179,6 +191,11 @@ nonisolated extension CardItem {
         self.legalities = card.legalities
         self.edhrecRank = card.edhrecRank
         self.purchaseURIs = card.purchaseURIs
+    }
+
+    /// "WU" -> [.white, .blue].
+    static func colors(fromLetters raw: String?) -> [ManaColor] {
+        raw?.compactMap { ManaColor(rawValue: String($0)) } ?? []
     }
 
     /// Formats to surface, in the order players care about.

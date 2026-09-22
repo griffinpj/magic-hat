@@ -34,10 +34,11 @@ nonisolated struct ScryfallCardFace: Codable, Sendable {
     let oracleText: String?
     let power: String?
     let toughness: String?
+    let colors: [String]?
     let imageURIs: ScryfallImageURIs?
 
     enum CodingKeys: String, CodingKey {
-        case name, power, toughness
+        case name, power, toughness, colors
         case oracleID = "oracle_id"
         case typeLine = "type_line"
         case manaCost = "mana_cost"
@@ -75,6 +76,11 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     let oracleText: String?
     let power: String?
     let toughness: String?
+    let loyalty: String?
+    /// Printed colours; multi-faced layouts carry them per face instead.
+    let colors: [String]?
+    let colorIdentity: [String]?
+    let artist: String?
     let releasedAt: String?
     let legalities: [String: String]?
     let edhrecRank: Int?
@@ -85,7 +91,8 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     let prices: ScryfallPrices?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, set, rarity, layout, power, toughness, prices, legalities
+        case id, name, set, rarity, layout, power, toughness, prices, legalities, loyalty, colors, artist
+        case colorIdentity = "color_identity"
         case oracleID = "oracle_id"
         case setName = "set_name"
         case collectorNumber = "collector_number"
@@ -121,6 +128,8 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
 
     var bestTypeLine: String? { typeLine ?? cardFaces?.first?.typeLine }
     var bestManaCost: String? { manaCost ?? cardFaces?.first?.manaCost }
+    /// Top-level colours, else the front face's (transform, modal DFC).
+    var bestColors: [String]? { colors ?? cardFaces?.first?.colors }
 
     /// Layouts whose images are landscape rather than the standard portrait.
     var isLandscape: Bool {
@@ -165,17 +174,17 @@ nonisolated struct ScryfallSet: Codable, Sendable, Identifiable, Hashable {
 }
 
 /// Response wrapper for GET /sets.
-nonisolated struct ScryfallSetListResponse: Decodable {
+nonisolated struct ScryfallSetListResponse: Decodable, Sendable {
     let data: [ScryfallSet]
 }
 
 /// GET /catalog/:name and GET /cards/autocomplete both answer `{ data: [String] }`.
-nonisolated struct ScryfallStringListResponse: Decodable {
+nonisolated struct ScryfallStringListResponse: Decodable, Sendable {
     let data: [String]
 }
 
 /// Response wrapper for GET /cards/search (paginated list).
-nonisolated struct ScryfallListResponse: Decodable {
+nonisolated struct ScryfallListResponse: Decodable, Sendable {
     let data: [ScryfallCard]
     let hasMore: Bool?
     let nextPage: String?
@@ -199,7 +208,7 @@ nonisolated struct ScryfallSearchPage: Sendable {
 }
 
 /// Response wrapper for POST /cards/collection.
-nonisolated struct ScryfallCollectionResponse: Decodable {
+nonisolated struct ScryfallCollectionResponse: Decodable, Sendable {
     let data: [ScryfallCard]
     let notFound: [ScryfallCardIdentifier]?
 
@@ -210,13 +219,13 @@ nonisolated struct ScryfallCollectionResponse: Decodable {
 }
 
 /// Identifier used to request cards in a collection lookup.
-struct ScryfallCardIdentifier: Codable {
+nonisolated struct ScryfallCardIdentifier: Codable, Sendable {
     let id: String?
 
     init(id: String) { self.id = id }
 }
 
 /// Request body for POST /cards/collection.
-struct ScryfallCollectionRequest: Encodable {
+nonisolated struct ScryfallCollectionRequest: Encodable, Sendable {
     let identifiers: [ScryfallCardIdentifier]
 }

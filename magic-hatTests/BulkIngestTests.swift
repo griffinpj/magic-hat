@@ -29,6 +29,9 @@ struct BulkIngestTests {
         #expect(metas.allSatisfy { $0.oracleID != nil && $0.pricesUpdatedAt != nil })
         // Prices are the whole point of the bulk file; most cards carry one.
         #expect(metas.filter { $0.priceUSD != nil }.count > metas.count / 2)
+        // What the collection's colour and artist filters run on.
+        #expect(metas.allSatisfy { $0.colorsRaw != nil && $0.colorIdentityRaw != nil })
+        #expect(metas.filter { $0.artist != nil }.count > metas.count * 9 / 10)
     }
 
     @Test @MainActor func ingestIsIdempotent() async throws {

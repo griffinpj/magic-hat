@@ -168,7 +168,10 @@ final class CardHydrationController {
 
         return ids.filter { id in
             guard let meta = byID[id] else { return true } // no meta yet
-            return meta.fetchState != .fetched
+            // colorsRaw is nil only for rows stored before colours were
+            // kept; refetching once backfills what the collection filters
+            // need.
+            return meta.fetchState != .fetched || meta.colorsRaw == nil
         }
     }
 

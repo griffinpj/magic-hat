@@ -149,6 +149,12 @@ bulk data writes — belongs off the main thread.
   (e.g. `ManaBoxRow`, `CardFinish`, `CSVParser`, `HTTPClient`).
 - Networking runs off-main via `nonisolated` clients + `RateLimiter` (an
   actor); never block on the main thread waiting for a request.
+- **Approachable concurrency is on** (`SWIFT_APPROACHABLE_CONCURRENCY`), so
+  a `nonisolated async` function runs on the *caller's* actor, and the
+  clients are called from the main actor. CPU work inside them must opt out
+  explicitly: `HTTPClient` decodes JSON in a `@concurrent` function. Before
+  that, every search page, catalog and hydration batch was parsed on the
+  main thread — under the keyboard during live search.
 - SwiftData `@Model` types are main-actor-bound under this project's default
   MainActor isolation, so their writes happen on the main context. For large
   writes, chunk the loop and `await Task.yield()` between batches so the run
@@ -391,6 +397,17 @@ keyboard bar clears it (number pads have no Return), the Forms use
 `.scrollDismissesKeyboard(.interactively)`, and the results grid dismisses
 on scroll. `testKeyboardDoneDismisses` covers the number-pad case.
 
+**Searching a collection.** `CollectionCardsView` treats the collection as
+a search that is always active: a search field and a Filters button (the
+same `CardSearchQuery` and `SearchFiltersView`, `context: .collection`, which
+hides the Scryfall-only options), no inline form. It is evaluated in memory
+against this collection's cards by `CardSearchQuery.matches(_:)` — clause
+for clause the local twin of `scryfallQuery` — off the main actor, keeping
+the grid's order. For that, `CardMeta` keeps `colorsRaw`/`colorIdentityRaw`
+(WUBRG letters), `artist` and `loyalty` from both the bulk ingest and the
+batched hydration; a row stored before those existed has `colorsRaw == nil`
+and counts as pending, so one hydration pass backfills it.
+
 **Saved searches** are a SwiftData model (`SavedSearch`, query stored as
 JSON so the filter model can grow without a migration), not UserDefaults:
 a real user-managed list (rename, reorder, delete) that belongs with the
@@ -536,8 +553,10 @@ in-memory container (binder merge, add, replace, audit), `CollectionStore`,
 `CardSearchQuery` (every filter's Scryfall syntax, JSON round trip),
 `ManaSymbol` (parsing, glyph coverage, a drawn glyph has ink),
 `SearchController` (paging, empty vs failed, ownership) with a fake client.
-`SearchFlowTests` (UI) drives the landing filters, keyboard dismissal and
-saving a search, none of which needs the network.
+`CardSearchQueryMatchingTests` covers the in-memory evaluation clause by
+clause. `SearchFlowTests` (UI) drives the landing filters, keyboard
+dismissal and saving a search; `testCollectionSearchAndColorFilterNarrowGrid`
+the collection's field and filter sheet. None needs the network.
 
 UI tests launch the app with `-uitest-seed`: `UITestSeed` fills an in-memory
 store with 900 image-less cards and marks the catalog ready, so nothing

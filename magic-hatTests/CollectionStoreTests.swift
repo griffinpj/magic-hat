@@ -12,6 +12,9 @@ struct CollectionStoreTests {
 
         func add(_ id: String, name: String, state: CardFetchState, price: Double?, priceAge: TimeInterval) {
             let meta = CardMeta(scryfallID: id, name: name, fetchState: state)
+            // A fetched row also carries colours; without them it counts as
+            // pending (backfill for rows stored before colours were kept).
+            if state == .fetched { meta.colorsRaw = "" }
             meta.priceUSD = price
             meta.pricesUpdatedAt = Date().addingTimeInterval(-priceAge)
             ctx.insert(meta)

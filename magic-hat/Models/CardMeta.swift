@@ -46,6 +46,12 @@ nonisolated final class CardMeta {
     var oracleText: String?
     var power: String?
     var toughness: String?
+    var loyalty: String?
+    /// Colour letters in WUBRG order ("WU"); "" for colourless; nil when the
+    /// card was stored before colours were kept (hydration backfills it).
+    var colorsRaw: String?
+    var colorIdentityRaw: String?
+    var artist: String?
 
     /// Scryfall market prices (USD). Low/mid tiers are not provided by
     /// Scryfall (TCGplayer only) and are mocked in the UI.
@@ -98,6 +104,10 @@ nonisolated final class CardMeta {
         oracleText = card.bestOracleText
         power = card.power
         toughness = card.toughness
+        loyalty = card.loyalty
+        colorsRaw = Self.letters(card.bestColors)
+        colorIdentityRaw = Self.letters(card.colorIdentity)
+        artist = card.artist
         priceUSD = card.prices?.usd.flatMap(Double.init)
         priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
         pricesUpdatedAt = Date()
@@ -116,6 +126,14 @@ nonisolated final class CardMeta {
         imageHeight = card.isLandscape ? 488 : 680
         fetchState = .fetched
         lastFetched = Date()
+    }
+
+    /// ["U", "W"] -> "WU": canonical order, unknown letters dropped, nil
+    /// stays nil (not stored) rather than becoming "" (colourless).
+    static func letters(_ colors: [String]?) -> String? {
+        guard let colors else { return nil }
+        let set = Set(colors.map { $0.uppercased() })
+        return ManaColor.allCases.filter { set.contains($0.rawValue) }.map(\.rawValue).joined()
     }
 
     init(

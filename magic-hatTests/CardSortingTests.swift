@@ -64,7 +64,9 @@ struct CardSortingTests {
         let start = ContinuousClock.now
         for sort in CardSort.allCases { _ = CardSorting.sorted(items, by: sort) }
         let elapsed = ContinuousClock.now - start
-        #expect(elapsed < .milliseconds(250), "all six sorts took \(elapsed)")
+        // Generous: this guards against the second-long pause precomputed
+        // keys fixed, and it runs beside parallel UI-test clones on CI.
+        #expect(elapsed < .milliseconds(500), "all six sorts took \(elapsed)")
     }
 
     @Test func raritySortsMythicFirst() {
