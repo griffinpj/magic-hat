@@ -22,8 +22,12 @@ import SwiftData
 
 struct DeckCardsView: View {
     let snapshot: DeckSnapshot
+    /// True while the field is active or something is typed or filtered;
+    /// the parent hides its section picker to give the search the room.
+    @Binding var searchActive: Bool
 
     @Environment(\.modelContext) private var modelContext
+    @State private var fieldActive = false
 
     @State private var searchText = ""
     @State private var query = CardSearchQuery()
@@ -45,7 +49,10 @@ struct DeckCardsView: View {
 
     private var collectionTracker: CollectionChangeTracker { .shared }
 
-    private var isSearching: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty || query.hasFilters }
+    private var hasCriteria: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty || query.hasFilters }
+    /// The search UI (scope, board, filters, results) shows as soon as the
+    /// field is active, so filters can be set before typing anything.
+    private var isSearching: Bool { fieldActive || hasCriteria }
     private var locked: Bool { snapshot.isLocked }
     private var usesIdentity: Bool { snapshot.format.hasCommander && !snapshot.commanders.isEmpty }
 
@@ -60,7 +67,13 @@ struct DeckCardsView: View {
 
     var body: some View {
         content
-            .background { SearchDismisser(trigger: dismissTrigger, isEmpty: searchText.isEmpty) }
+            .background {
+                SearchDismisser(trigger: dismissTrigger, isEmpty: searchText.isEmpty)
+                SearchActivityReporter(isActive: $fieldActive)
+            }
+            .onChange(of: isSearching, initial: true) { _, active in
+                withAnimation(.snappy) { searchActive = active }
+            }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: locked ? "Search this deck" : "Add cards")
             .searchPresentationToolbarBehavior(.avoidHidingContent)
@@ -154,7 +167,10 @@ struct DeckCardsView: View {
     @ViewBuilder private var searchResults: some View {
         switch scope {
         case .collection:
-            if !ownedLoaded {
+            if !hasCriteria {
+                ContentUnavailableView("Search Your Collection", systemImage: "tray.full",
+                                       description: Text("Type a name, or set filters."))
+            } else if !ownedLoaded {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if collectionResults.isEmpty {
                 ContentUnavailableView("Nothing in Your Collection", systemImage: "tray",
@@ -171,6 +187,7 @@ struct DeckCardsView: View {
             case .idle:
                 ContentUnavailableView("Search All Cards", systemImage: "magnifyingglass",
                                        description: Text("Type a name, or set filters."))
+                    .id(hasCriteria)
             case .searching:
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             case .empty:
@@ -194,15 +211,14 @@ struct DeckCardsView: View {
         let notLegal = legalKey.flatMap { item.legalities?[$0] }.map { $0 != "legal" } ?? false
         return DeckSearchRow(
             item: item, ownedCopies: ownedCopies, inDeck: inDeckByKey[board]?[key] ?? 0,
-            notLegal: notLegal, onAdd: { add(item) }
+            notLegal: notLegal, onAdd: { add(item) }, onOpen: { open(item) }
         )
-        .onTapGesture { open(item) }
     }
 
     // MARK: Deck list
 
     @ViewBuilder private var deckList: some View {
-        let filtered = locked && isSearching ? filteredSnapshotItems : nil
+        let filtered = locked && hasCriteria ? filteredSnapshotItems : nil
         if snapshot.allItems.isEmpty {
             ContentUnavailableView {
                 Label("Empty Deck", systemImage: "rectangle.stack")
@@ -261,8 +277,8 @@ struct DeckCardsView: View {
     }
 
     private func row(_ item: DeckCardItem) -> some View {
-        DeckCardRow(item: item, locked: locked) { setQuantity(item, $0) }
-            .onTapGesture { openDeckItem(item) }
+        DeckCardRow(item: item, locked: locked, onSetQuantity: { setQuantity(item, $0) },
+                    onOpen: { openDeckItem(item) })
             .contextMenu {
                 if !locked {
                     ForEach(DeckBoard.addable.filter { $0 != item.board }) { b in
@@ -313,7 +329,7 @@ struct DeckCardsView: View {
 
     private func runSearch(immediately: Bool) {
         guard !locked else { return }
-        guard isSearching else {
+        guard hasCriteria else {
             controller.clear()
             collectionResults = []
             return
@@ -363,7 +379,7 @@ struct DeckCardsView: View {
             owned = cards
         }
         ownedLoaded = true
-        if isSearching, scope == .collection { runSearch(immediately: true) }
+        if hasCriteria, scope == .collection { runSearch(immediately: true) }
     }
 
     // MARK: Actions
@@ -412,4 +428,18 @@ nonisolated struct DeckSearchResult: Identifiable, Hashable, Sendable {
     let card: CardItem
     let ownedCopies: Int
     var id: String { card.oracleID ?? card.scryfallID }
+}
+
+/// Relays the searchable field's activity (which only exists in the
+/// environment inside the searchable content) to a binding.
+private struct SearchActivityReporter: View {
+    @Binding var isActive: Bool
+    @Environment(\.isSearching) private var isSearching
+
+    var body: some View {
+        Color.clear
+            .onChange(of: isSearching, initial: true) { _, value in
+                if isActive != value { isActive = value }
+            }
+    }
 }

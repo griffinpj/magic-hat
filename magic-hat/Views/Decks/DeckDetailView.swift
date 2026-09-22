@@ -27,6 +27,8 @@ struct DeckDetailView: View {
     @State private var showRename = false
     @State private var newName = ""
     @State private var error: String?
+    /// Reported by the Cards tab; the picker steps aside for the search.
+    @State private var searchActive = false
 
     private var deckTracker: DeckChangeTracker { .shared }
     private var collectionTracker: CollectionChangeTracker { .shared }
@@ -48,17 +50,20 @@ struct DeckDetailView: View {
         Group {
             if let snapshot {
                 VStack(spacing: 0) {
-                    Picker("Section", selection: $tab) {
-                        ForEach(Tab.allCases) { Label($0.label, systemImage: $0.systemImage).tag($0) }
+                    if !(tab == .cards && searchActive) {
+                        Picker("Section", selection: $tab) {
+                            ForEach(Tab.allCases) { Label($0.label, systemImage: $0.systemImage).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .accessibilityIdentifier("deck-tabs")
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .accessibilityIdentifier("deck-tabs")
 
                     switch tab {
                     case .cards:
-                        DeckCardsView(snapshot: snapshot)
+                        DeckCardsView(snapshot: snapshot, searchActive: $searchActive)
                     case .stats:
                         DeckStatsView(snapshot: snapshot)
                     case .details:
