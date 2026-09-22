@@ -36,7 +36,7 @@ struct SearchControllerTests {
 
     static func settle(_ c: SearchController, timeout: Duration = .seconds(2)) async {
         let start = ContinuousClock.now
-        while c.phase == .searching || c.isLoadingMore, ContinuousClock.now - start < timeout {
+        while c.phase == .searching || c.isLoadingMore || c.isRefreshing, ContinuousClock.now - start < timeout {
             try? await Task.sleep(for: .milliseconds(10))
         }
     }
@@ -164,5 +164,59 @@ struct SearchControllerTests {
         #expect(fetched.first?.query == q)
         #expect(fetched.first?.sortOrder == 3)
         _ = container
+    }
+}
+
+@MainActor
+@Suite("SearchController live search")
+struct SearchControllerLiveTests {
+    @Test func rerunKeepsResultsUntilTheNewPageLands() async throws {
+        let client = FakeSearchClient()
+        client.pages = [ScryfallSearchPage(cards: try [SearchControllerTests.card("a")], totalCards: 1, nextPage: nil)]
+        let c = SearchController(client: client)
+        c.query.text = "a"
+        c.run()
+        await SearchControllerTests.settle(c)
+        #expect(c.results.count == 1)
+
+        c.query.text = "ab"
+        c.run()
+        // Synchronously after run(): old results still there, refreshing.
+        #expect(c.phase == .results)
+        #expect(c.results.count == 1)
+        #expect(c.isRefreshing)
+        while c.isRefreshing { try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(client.queries.count == 2)
+        #expect(!c.isRefreshing)
+    }
+
+    @Test func scheduleRunDebouncesAndRunsOnce() async throws {
+        let client = FakeSearchClient()
+        client.pages = [ScryfallSearchPage(cards: try [SearchControllerTests.card("a")], totalCards: 1, nextPage: nil)]
+        let c = SearchController(client: client)
+        for text in ["g", "gl", "gle", "glea"] {
+            c.query.text = text
+            c.scheduleRun(after: .milliseconds(50))
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+        await SearchControllerTests.settle(c)
+        #expect(client.queries.count == 1, "one request for four keystrokes")
+        #expect(client.queries.first?.hasPrefix("glea") == true)
+        // Same query again: the debounced run is a no-op.
+        c.scheduleRun(after: .milliseconds(20))
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(client.queries.count == 1)
+    }
+
+    @Test func clearReturnsToIdleAndDropsPendingRun() async {
+        let client = FakeSearchClient()
+        let c = SearchController(client: client)
+        c.query.text = "x"
+        c.scheduleRun(after: .milliseconds(30))
+        c.query.text = ""
+        c.clear()
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(c.phase == .idle)
+        #expect(client.queries.isEmpty, "pending debounce cancelled")
     }
 }

@@ -47,6 +47,9 @@ struct CardGridView<Accessory: View>: View {
                 }
                 .padding(10)
             }
+            // Search results sit under the keyboard while typing; a scroll
+            // should put it away. No-op elsewhere.
+            .scrollDismissesKeyboard(.immediately)
             .onChange(of: scrollToTop) { _, _ in
                 guard let first = items.first?.id else { return }
                 var t = Transaction(); t.disablesAnimations = true

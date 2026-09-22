@@ -37,6 +37,10 @@ final class SearchController {
     private(set) var results: [CardItem] = []
     private(set) var totalCards: Int?
     private(set) var isLoadingMore = false
+    /// A new first page is loading while the previous results stay on
+    /// screen (live typing). The spinner shows only when there is nothing
+    /// to keep.
+    private(set) var isRefreshing = false
     /// The query the current results answer. The Filters button counts
     /// this one, and `run()` is a no-op while `query` still equals it.
     private(set) var appliedQuery: CardSearchQuery?
@@ -45,6 +49,10 @@ final class SearchController {
     private var ownedIDs: Set<String> = []
     private var searchTask: Task<Void, Never>?
     private var moreTask: Task<Void, Never>?
+    private var debounceTask: Task<Void, Never>?
+    /// Bumped per run(); a page from an older run is dropped even if its
+    /// request finished after the newer one's.
+    private var generation = 0
     private let client: any CardSearching
 
     /// How close to the end of the loaded results the grid gets before the
@@ -60,8 +68,10 @@ final class SearchController {
     // MARK: Running
 
     /// Runs `query` from the first page, cancelling anything in flight.
-    /// An empty query clears to idle.
+    /// Existing results stay visible until the new page lands. An empty
+    /// query clears to idle.
     func run() {
+        debounceTask?.cancel()
         searchTask?.cancel()
         moreTask?.cancel()
         isLoadingMore = false
@@ -72,10 +82,15 @@ final class SearchController {
         }
         let q = query
         appliedQuery = q
-        phase = .searching
-        results = []
-        totalCards = nil
+        generation += 1
+        let gen = generation
         nextPage = nil
+        if results.isEmpty {
+            phase = .searching
+            totalCards = nil
+        } else {
+            isRefreshing = true
+        }
 
         searchTask = Task { [client] in
             do {
@@ -83,13 +98,25 @@ final class SearchController {
                     query: q.scryfallQuery, unique: q.unique,
                     order: q.sort.rawValue, direction: q.effectiveDirection.rawValue
                 )
-                guard !Task.isCancelled else { return }
-                apply(page, replacing: true)
+                guard !Task.isCancelled, gen == generation else { return }
+                apply(page, replacing: true, generation: gen)
             } catch is CancellationError {
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, gen == generation else { return }
+                isRefreshing = false
+                results = []
                 phase = .failed(Self.message(for: error))
             }
+        }
+    }
+
+    /// Runs after a short pause in typing, if the query changed.
+    func scheduleRun(after delay: Duration = .milliseconds(350)) {
+        debounceTask?.cancel()
+        debounceTask = Task {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            runIfChanged()
         }
     }
 
@@ -100,13 +127,16 @@ final class SearchController {
     }
 
     func clear() {
+        debounceTask?.cancel()
         searchTask?.cancel()
         moreTask?.cancel()
+        generation += 1
         results = []
         totalCards = nil
         nextPage = nil
         appliedQuery = nil
         isLoadingMore = false
+        isRefreshing = false
         phase = .idle
     }
 
@@ -115,12 +145,13 @@ final class SearchController {
         guard let next = nextPage, !isLoadingMore, phase == .results,
               index >= results.count - pageLookahead else { return }
         isLoadingMore = true
+        let gen = generation
         moreTask = Task { [client] in
             do {
                 let page = try await client.search(pageURL: next)
-                guard !Task.isCancelled else { isLoadingMore = false; return }
+                guard !Task.isCancelled, gen == generation else { isLoadingMore = false; return }
                 // `finish` clears isLoadingMore once the page is appended.
-                apply(page, replacing: false)
+                apply(page, replacing: false, generation: gen)
             } catch {
                 // Keep what we have; the next scroll retries.
                 isLoadingMore = false
@@ -144,19 +175,22 @@ final class SearchController {
 
     // MARK: Internals
 
-    private func apply(_ page: ScryfallSearchPage, replacing: Bool) {
+    private func apply(_ page: ScryfallSearchPage, replacing: Bool, generation gen: Int) {
         let owned = ownedIDs
         let cards = page.cards
         Task.detached(priority: .userInitiated) {
             let items = cards.map { CardItem(scryfallCard: $0, owned: owned.contains($0.id)) }
             await MainActor.run {
-                guard !Task.isCancelled else { return }
+                // The mapping isn't linked to the search task, so check the
+                // generation here too: a newer run may have started meanwhile.
+                guard gen == self.generation else { return }
                 self.finish(items, page: page, replacing: replacing)
             }
         }
     }
 
     private func finish(_ items: [CardItem], page: ScryfallSearchPage, replacing: Bool) {
+        isRefreshing = false
         if replacing {
             results = items
         } else {
