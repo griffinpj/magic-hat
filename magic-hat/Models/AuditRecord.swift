@@ -16,6 +16,10 @@ nonisolated enum AuditAction: String, Codable, Sendable {
     case importReplace  // rows removed because a binder was replaced
     case manualAdd
     case manualRemove
+    /// Copies moved from a collection into a deck (pairs of −n / +n).
+    case deckBuild
+    /// Copies moved from a deck back to a collection.
+    case deckDisassemble
 }
 
 @Model

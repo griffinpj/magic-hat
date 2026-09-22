@@ -1,0 +1,65 @@
+import Testing
+import Foundation
+@testable import magic_hat
+
+@Suite("DeckStats")
+struct DeckStatsTests {
+    static func item(_ fields: [String: Any], qty: Int = 1, board: DeckBoard = .main, built: Int = 0, available: Int = 0) throws -> DeckCardItem {
+        let card = try CardSearchQueryMatchingTests.item(fields)
+        return DeckCardItem(id: UUID(), board: board, quantity: qty, card: card, builtQuantity: built, availableQuantity: available)
+    }
+
+    @Test func curvePipsTypesAndProduction() throws {
+        let items = try [
+            Self.item(["name": "Commander", "type_line": "Legendary Creature — Dwarf", "mana_cost": "{3}{R}{W}", "colors": ["R", "W"], "color_identity": ["R", "W"], "prices": ["usd": "10"]], board: .commander, built: 1),
+            Self.item(["name": "Bolt", "type_line": "Instant", "mana_cost": "{R}", "colors": ["R"], "prices": ["usd": "1"]], qty: 1, available: 1),
+            Self.item(["name": "Wrath", "type_line": "Sorcery", "mana_cost": "{2}{W}{W}", "colors": ["W"]], qty: 1),
+            Self.item(["name": "Mountain", "type_line": "Basic Land — Mountain", "colors": []], qty: 10, built: 10),
+            Self.item(["name": "Plains", "type_line": "Basic Land — Plains", "colors": []], qty: 8),
+            Self.item(["name": "Signet", "type_line": "Artifact", "mana_cost": "{2}", "colors": [], "oracle_text": "{T}: Add one mana of any color in your commander's color identity."], qty: 1),
+            Self.item(["name": "Rock", "type_line": "Artifact", "mana_cost": "{1}", "colors": [], "oracle_text": "{T}: Add {C}."], qty: 1),
+        ]
+        let played = items
+        let stats = DeckStats.compute(played: played, format: .commander, identity: [.white, .red], allItems: items)
+
+        #expect(stats.copies == 23 && stats.landCopies == 18)
+        #expect(stats.curve.first { $0.bucket == 1 }?.total == 2, "Bolt and Rock")
+        #expect(stats.curve.first { $0.bucket == 4 }?.total == 1, "Wrath")
+        #expect(stats.curve.first { $0.bucket == 5 }?.counts[.multicolor] == 1, "the commander")
+        #expect(stats.pips[.red] == 2 && stats.pips[.white] == 3)
+        #expect(stats.genericPips == 3 + 2 + 2 + 1)
+        #expect(stats.production[.red] == 11, "ten Mountains plus the any-colour signet")
+        #expect(stats.production[.white] == 9)
+        #expect(stats.colorlessProduction == 1)
+        #expect(stats.types.map(\.name) == ["Creature", "Instant", "Sorcery", "Artifact", "Land"])
+        #expect(abs(stats.averageManaValue - (5 + 1 + 4 + 2 + 1) / 5.0) < 0.001)
+        #expect(stats.totalValue == 11)
+        #expect(stats.builtCopies == 11 && stats.availableCopies == 1 && stats.missingCopies == 11)
+        #expect(stats.issues.contains { $0.kind == .tooFew })
+        #expect(!stats.issues.contains { $0.kind == .overMaxCopies }, "basic lands may repeat")
+    }
+
+    @Test func issuesFlagSingletonLegalityAndIdentity() throws {
+        let items = try [
+            Self.item(["name": "Commander", "type_line": "Legendary Creature", "colors": ["G"], "color_identity": ["G"]], board: .commander),
+            Self.item(["name": "Twin", "type_line": "Creature", "colors": ["G"], "color_identity": ["G"]], qty: 2),
+            Self.item(["name": "Banned", "type_line": "Sorcery", "colors": ["G"], "color_identity": ["G"], "legalities": ["commander": "banned"]]),
+            Self.item(["name": "Off", "type_line": "Instant", "colors": ["U"], "color_identity": ["U"]]),
+        ]
+        let stats = DeckStats.compute(played: items, format: .commander, identity: [.green], allItems: items)
+        #expect(stats.issues.contains { $0.kind == .overMaxCopies && $0.message.contains("Twin") })
+        #expect(stats.issues.contains { $0.kind == .notLegal && $0.message.contains("Banned") })
+        #expect(stats.issues.contains { $0.kind == .offIdentity && $0.message.contains("Off") })
+        let none = DeckStats.compute(played: [], format: .commander, identity: [], allItems: [])
+        #expect(none.issues.contains { $0.kind == .noCommander })
+    }
+
+    @Test func primaryTypeGroupsLandsFirst() {
+        #expect(DeckStats.primaryType(of: "Artifact Land") == "Land")
+        #expect(DeckStats.primaryType(of: "Land Creature — Forest Dryad") == "Land")
+        #expect(DeckStats.primaryType(of: "Legendary Artifact — Equipment") == "Artifact")
+        #expect(DeckStats.primaryType(of: "Artifact Creature — Golem") == "Creature")
+        #expect(DeckStats.primaryType(of: "Instant // Sorcery") == "Instant")
+        #expect(DeckStats.primaryType(of: nil) == "Other")
+    }
+}

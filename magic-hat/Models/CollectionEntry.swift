@@ -62,6 +62,9 @@ nonisolated final class CollectionEntry {
     var purchasePriceCurrency: String?
     var manaBoxID: String?
     var addedDate: Date?
+    /// For a row in a deck's hidden collection: the collection it was built
+    /// from, so disassembling returns it there.
+    var sourceCollectionName: String?
 
     var finish: CardFinish {
         get { CardFinish(rawValue: finishRaw) ?? .normal }

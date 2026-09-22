@@ -39,6 +39,12 @@ actor CollectionStore {
         return store
     }
 
+    /// "deck:<uuid>" -> "Deck: Name", for rows that live in a deck.
+    private func deckLabels() throws -> [String: String] {
+        let decks = try modelContext.fetch(FetchDescriptor<Deck>())
+        return Dictionary(decks.map { ($0.collectionKey, "Deck: \($0.name)") }, uniquingKeysWith: { a, _ in a })
+    }
+
     /// Every card in a collection, sorted, plus what still needs fetching.
     func snapshot(collectionName: String, sort: CardSort) throws -> CollectionSnapshot {
         var descriptor = FetchDescriptor<CollectionEntry>(
@@ -158,7 +164,12 @@ actor CollectionStore {
             sortBy: [SortDescriptor(\.collectionName), SortDescriptor(\.setCode), SortDescriptor(\.collectorNumber)]
         )
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        return try modelContext.fetch(descriptor).map { CardItem(entry: $0, meta: $0.card) }
+        let labels = try deckLabels()
+        return try modelContext.fetch(descriptor).map { entry in
+            var item = CardItem(entry: entry, meta: entry.card)
+            if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
+            return item
+        }
     }
 
     /// Names of all collections, sorted.

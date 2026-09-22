@@ -29,6 +29,9 @@ struct CardViewerView: View {
     /// every printing shares oracle text and rulings, so there is nothing
     /// further to push to.
     var showsDetail: Bool = true
+    /// Set when opened from a deck's search: Add puts the card on that
+    /// deck's board instead of into a collection.
+    var deckTarget: DeckAddTarget? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
@@ -40,6 +43,7 @@ struct CardViewerView: View {
     @State private var editing: CardItem?
     @State private var pendingDelete: CardItem?
     @State private var deleteError: String?
+    @State private var deckAdds = 0
 
     /// Portrait card proportions. Every page is sized the same so the pager
     /// doesn't re-lay out when a landscape (split/battle) card is current.
@@ -83,6 +87,7 @@ struct CardViewerView: View {
             _ = await (printings, art)
         }
         .onChange(of: items) { old, new in reconcile(old: old, new: new) }
+        .sensoryFeedback(.success, trigger: deckAdds)
         .sheet(item: $adding) { AddCardView(item: $0) }
         .sheet(item: $editing) { EditEntryView(item: $0) }
         .alert("Couldn't remove", isPresented: Binding(get: { deleteError != nil },
@@ -137,16 +142,21 @@ struct CardViewerView: View {
                 }
                 .accessibilityIdentifier("viewer-details")
             }
-            Button("Edit", systemImage: "pencil") { editing = currentItem }
-                .disabled(!canEditCurrent)
-                .accessibilityIdentifier("viewer-edit")
-            Button("Add", systemImage: "plus") { adding = currentItem }
-                .accessibilityIdentifier("viewer-add")
+            if let deckTarget {
+                Button("Add to \(deckTarget.board.label)", systemImage: "plus") { addToDeck(deckTarget) }
+                    .accessibilityIdentifier("viewer-add-deck")
+            } else {
+                Button("Edit", systemImage: "pencil") { editing = currentItem }
+                    .disabled(!canEditCurrent)
+                    .accessibilityIdentifier("viewer-edit")
+                Button("Add", systemImage: "plus") { adding = currentItem }
+                    .accessibilityIdentifier("viewer-add")
+            }
         }
         ToolbarSpacer(.flexible, placement: .bottomBar)
         ToolbarItem(placement: .bottomBar) {
             Button("Remove", systemImage: "trash") { pendingDelete = currentItem }
-                .disabled(!canEditCurrent)
+                .disabled(!canEditCurrent || deckTarget != nil)
                 .accessibilityIdentifier("viewer-remove")
                 // On the button, not the screen: iOS 26 presents this as a
                 // popover anchored to its source, so it points at the trash.
@@ -216,6 +226,16 @@ struct CardViewerView: View {
     }
 
     // MARK: Actions
+
+    private func addToDeck(_ target: DeckAddTarget) {
+        guard let item = currentItem else { return }
+        do {
+            try DeckEditController.add(PrintingSelection(item: item), to: target.deckID, board: target.board, context: modelContext)
+            deckAdds += 1
+        } catch {
+            deleteError = error.localizedDescription
+        }
+    }
 
     /// Deletes the entry behind an owned item. The presenter's list refetches
     /// on the tracker bump; `reconcile` then steps to the neighbour.
