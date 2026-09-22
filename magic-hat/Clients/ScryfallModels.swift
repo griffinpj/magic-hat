@@ -132,15 +132,46 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
 }
 
 /// A Scryfall set object (subset). `iconSVGURI` is an SVG (no raster form).
-nonisolated struct ScryfallSet: Decodable {
+nonisolated struct ScryfallSet: Codable, Sendable, Identifiable, Hashable {
     let code: String
     let name: String?
     let iconSVGURI: String?
+    let setType: String?
+    /// "YYYY-MM-DD".
+    let releasedAt: String?
+    let cardCount: Int?
+    let digital: Bool?
+    let parentSetCode: String?
+
+    var id: String { code }
 
     enum CodingKeys: String, CodingKey {
-        case code, name
+        case code, name, digital
         case iconSVGURI = "icon_svg_uri"
+        case setType = "set_type"
+        case releasedAt = "released_at"
+        case cardCount = "card_count"
+        case parentSetCode = "parent_set_code"
     }
+
+    init(code: String, name: String?, iconSVGURI: String? = nil, setType: String? = nil,
+         releasedAt: String? = nil, cardCount: Int? = nil, digital: Bool? = nil, parentSetCode: String? = nil) {
+        self.code = code; self.name = name; self.iconSVGURI = iconSVGURI; self.setType = setType
+        self.releasedAt = releasedAt; self.cardCount = cardCount; self.digital = digital
+        self.parentSetCode = parentSetCode
+    }
+
+    var releaseYear: Int? { releasedAt.flatMap { Int($0.prefix(4)) } }
+}
+
+/// Response wrapper for GET /sets.
+nonisolated struct ScryfallSetListResponse: Decodable {
+    let data: [ScryfallSet]
+}
+
+/// GET /catalog/:name and GET /cards/autocomplete both answer `{ data: [String] }`.
+nonisolated struct ScryfallStringListResponse: Decodable {
+    let data: [String]
 }
 
 /// Response wrapper for GET /cards/search (paginated list).
@@ -148,12 +179,23 @@ nonisolated struct ScryfallListResponse: Decodable {
     let data: [ScryfallCard]
     let hasMore: Bool?
     let nextPage: String?
+    let totalCards: Int?
 
     enum CodingKeys: String, CodingKey {
         case data
         case hasMore = "has_more"
         case nextPage = "next_page"
+        case totalCards = "total_cards"
     }
+}
+
+/// One page of search results, as the app consumes it.
+nonisolated struct ScryfallSearchPage: Sendable {
+    let cards: [ScryfallCard]
+    let totalCards: Int?
+    let nextPage: URL?
+
+    static let empty = ScryfallSearchPage(cards: [], totalCards: 0, nextPage: nil)
 }
 
 /// Response wrapper for POST /cards/collection.

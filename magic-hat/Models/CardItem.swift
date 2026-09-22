@@ -29,7 +29,8 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let condition: String
     let language: String
     let addedDate: Date?
-    let owned: Bool
+    /// Mutable so search results can be re-marked as the collection changes.
+    var owned: Bool
     /// Owning collection; empty for cards that aren't ours (search, printings).
     let collectionName: String
     /// True when `id` is a CollectionEntry id — one owned row that can be

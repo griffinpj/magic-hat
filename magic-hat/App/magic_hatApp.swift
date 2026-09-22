@@ -18,6 +18,7 @@ struct magic_hatApp: App {
             CardMeta.self,
             AuditRecord.self,
             CardRuling.self,
+            SavedSearch.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isUITest)
 
