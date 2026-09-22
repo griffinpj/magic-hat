@@ -120,6 +120,19 @@ final class SearchController {
         }
     }
 
+    /// Sets the search text after a pause in typing, then runs if it
+    /// changed. Keeping the text out of `query` until then means views
+    /// observing the query (the filter form) don't re-render per keystroke.
+    func scheduleText(_ text: String, after delay: Duration = .milliseconds(350)) {
+        debounceTask?.cancel()
+        debounceTask = Task {
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            query.text = text
+            runIfChanged()
+        }
+    }
+
     /// Re-runs only if the query changed since the results were fetched.
     func runIfChanged() {
         guard query != appliedQuery else { return }

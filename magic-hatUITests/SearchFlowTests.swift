@@ -55,20 +55,19 @@ final class SearchFlowTests: XCTestCase {
         XCTAssertFalse(run.isEnabled)
     }
 
-    /// Number pads have no return key; the keyboard bar's Done must exist
-    /// and put the keyboard away.
+    /// The number fields use a keyboard with a Return key (a pad has none,
+    /// and a SwiftUI keyboard toolbar made the first keyboard slow), so
+    /// Return must commit the value and put the keyboard away.
     @MainActor
-    func testKeyboardDoneDismisses() {
+    func testReturnDismissesNumberField() {
         let app = launchOnSearch()
         let minimum = app.textFields["Any"].firstMatch
         reveal(minimum, in: app)
         minimum.tap()
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "keyboard up")
-        minimum.typeText("5")
-        let done = app.buttons["keyboard-done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 5), "Done on the keyboard bar")
-        done.tap()
+        minimum.typeText("5\n")
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "keyboard dismissed")
+        XCTAssertEqual(app.textFields.matching(NSPredicate(format: "value == '5'")).count, 1, "value kept")
     }
 
     @MainActor

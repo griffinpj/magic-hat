@@ -6,10 +6,11 @@
 //  store. Split out of CatalogSyncController so it can be run against a
 //  fixture slice in tests, with no network and no UserDefaults.
 //
-//  Parsing runs on a detached task; each decoded batch is awaited onto the
-//  main actor to be written. SwiftData models are written on the main
-//  context in this app, and awaiting each batch also throttles the reader,
-//  so memory stays flat regardless of file size.
+//  Parsing runs on a detached task; each decoded batch is awaited onto
+//  CardMetaWriter, a ModelActor with its own background context, so the
+//  112k-row catalog and the rulings never touch the main thread. Awaiting
+//  each batch also throttles the reader, so memory stays flat regardless
+//  of file size.
 //
 
 import Foundation
@@ -27,7 +28,11 @@ nonisolated enum BulkIngester {
         progress: @escaping @Sendable (Int) -> Void = { _ in }
     ) async throws {
         let size = batchSize
-        try await Task.detached(priority: .utility) {
+        let writer = await CardMetaWriter.shared(for: container)
+        // .background, not .utility: the system throttles background I/O,
+        // and a catalog or rulings ingest right after launch was starving
+        // the first keyboard presentation's disk reads for seconds.
+        try await Task.detached(priority: .background) {
             let reader = try GzipLineReader(url: file)
             defer { reader.close() }
             let decoder = JSONDecoder()
@@ -42,14 +47,14 @@ nonisolated enum BulkIngester {
                 case .defaultCards:
                     let cards = lines.compactMap { try? decoder.decode(ScryfallCard.self, from: $0) }
                     if !cards.isEmpty {
-                        await MainActor.run { upsert(cards: cards, container: container) }
+                        try await writer.apply(cards: cards, linkEntries: false)
                     }
                 case .rulings:
                     let rulings = lines
                         .compactMap { try? decoder.decode(ScryfallRulingLine.self, from: $0) }
                         .filter { $0.oracleId != nil }
                     if !rulings.isEmpty {
-                        await MainActor.run { insert(rulings: rulings, container: container) }
+                        try await writer.insert(rulings: rulings)
                     }
                 }
 
@@ -59,44 +64,5 @@ nonisolated enum BulkIngester {
                 }
             }
         }.value
-    }
-
-    @MainActor
-    private static func upsert(cards: [ScryfallCard], container: ModelContainer) {
-        let context = container.mainContext
-        let ids = cards.map(\.id)
-        let existing = (try? context.fetch(
-            FetchDescriptor<CardMeta>(predicate: #Predicate { ids.contains($0.scryfallID) })
-        )) ?? []
-        var byID = Dictionary(existing.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
-
-        for card in cards {
-            let meta: CardMeta
-            if let found = byID[card.id] {
-                meta = found
-            } else {
-                let created = CardMeta(scryfallID: card.id)
-                context.insert(created)
-                byID[card.id] = created
-                meta = created
-            }
-            meta.apply(card)
-        }
-        try? context.save()
-    }
-
-    @MainActor
-    private static func insert(rulings: [ScryfallRulingLine], container: ModelContainer) {
-        let context = container.mainContext
-        for line in rulings {
-            guard let oracleID = line.oracleId else { continue }
-            context.insert(CardRuling(
-                oracleID: oracleID,
-                source: line.source ?? "scryfall",
-                publishedAt: line.publishedAt ?? "",
-                comment: line.comment ?? ""
-            ))
-        }
-        try? context.save()
     }
 }

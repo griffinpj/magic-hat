@@ -3,10 +3,11 @@
 //  magic-hat
 //
 //  Lazily fills in Scryfall metadata (image URLs, dimensions) for cards as
-//  they approach the viewport. Reads pending IDs and writes results on the
-//  main actor (SwiftData), while the network work runs off-main via the
-//  Scryfall client. In-flight IDs are tracked so overlapping scroll
-//  prefetches don't refetch the same card.
+//  they approach the viewport. The network work runs off-main via the
+//  Scryfall client and the SwiftData writes go through CardMetaWriter (a
+//  ModelActor), so nothing here blocks the main thread; only the
+//  bookkeeping and `revision` live on the main actor. In-flight IDs are
+//  tracked so overlapping scroll prefetches don't refetch the same card.
 //
 
 import Foundation
@@ -50,11 +51,15 @@ final class CardHydrationController {
         let all = Set(scryfallIDs).subtracting(hydrated)
         guard !all.isEmpty else { return }
 
-        let needed = neededIDs(from: all, context: context)
+        let needed = await writer(context).neededIDs(from: all)
         hydrated.formUnion(all.subtracting(needed))
         guard !needed.isEmpty else { return }
 
         await run(needed: needed, context: context)
+    }
+
+    private func writer(_ context: ModelContext) -> CardMetaWriter {
+        CardMetaWriter.shared(for: context.container)
     }
 
     /// Same as `hydrateAll`, but the caller already knows which ids are
@@ -88,10 +93,10 @@ final class CardHydrationController {
             if Task.isCancelled { return }
             do {
                 let response = try await client.collection(ids: chunk)
-                apply(cards: response.data, context: context)
+                await apply(cards: response.data, context: context)
                 hydrated.formUnion(chunk)
             } catch {
-                markFailed(Set(chunk), context: context)
+                try? await writer(context).markFailed(Set(chunk))
             }
             syncedCount += chunk.count
         }
@@ -119,7 +124,7 @@ final class CardHydrationController {
         for chunk in stale.chunked(into: ScryfallClient.collectionBatchSize) {
             if Task.isCancelled { return updated }
             if let response = try? await client.collection(ids: chunk) {
-                apply(cards: response.data, context: context)
+                await apply(cards: response.data, context: context)
                 updated += response.data.count
             }
             syncedCount += chunk.count
@@ -136,91 +141,33 @@ final class CardHydrationController {
         candidates.subtract(inFlight)
         guard !candidates.isEmpty else { return }
 
-        // Only unknown IDs hit the store (covers metadata cached across
-        // launches). This is the sole DB touch and runs rarely during scroll.
-        let needed = neededIDs(from: candidates, context: context)
-
-        // Anything already fetched in the store: remember and skip.
-        hydrated.formUnion(candidates.subtracting(needed))
-        guard !needed.isEmpty else { return }
-
-        inFlight.formUnion(needed)
+        // Claim them now so a scroll that fires again before the store
+        // answers doesn't start a second lookup for the same tiles.
+        inFlight.formUnion(candidates)
 
         Task {
+            // Only unknown IDs hit the store (covers metadata cached across
+            // launches); the lookup runs on the writer, off the main thread.
+            let needed = await writer(context).neededIDs(from: candidates)
+            hydrated.formUnion(candidates.subtracting(needed))
+            inFlight.subtract(candidates.subtracting(needed))
+            guard !needed.isEmpty else { return }
             defer { inFlight.subtract(needed) }
             do {
                 let cards = try await client.cards(ids: Array(needed))
-                apply(cards: cards, context: context)
+                await apply(cards: cards, context: context)
                 hydrated.formUnion(needed)
             } catch {
-                markFailed(needed, context: context)
+                try? await writer(context).markFailed(needed)
             }
         }
     }
 
-    private func neededIDs(from ids: Set<String>, context: ModelContext) -> Set<String> {
-        let idList = Array(ids)
-        let descriptor = FetchDescriptor<CardMeta>(
-            predicate: #Predicate { idList.contains($0.scryfallID) }
-        )
-        guard let metas = try? context.fetch(descriptor) else { return ids }
-        let byID = Dictionary(uniqueKeysWithValues: metas.map { ($0.scryfallID, $0) })
-
-        return ids.filter { id in
-            guard let meta = byID[id] else { return true } // no meta yet
-            // colorsRaw is nil only for rows stored before colours were
-            // kept; refetching once backfills what the collection filters
-            // need.
-            return meta.fetchState != .fetched || meta.colorsRaw == nil
-        }
-    }
-
-    private func apply(cards: [ScryfallCard], context: ModelContext) {
-        let ids = cards.map(\.id)
-        let descriptor = FetchDescriptor<CardMeta>(
-            predicate: #Predicate { ids.contains($0.scryfallID) }
-        )
-        let existing = (try? context.fetch(descriptor)) ?? []
-        var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.scryfallID, $0) })
-
-        for card in cards {
-            let meta = byID[card.id] ?? {
-                let m = CardMeta(scryfallID: card.id)
-                context.insert(m)
-                byID[card.id] = m
-                return m
-            }()
-
-            meta.apply(card)
-        }
-
-        link(metaByID: byID, context: context)
-        try? context.save()
+    /// Writes a batch on the background context, then bumps `revision` so
+    /// views refetch. Failures are swallowed here as they were on the main
+    /// context: the rows stay pending and the next pass retries.
+    private func apply(cards: [ScryfallCard], context: ModelContext) async {
+        try? await writer(context).apply(cards: cards, linkEntries: true)
         revision &+= 1
-    }
-
-    /// Points entries at their CardMeta. Also backfills rows imported before
-    /// the relationship existed, as the sync walks the collection.
-    private func link(metaByID: [String: CardMeta], context: ModelContext) {
-        let ids = Array(metaByID.keys)
-        let descriptor = FetchDescriptor<CollectionEntry>(
-            predicate: #Predicate { ids.contains($0.scryfallID) }
-        )
-        guard let entries = try? context.fetch(descriptor) else { return }
-        for entry in entries where entry.card == nil {
-            entry.card = metaByID[entry.scryfallID]
-        }
-    }
-
-    private func markFailed(_ ids: Set<String>, context: ModelContext) {
-        let idList = Array(ids)
-        let descriptor = FetchDescriptor<CardMeta>(
-            predicate: #Predicate { idList.contains($0.scryfallID) }
-        )
-        guard let metas = try? context.fetch(descriptor) else { return }
-        for meta in metas where meta.fetchState != .fetched {
-            meta.fetchState = .failed
-        }
-        try? context.save()
     }
 }

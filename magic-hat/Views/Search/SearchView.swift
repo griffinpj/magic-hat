@@ -33,6 +33,11 @@ struct SearchView: View {
     @Query(sort: \SavedSearch.sortOrder) private var savedSearches: [SavedSearch]
 
     @State private var controller = SearchController()
+    /// The field's text, separate from `controller.query.text`: the landing
+    /// Form observes the query, so binding the field to it re-diffed every
+    /// section on each keystroke. The text reaches the query on the
+    /// debounce, on Return, or when a chip is tapped.
+    @State private var searchText = ""
     @State private var showFilters = false
     @State private var showSavedList = false
     @State private var showSaveAlert = false
@@ -46,15 +51,18 @@ struct SearchView: View {
     var body: some View {
         NavigationStack {
             content
-                .background { SearchDismisser(trigger: dismissSearchTrigger) }
+                .background { SearchDismisser(trigger: dismissSearchTrigger, isEmpty: searchText.isEmpty) }
                 .navigationTitle("Search")
-                .searchable(text: $controller.query.text, prompt: "Card name, type, rules text")
+                // Always shown; with .automatic the drawer starts hidden above a
+                // long Form until the user pulls down.
+                .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: "Card name, type, rules text")
                 // Live results are refined *while* the field is active, so
                 // the title and the Sort/Filters items must stay; by default
                 // an active search hides them and only Cancel remains.
                 .searchPresentationToolbarBehavior(.avoidHidingContent)
-                .onSubmit(of: .search) { controller.run() }
-                .onChange(of: controller.query.text) { _, text in textChanged(text) }
+                .onSubmit(of: .search) { submit() }
+                .onChange(of: searchText) { _, text in textChanged(text) }
                 .toolbar { toolbar }
                 .sheet(isPresented: $showFilters, onDismiss: { controller.runIfChanged() }) {
                     SearchFiltersView(query: $controller.query)
@@ -138,7 +146,6 @@ struct SearchView: View {
             }
         }
         .scrollDismissesKeyboard(.interactively)
-        .filterKeyboardBar($focusedField)
     }
 
     private var results: some View {
@@ -166,7 +173,7 @@ struct SearchView: View {
     /// Distinct card names in the current results that match the typed
     /// text, prefix matches first — filter-aware by construction.
     private var completions: [String] {
-        let t = controller.query.trimmedText
+        let t = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard t.count >= 2, !t.contains(":") else { return [] }
         var seen = Set<String>()
         var prefix: [String] = [], contains: [String] = []
@@ -188,8 +195,8 @@ struct SearchView: View {
             HStack(spacing: 8) {
                 ForEach(names, id: \.self) { name in
                     Button(name) {
-                        controller.query.text = name
-                        controller.run()
+                        searchText = name
+                        submit()
                     }
                     .buttonStyle(.bordered)
                     .buttonBorderShape(.capsule)
@@ -208,18 +215,24 @@ struct SearchView: View {
 
     // MARK: Typing
 
+    private func submit() {
+        controller.query.text = searchText
+        controller.run()
+    }
+
     private func textChanged(_ text: String) {
         if text.trimmingCharacters(in: .whitespaces).isEmpty {
             if controller.phase == .idle {
-                return                          // already on the form
+                controller.query.text = ""      // already on the form
             } else if controller.query.hasFilters {
-                controller.scheduleRun()        // filters are still a search
+                controller.scheduleText("")     // filters are still a search
             } else {
                 controller.clear()              // nothing left: back to the form
+                controller.query.text = ""
             }
             return
         }
-        controller.scheduleRun()
+        controller.scheduleText(text)
     }
 
     /// The toolbar X: drop the search and return to the form. Filters stay
@@ -227,6 +240,7 @@ struct SearchView: View {
     private func clearSearch() {
         controller.clear()
         controller.query.text = ""
+        searchText = ""
         dismissSearchTrigger += 1
     }
 
@@ -297,6 +311,7 @@ struct SearchView: View {
                 } label: {
                     Label("Filters", systemImage: "line.3.horizontal.decrease")
                         .symbolVariant(controller.query.hasFilters ? .circle.fill : .circle)
+                        .foregroundStyle(controller.query.hasFilters ? Color.accentColor : Color.primary)
                 }
                 .accessibilityIdentifier("search-filters")
                 .accessibilityValue(controller.query.hasFilters ? "\(controller.query.activeFilterCount) active" : "none")
@@ -312,6 +327,7 @@ struct SearchView: View {
     private func load(_ saved: SavedSearch) {
         saved.lastUsedDate = Date()
         controller.query = saved.query
+        searchText = saved.query.text
         controller.run()
     }
 
@@ -333,17 +349,4 @@ struct SearchView: View {
 #Preview {
     SearchView()
         .modelContainer(for: [SavedSearch.self, CollectionEntry.self, CardMeta.self], inMemory: true)
-}
-
-/// `dismissSearch` only exists in the environment *inside* a searchable
-/// modifier's content, so a view there relays it: bump `trigger` and the
-/// field collapses, keyboard and Cancel gone.
-private struct SearchDismisser: View {
-    let trigger: Int
-    @Environment(\.dismissSearch) private var dismissSearch
-
-    var body: some View {
-        Color.clear
-            .onChange(of: trigger) { _, _ in dismissSearch() }
-    }
 }

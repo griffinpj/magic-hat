@@ -6,49 +6,28 @@
 //  manual change appears as one row summarising copies added/removed. This
 //  is the surface that will later back undo/redo.
 //
+//  No @Query: the ledger is a large table, and a query over it re-ran on
+//  the main thread after every background save (each hydration batch).
+//  CollectionStore groups it off-main; the view refetches when a write
+//  bumps the tracker.
+//
 
 import SwiftUI
 import SwiftData
 
-/// One user action, aggregated from its AuditRecords (shared actionID).
-private struct ActionGroup: Identifiable {
-    let actionID: UUID
-    let timestamp: Date
-    let added: Int
-    let removed: Int
-    /// Collections touched by the action. Older records also carry a source
-    /// binder name; it is folded in here so pre-migration history still reads.
-    let scopes: [String]
-    let action: AuditAction
-    var id: UUID { actionID }
-}
-
 struct HistoryView: View {
-    @Query(sort: \AuditRecord.timestamp, order: .reverse) private var records: [AuditRecord]
-
-    private var groups: [ActionGroup] {
-        let grouped = Dictionary(grouping: records, by: \.actionID)
-        return grouped.values.map { recs -> ActionGroup in
-            let added = recs.filter { $0.quantityDelta > 0 }.reduce(0) { $0 + $1.quantityDelta }
-            let removed = recs.filter { $0.quantityDelta < 0 }.reduce(0) { $0 + $1.quantityDelta }
-            var scopes = Set(recs.map(\.collectionName))
-            scopes.formUnion(recs.map(\.binderName).filter { !$0.isEmpty })
-            return ActionGroup(
-                actionID: recs[0].actionID,
-                timestamp: recs.map(\.timestamp).max() ?? .distantPast,
-                added: added,
-                removed: -removed,
-                scopes: scopes.sorted(),
-                action: recs[0].action
-            )
-        }
-        .sorted { $0.timestamp > $1.timestamp }
-    }
+    @Environment(\.modelContext) private var modelContext
+    @State private var groups: [HistoryAction] = []
+    @State private var hasLoaded = false
+    private var tracker: CollectionChangeTracker { .shared }
 
     var body: some View {
         NavigationStack {
             Group {
-                if groups.isEmpty {
+                if !hasLoaded {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if groups.isEmpty {
                     ContentUnavailableView(
                         "No History",
                         systemImage: "clock.arrow.circlepath",
@@ -61,12 +40,19 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("History")
+            .task(id: tracker.revision) {
+                let store = CollectionStore.shared(for: modelContext.container)
+                if let fetched = try? await store.history(), !Task.isCancelled {
+                    groups = fetched
+                }
+                hasLoaded = true
+            }
         }
     }
 }
 
 private struct HistoryRow: View {
-    let group: ActionGroup
+    let group: HistoryAction
 
     private var title: String {
         switch group.action {

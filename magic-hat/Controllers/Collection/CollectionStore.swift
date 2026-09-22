@@ -72,6 +72,31 @@ actor CollectionStore {
         )
     }
 
+    /// The audit ledger grouped by action, newest first. The ledger grows
+    /// with every import; a @Query over it re-fetched the whole table on
+    /// the main thread after every background save.
+    func history() throws -> [HistoryAction] {
+        var descriptor = FetchDescriptor<AuditRecord>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
+        descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.quantityDelta, \.collectionName, \.binderName, \.actionRaw]
+        let records = try modelContext.fetch(descriptor)
+        let grouped = Dictionary(grouping: records, by: \.actionID)
+        return grouped.values.map { recs -> HistoryAction in
+            let added = recs.filter { $0.quantityDelta > 0 }.reduce(0) { $0 + $1.quantityDelta }
+            let removed = recs.filter { $0.quantityDelta < 0 }.reduce(0) { $0 + $1.quantityDelta }
+            var scopes = Set(recs.map(\.collectionName))
+            scopes.formUnion(recs.map(\.binderName).filter { !$0.isEmpty })
+            return HistoryAction(
+                actionID: recs[0].actionID,
+                timestamp: recs.map(\.timestamp).max() ?? .distantPast,
+                added: added,
+                removed: -removed,
+                scopes: scopes.sorted(),
+                action: recs[0].action
+            )
+        }
+        .sorted { $0.timestamp > $1.timestamp }
+    }
+
     /// Per-collection totals and top cards for the Collections tab.
     func summaries() throws -> [CollectionSummary] {
         let collections = try modelContext.fetch(

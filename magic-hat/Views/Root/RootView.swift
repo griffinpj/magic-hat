@@ -35,6 +35,14 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: showSetup)
         .task {
+            #if DEBUG
+            // `-uitest-hang`: block the main thread once so the HangDetector's
+            // report (and its stack) can be verified end to end.
+            if ProcessInfo.processInfo.arguments.contains("-uitest-hang") {
+                try? await Task.sleep(for: .seconds(2))
+                Thread.sleep(forTimeInterval: 1.2)
+            }
+            #endif
             guard !ProcessInfo.processInfo.arguments.contains("-uitest-seed") else { return }
             await sync.syncIfNeeded(container: modelContext.container)
         }

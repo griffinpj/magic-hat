@@ -31,6 +31,12 @@ struct magic_hatApp: App {
         }
     }()
 
+    init() {
+        #if DEBUG
+        HangDetector.start()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

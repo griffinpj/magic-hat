@@ -9,11 +9,12 @@
 //  you type, formats and rarities are chips, everything else is a toggle,
 //  menu picker or number field.
 //
-//  Keyboard: every field is tracked in one FocusState owned by the host,
-//  which puts a Done key on the keyboard bar (`filterKeyboardBar`) and sets
-//  interactive scroll dismissal on its Form. The bar is attached once, to
-//  the Form — attaching it here, to a Group of sections, would apply it to
-//  every section and stack a dozen Done buttons.
+//  Keyboard: every field has a Return key (the number fields use the
+//  numbers-and-punctuation keyboard rather than a pad, which has none) with
+//  a Done label, and the host Form dismisses on scroll. There is
+//  deliberately no SwiftUI keyboard toolbar: it added seconds to the first
+//  keyboard presentation on device. The FocusState remains so token fields
+//  know when to show suggestions.
 //
 
 import SwiftUI
@@ -248,13 +249,15 @@ struct SearchFilterSections: View {
             LabeledContent("Minimum") {
                 TextField("Any", value: $query.price.min, format: .number.precision(.fractionLength(0...2)))
                     .focused($focused, equals: .priceMin)
-                    .keyboardType(.decimalPad)
+                    .keyboardType(.numbersAndPunctuation)
+                    .submitLabel(.done)
                     .multilineTextAlignment(.trailing)
             }
             LabeledContent("Maximum") {
                 TextField("Any", value: $query.price.max, format: .number.precision(.fractionLength(0...2)))
                     .focused($focused, equals: .priceMax)
-                    .keyboardType(.decimalPad)
+                    .keyboardType(.numbersAndPunctuation)
+                    .submitLabel(.done)
                     .multilineTextAlignment(.trailing)
             }
         }
@@ -328,25 +331,6 @@ private struct FormatChips: View, Equatable {
             }
         }
         .padding(.vertical, 2)
-    }
-}
-
-// MARK: - Keyboard bar
-
-extension View {
-    /// A Done key above the keyboard that clears `focus`. Number pads have
-    /// no Return, so without this a price or stat field traps the keyboard.
-    func filterKeyboardBar(_ focus: FocusState<FilterField?>.Binding) -> some View {
-        toolbar {
-            ToolbarItem(placement: .keyboard) {
-                HStack {
-                    Spacer()
-                    Button("Done") { focus.wrappedValue = nil }
-                        .fontWeight(.semibold)
-                        .accessibilityIdentifier("keyboard-done")
-                }
-            }
-        }
     }
 }
 
@@ -673,7 +657,8 @@ private struct StatRow: View {
                 .fixedSize()
                 TextField("Any", value: valueBinding, format: .number)
                     .focused($focus, equals: .stat(kind))
-                    .keyboardType(.numberPad)
+                    .keyboardType(.numbersAndPunctuation)
+                    .submitLabel(.done)
                     .multilineTextAlignment(.trailing)
                     .frame(width: 56)
             }
