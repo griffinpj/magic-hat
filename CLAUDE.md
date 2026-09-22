@@ -335,19 +335,28 @@ client turns it into an empty page.
 Two states of one screen:
 
 - **Landing (nothing searched):** the filters *are* the page — a Form with
-  saved searches on top, every filter inline, a Search button in the bottom
-  bar. Edits go straight to the live query.
+  saved searches on top, every filter inline, a prominent Search button in
+  the navigation bar (a `.bottomBar` item draws under the iOS 26 tab bar,
+  and a floating button rides up over the keyboard). Edits go straight to
+  the live query.
 - **Results:** the shared `CardGridView`; filters move behind the toolbar
-  icon, as a sheet over a *draft* (Reset / Done). Clearing the search field
-  returns to the landing with filters kept.
+  icon, as a sheet over a *draft* (Reset / Done); an X clears the search
+  and returns to the form with filters kept. Emptying the search field
+  keeps the results when filters are active — they are still a search —
+  and returns to the form only when nothing else is active.
 
 **Live search:** typing runs the query after a 350ms pause
 (`SearchController.scheduleRun`); Return runs at once. The previous results
 stay on screen while the next page loads (`isRefreshing`, a small spinner in
 the header) so the grid never flashes empty between keystrokes. A generation
 counter drops a page from an older run even if its request finishes late.
-Name completions from `/cards/autocomplete` show as a chip strip above the
-grid rather than `.searchSuggestions`, which would hide the results.
+Name completions are the distinct names *in the results* (prefix matches
+first), shown as a chip strip that scrolls as the grid's header. They obey
+the active filters by construction; `/cards/autocomplete` takes only a
+prefix and offered cards the filters excluded. `.searchSuggestions` would
+hide the results. There is no results header (count, filter count): it was
+one more thing snapping against the collapsing bar; progress shows as a
+small glass pill instead.
 
 Modular on purpose — three pieces that don't know about the tab:
 
