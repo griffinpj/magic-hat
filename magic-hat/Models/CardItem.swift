@@ -32,6 +32,9 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let owned: Bool
     /// Owning collection; empty for cards that aren't ours (search, printings).
     let collectionName: String
+    /// True when `id` is a CollectionEntry id — one owned row that can be
+    /// edited or removed. Printings and search hits carry a Scryfall id.
+    var isEntry: Bool { owned && !collectionName.isEmpty }
 
     // Visuals + gameplay text (may be nil before hydration).
     let imageURL: String?
