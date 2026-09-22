@@ -29,7 +29,6 @@ struct SearchFiltersView: View {
                 SearchFilterSections(query: $draft, focused: $focused, context: context, showsSort: false)
             }
             .scrollDismissesKeyboard(.interactively)
-            .filterKeyboardBar($focused)
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -59,7 +59,7 @@ final class ScryfallCatalogCache {
 
     static let ttl: TimeInterval = 7 * 24 * 3600
 
-    private struct Entry<T: Codable>: Codable {
+    private struct Entry<T: Codable & Sendable>: Codable, Sendable {
         let value: T
         let fetchedAt: Date
     }
@@ -80,7 +80,7 @@ final class ScryfallCatalogCache {
 
     func catalog(_ name: ScryfallCatalog) async throws -> [String] {
         if let entry = catalogs[name], isFresh(entry.fetchedAt) { return entry.value }
-        if let entry: Entry<[String]> = read(name.rawValue), isFresh(entry.fetchedAt) {
+        if let entry: Entry<[String]> = await Self.read(fileURL(name.rawValue)), isFresh(entry.fetchedAt) {
             catalogs[name] = entry
             return entry.value
         }
@@ -91,14 +91,14 @@ final class ScryfallCatalogCache {
         let value = try await task.value
         let entry = Entry(value: value, fetchedAt: Date())
         catalogs[name] = entry
-        write(entry, name.rawValue)
+        await Self.write(entry, to: fileURL(name.rawValue))
         return value
     }
 
     /// Every paper-or-digital set, newest first, as Scryfall orders them.
     func sets() async throws -> [ScryfallSet] {
         if let setList, isFresh(setList.fetchedAt) { return setList.value }
-        if let entry: Entry<[ScryfallSet]> = read("sets"), isFresh(entry.fetchedAt) {
+        if let entry: Entry<[ScryfallSet]> = await Self.read(fileURL("sets")), isFresh(entry.fetchedAt) {
             setList = entry
             return entry.value
         }
@@ -109,7 +109,7 @@ final class ScryfallCatalogCache {
         let value = try await task.value
         let entry = Entry(value: value, fetchedAt: Date())
         setList = entry
-        write(entry, "sets")
+        await Self.write(entry, to: fileURL("sets"))
         return value
     }
 
@@ -119,13 +119,18 @@ final class ScryfallCatalogCache {
 
     private func fileURL(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
 
-    private func read<T: Codable>(_ key: String) -> Entry<T>? {
-        guard let data = try? Data(contentsOf: fileURL(key)) else { return nil }
+    // Reading and encoding a 10k-name list is not main-thread work; these
+    // run on the global executor (see HTTPClient.decode for why that has
+    // to be explicit).
+    @concurrent
+    private static func read<T: Codable & Sendable>(_ url: URL) async -> Entry<T>? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(Entry<T>.self, from: data)
     }
 
-    private func write<T: Codable>(_ entry: Entry<T>, _ key: String) {
+    @concurrent
+    private static func write<T: Codable & Sendable>(_ entry: Entry<T>, to url: URL) async {
         guard let data = try? JSONEncoder().encode(entry) else { return }
-        try? data.write(to: fileURL(key), options: .atomic)
+        try? data.write(to: url, options: .atomic)
     }
 }

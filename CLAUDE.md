@@ -129,7 +129,12 @@ screen. Instead:
 - Hydration bumps `CardHydrationController.revision` per 75-card batch;
   views refetch on a **debounce** (longer while a sync is running) and merge
   in place without reordering, so the grid doesn't reshuffle mid-sync.
-- Small tables (`MTGCollection`, per-oracle rulings) are fine as `@Query`.
+- Small tables (`MTGCollection`, `SavedSearch`, per-oracle rulings) are
+  fine as `@Query`. The audit ledger is not small: History reads it through
+  `CollectionStore.history()`. A `@Query` re-runs on the main thread after
+  *every* save on any context — with `CardMetaWriter` saving a batch every
+  half second during a sync, a ledger query meant a main-thread refetch of
+  thousands of rows per batch.
 
 For this to compile, the `@Model` classes, `CardItem` (and its extensions),
 and the enums they use are all `nonisolated` — opted out of the project's
@@ -155,11 +160,14 @@ bulk data writes — belongs off the main thread.
   explicitly: `HTTPClient` decodes JSON in a `@concurrent` function. Before
   that, every search page, catalog and hydration batch was parsed on the
   main thread — under the keyboard during live search.
-- SwiftData `@Model` types are main-actor-bound under this project's default
-  MainActor isolation, so their writes happen on the main context. For large
-  writes, chunk the loop and `await Task.yield()` between batches so the run
-  loop stays responsive, and surface progress (e.g. a progress bar) rather
-  than blocking behind a spinner.
+- Bulk SwiftData writes go through `CardMetaWriter`, a `@ModelActor` with
+  its own background context: hydration batches, the catalog ingest,
+  rulings, and the hydration "what's still needed" lookup. A 75-card save
+  on the main context was enough to stall the keyboard, and the catalog
+  ingest ran for minutes. Small user-initiated writes (add/edit/remove,
+  import rows with progress) stay on the main context. The main actor
+  learns of background writes through `CardHydrationController.revision`
+  and `CollectionChangeTracker`, never by observing the models.
 - Long-running user actions should show progress and keep the UI interactive
   (or explicitly disable only the controls that must not change mid-operation).
 
@@ -323,9 +331,29 @@ explanation. Rulings (~5MB) are allowed anywhere. `NetworkMonitor` wraps
 `NWPathMonitor`.
 
 Refresh policy (`DataPolicy`): a newer bulk build is taken only if our copy
-is older than 7 days (catalog) / 1 day (rulings). Scryfall rebuilds daily
-and 79MB a day is not worth it; owned-card prices already refresh every 6h
+is older than 7 days (catalog and rulings alike). Scryfall rebuilds both
+daily; 79MB a day is not worth it, and a daily rulings re-ingest meant
+~170k SQLite rows written on the first launch of every day — right when the
+user starts typing, and the first keyboard presentation reads its resources
+from the same disk. The ingest also runs at `.background` priority so the
+system throttles its I/O. Owned-card prices already refresh every 6h
 through the cheap batched call.
+
+Debug builds start `HangDetector` at launch: a watchdog that samples the
+main thread's stack when it stops answering for 0.4s and logs it (subsystem
+`magic-hat`, category `hang`, also printed). It samples with Mach thread
+APIs (suspend, read registers, walk frame pointers, resume), **not a
+signal**: lldb stops the process on a signal, and a launch-time stall trips
+the threshold on every run, so a signal-based sampler froze the app at
+launch under the debugger. When something stalls on a
+device, run from Xcode, reproduce, and filter the console for
+`MAIN THREAD HANG` — the stack says what the main thread was doing. The
+`-uitest-hang` launch argument blocks the main thread once, two seconds
+after the root appears, to prove the report path; on the simulator use
+`xcrun simctl spawn <udid> log show --last 10m --predicate 'subsystem == "magic-hat"'`
+(the device must be booted). Measured on the simulator with the seed: the
+only stalls are at launch — 0.87s creating the root hosting controller,
+0.6s in a system XPC teardown — and none during a search-field tap.
 
 ## Search
 
@@ -351,8 +379,11 @@ Two states of one screen:
   keeps the results when filters are active — they are still a search —
   and returns to the form only when nothing else is active.
 
-**Live search:** typing runs the query after a 350ms pause
-(`SearchController.scheduleRun`); Return runs at once. The previous results
+**Live search:** the field's text is `@State` in the view, not bound to
+`controller.query.text` — the landing Form observes the query, so a direct
+binding re-diffed every section per keystroke. The text reaches the query
+after a 350ms pause (`SearchController.scheduleText`), on Return, or from a
+chip; the run follows if the query changed. The previous results
 stay on screen while the next page loads (`isRefreshing`, a small spinner in
 the header) so the grid never flashes empty between keystrokes. A generation
 counter drops a page from an older run even if its request finishes late.
@@ -392,10 +423,15 @@ Vocabularies come from `FilterVocabulary`, loaded once through
 `ScryfallCatalogCache` (`/catalog/*` and `/sets`, on disk for a week) and
 matched in memory, prefix first.
 
-**Keyboard:** every field is in one `FocusState`; a Done button on the
-keyboard bar clears it (number pads have no Return), the Forms use
-`.scrollDismissesKeyboard(.interactively)`, and the results grid dismisses
-on scroll. `testKeyboardDoneDismisses` covers the number-pad case.
+**Keyboard:** every field has a Return key labelled Done — the number
+fields use `.numbersAndPunctuation` rather than a pad, which has none —
+the Forms use `.scrollDismissesKeyboard(.interactively)`, and the results
+grid dismisses on scroll. There is deliberately **no SwiftUI keyboard
+toolbar** (`ToolbarItem(placement: .keyboard)`): it added seconds to the
+first keyboard presentation on device. `testReturnDismissesNumberField`
+covers the number field. The landing and collection search fields use
+`.navigationBarDrawer(displayMode: .always)`; with `.automatic` a drawer
+above a long scroll view starts hidden until the user pulls down.
 
 **Searching a collection.** `CollectionCardsView` treats the collection as
 a search that is always active: a search field and a Filters button (the

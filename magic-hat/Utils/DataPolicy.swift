@@ -19,5 +19,9 @@ nonisolated enum DataPolicy {
     static let catalogRefreshInterval: TimeInterval = 7 * 24 * 3600
 
     /// Rulings are ~5MB; daily is fine.
-    static let rulingsRefreshInterval: TimeInterval = 24 * 3600
+    /// Weekly, like the catalog. Scryfall rebuilds the file daily, so a
+    /// daily interval meant re-ingesting ~170k rows on the first launch of
+    /// every day — minutes of SQLite writes right when the user starts
+    /// typing. Rulings change rarely enough for a week.
+    static let rulingsRefreshInterval: TimeInterval = 7 * 24 * 3600
 }

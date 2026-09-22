@@ -83,6 +83,7 @@ struct CollectionCardsView: View {
                 )
             }
         }
+        .background { SearchDismisser(isEmpty: query.text.isEmpty) }
         .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
         // Always shown: a pushed screen with an inline title otherwise hides
@@ -97,6 +98,7 @@ struct CollectionCardsView: View {
                 } label: {
                     Label("Filters", systemImage: "line.3.horizontal.decrease")
                         .symbolVariant(query.hasFilters ? .circle.fill : .circle)
+                        .foregroundStyle(query.hasFilters ? Color.accentColor : Color.primary)
                 }
                 .accessibilityIdentifier("collection-filters")
                 .accessibilityValue(query.hasFilters ? "\(query.activeFilterCount) active" : "none")
@@ -112,7 +114,6 @@ struct CollectionCardsView: View {
             SearchFiltersView(query: $query, context: .collection)
         }
         .onChange(of: query) { _, _ in applyFilter() }
-        .onChange(of: items) { _, _ in applyFilter() }
         // Initial load, and again after any write (import/delete).
         .task(id: "\(collectionName)|\(tracker.revision)") {
             await load(thenSync: true)
@@ -134,6 +135,7 @@ struct CollectionCardsView: View {
         let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: sort)) ?? .empty
         guard !Task.isCancelled else { return }
         items = snapshot.items
+        applyFilter()
         hasLoaded = true
         prefetch(around: 0)
 
@@ -144,6 +146,7 @@ struct CollectionCardsView: View {
         // Sync finished: now a full re-sort is welcome (prices/rarity landed).
         if let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort) {
             items = fresh.items
+            applyFilter()
         }
     }
 
@@ -159,6 +162,7 @@ struct CollectionCardsView: View {
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
             items = CardSorting.sorted(items, by: sort)
+            applyFilter()
         }
     }
 
@@ -187,6 +191,7 @@ struct CollectionCardsView: View {
         }
         for item in fresh.items where !seen.contains(item.id) { next.append(item) }
         items = next
+        applyFilter()
     }
 
     /// Viewport lookahead: metadata for the next window of tiles.
@@ -201,7 +206,9 @@ struct CollectionCardsView: View {
 
     /// Narrows `items` to `visible` off the main actor, keeping order. A
     /// short pause absorbs a burst of keystrokes; a newer call cancels an
-    /// older filter still running.
+    /// older filter still running. Called wherever `items` is assigned
+    /// rather than from onChange(of: items) — comparing two 4k-item arrays
+    /// on every hydration refresh is itself main-thread work.
     private func applyFilter() {
         filterTask?.cancel()
         let q = query
