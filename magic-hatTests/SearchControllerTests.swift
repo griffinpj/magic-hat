@@ -196,15 +196,20 @@ struct SearchControllerLiveTests {
         let c = SearchController(client: client)
         for text in ["g", "gl", "gle", "glea"] {
             c.query.text = text
-            c.scheduleRun(after: .milliseconds(50))
+            c.scheduleRun(after: .milliseconds(30))
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        // Poll rather than sleep a fixed time: under a parallel test load
+        // the debounce task can be scheduled late.
+        let start = ContinuousClock.now
+        while client.queries.isEmpty, ContinuousClock.now - start < .seconds(3) {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
         await SearchControllerTests.settle(c)
         #expect(client.queries.count == 1, "one request for four keystrokes")
         #expect(client.queries.first?.hasPrefix("glea") == true)
         // Same query again: the debounced run is a no-op.
-        c.scheduleRun(after: .milliseconds(20))
-        try? await Task.sleep(for: .milliseconds(80))
+        c.scheduleRun(after: .milliseconds(10))
+        try? await Task.sleep(for: .milliseconds(300))
         #expect(client.queries.count == 1)
     }
 
