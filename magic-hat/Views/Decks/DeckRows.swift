@@ -4,7 +4,10 @@
 //
 //  The two row shapes a deck uses: a search result (streamlined, with a
 //  "+" so cards go in fast) and a deck-list line (quantity stepper, build
-//  status). Both are plain values in, callbacks out.
+//  status). Both are plain values in, callbacks out. The card part of each
+//  row is a plain Button *beside* the controls, not a tap gesture over the
+//  whole row: in a List, sibling buttons keep separate hit areas, while a
+//  gesture layered over buttons is the classic way taps go missing.
 //
 
 import SwiftUI
@@ -19,8 +22,43 @@ struct DeckSearchRow: View {
     var showsAdd = true
     var notLegal = false
     var onAdd: (() -> Void)? = nil
+    var onOpen: (() -> Void)? = nil
 
     var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                onOpen?()
+            } label: {
+                card
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("deck-search-row-\(item.name)")
+            Spacer(minLength: 8)
+            if inDeck > 0 {
+                Text("\(inDeck)")
+                    .font(.caption.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 22, minHeight: 22)
+                    .background(Color.accentColor, in: Capsule())
+                    .accessibilityLabel("\(inDeck) in deck")
+            }
+            if showsAdd {
+                Button {
+                    onAdd?()
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.hierarchical)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Add \(item.name)")
+                .accessibilityIdentifier("deck-search-add-\(item.name)")
+            }
+        }
+    }
+
+    private var card: some View {
         HStack(spacing: 12) {
             CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio, cornerRadius: 5, targetWidth: 90)
                 .frame(width: 42)
@@ -49,28 +87,6 @@ struct DeckSearchRow: View {
                     }
                 }
             }
-            Spacer(minLength: 8)
-            if inDeck > 0 {
-                Text("\(inDeck)")
-                    .font(.caption.weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(.white)
-                    .frame(minWidth: 22, minHeight: 22)
-                    .background(Color.accentColor, in: Capsule())
-                    .accessibilityLabel("\(inDeck) in deck")
-            }
-            if showsAdd {
-                Button {
-                    onAdd?()
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Add \(item.name)")
-                .accessibilityIdentifier("deck-search-add-\(item.name)")
-            }
         }
         .contentShape(Rectangle())
     }
@@ -81,8 +97,31 @@ struct DeckCardRow: View {
     let item: DeckCardItem
     let locked: Bool
     let onSetQuantity: (Int) -> Void
+    var onOpen: (() -> Void)? = nil
 
     var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                onOpen?()
+            } label: {
+                card
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("deck-row-\(item.card.name)")
+            .accessibilityValue("\(item.quantity), \(item.status.label)")
+            Spacer(minLength: 8)
+            if locked {
+                Text("×\(item.quantity)")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } else {
+                stepper
+            }
+        }
+    }
+
+    private var card: some View {
         HStack(spacing: 12) {
             CardImageView(urlString: item.card.imageURL, aspectRatio: item.card.aspectRatio, cornerRadius: 5, targetWidth: 90)
                 .frame(width: 42)
@@ -98,20 +137,9 @@ struct DeckCardRow: View {
                 }
                 statusLine
             }
-            Spacer(minLength: 8)
-            if locked {
-                Text("×\(item.quantity)")
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            } else {
-                stepper
-            }
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("deck-row-\(item.card.name)")
-        .accessibilityValue("\(item.quantity), \(item.status.label)")
     }
 
     private var statusLine: some View {

@@ -49,14 +49,23 @@ final class DeckFlowTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("Card 120")
+        XCTAssertTrue(app.buttons["deck-search-filters"].waitForExistence(timeout: 5), "filters reachable while searching")
+        XCTAssertFalse(app.segmentedControls["deck-tabs"].exists, "section picker steps aside for the search")
         let add = app.buttons["deck-search-add-Card 120"]
         XCTAssertTrue(add.waitForExistence(timeout: 10), "collection search result")
         add.tap()
+        // The viewer opens from a result, with Add to the same board.
+        app.buttons["deck-search-row-Card 120"].tap()
+        XCTAssertTrue(app.buttons["viewer-add-deck"].waitForExistence(timeout: 5), "viewer from a search result")
+        app.buttons["viewer-close"].tap()
         clearSearch(app, field)
 
-        let row = app.descendants(matching: .any)["deck-row-Card 120"].firstMatch
+        let row = app.buttons["deck-row-Card 120"].firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 5), "the card is on the list")
         XCTAssertTrue((row.value as? String)?.contains("In collection") == true, "available, not yet built: \(row.value ?? "")")
+        row.tap()
+        XCTAssertTrue(app.buttons["viewer-close"].waitForExistence(timeout: 5), "viewer from a deck row")
+        app.buttons["viewer-close"].tap()
 
         // Build: the seed collection is the only source.
         app.buttons["deck-menu"].tap()
@@ -70,7 +79,7 @@ final class DeckFlowTests: XCTestCase {
         let done = app.buttons["build-done"]
         XCTAssertTrue(done.waitForExistence(timeout: 10))
         done.tap()
-        let built = app.descendants(matching: .any)["deck-row-Card 120"].firstMatch
+        let built = app.buttons["deck-row-Card 120"].firstMatch
         XCTAssertTrue(built.waitForExistence(timeout: 5))
         XCTAssertTrue(waitForValue(built, containing: "In deck"), "built")
 
@@ -80,7 +89,7 @@ final class DeckFlowTests: XCTestCase {
         let back = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Move'")).firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
-        XCTAssertTrue(waitForValue(app.descendants(matching: .any)["deck-row-Card 120"].firstMatch, containing: "In collection"), "returned")
+        XCTAssertTrue(waitForValue(app.buttons["deck-row-Card 120"].firstMatch, containing: "In collection"), "returned")
 
         // Lock: the field now filters the deck, and the stepper is gone.
         app.buttons["deck-menu"].tap()
@@ -108,20 +117,31 @@ final class DeckFlowTests: XCTestCase {
         XCTAssertTrue(ok.waitForExistence(timeout: 15), "not-found alert")
         ok.tap()
         XCTAssertTrue(app.navigationBars["Clip Deck"].waitForExistence(timeout: 10))
-        let five = app.descendants(matching: .any)["deck-row-Card 5"].firstMatch
+        let five = app.buttons["deck-row-Card 5"].firstMatch
         XCTAssertTrue(five.waitForExistence(timeout: 5))
         XCTAssertTrue((five.value as? String)?.hasPrefix("2,") == true, "two copies: \(five.value ?? "")")
-        XCTAssertTrue(app.descendants(matching: .any)["deck-row-Card 3"].firstMatch.exists, "the commander")
+        XCTAssertTrue(app.buttons["deck-row-Card 3"].firstMatch.exists, "the commander")
     }
 
-    /// Empties the field so the deck list shows again (the search session
-    /// may stay active; that's fine).
+    /// Ends the search session so the deck list shows again: the search UI
+    /// stays up while the field is active, even empty, so filters can be
+    /// set before typing.
     private func clearSearch(_ app: XCUIApplication, _ field: XCUIElement) {
         let clear = field.buttons["Clear text"]
-        if clear.exists { clear.tap() } else {
-            let count = (field.value as? String)?.count ?? 0
-            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: count))
+        if clear.exists { clear.tap() }
+        // The field's X: iOS labels it differently across versions.
+        var ended = false
+        for label in ["Cancel", "Close", "Dismiss", "Stop searching"] {
+            let button = app.buttons[label].firstMatch
+            if button.exists { button.tap(); ended = true; break }
         }
+        if !ended {
+            let labels = app.buttons.allElementsBoundByIndex.prefix(20).map { "\($0.label)|\($0.identifier)" }
+            let note = XCTAttachment(string: labels.joined(separator: "\n"))
+            note.name = "buttons-when-no-cancel"; note.lifetime = .keepAlways; add(note)
+            field.typeText("\n")   // dismisses the keyboard; empty field ends the session
+        }
+        XCTAssertTrue(app.segmentedControls["deck-tabs"].waitForExistence(timeout: 5), "section picker is back")
     }
 
     private func waitForValue(_ element: XCUIElement, containing text: String, timeout: TimeInterval = 8) -> Bool {

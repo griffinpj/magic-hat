@@ -487,7 +487,13 @@ two meanings: unlocked, it *adds* — results from the collection (in
 memory, one row per card with copies owned) or All Cards (Scryfall), a
 board picker for where "+" goes, the usual filter sheet, and for commander
 decks the commander's colour identity applied as `id<=` (a toggle shows
-it). Format legality is tagged on each result ("Not legal"), not enforced:
+it). The scope / board / filters header appears as soon as the field is
+*active* (read from `isSearching` by a relay view inside the searchable
+content), not only once text is typed, so filters can be set first; while
+the search is active the Cards / Stats / Details picker steps aside for
+the room. Row bodies are plain Buttons beside the +/stepper controls
+rather than a tap gesture over the row — sibling buttons keep their own
+hit areas in a List. Format legality is tagged on each result ("Not legal"), not enforced:
 enforcing it hid every card whose legality wasn't cached yet. Tapping a
 result opens the viewer with `deckTarget` set, so its Add goes to the same
 board. Locked, the field *filters* the deck and nothing
