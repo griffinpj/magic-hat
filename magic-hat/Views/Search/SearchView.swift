@@ -5,16 +5,19 @@
 //  The Search tab. Two states of one screen:
 //
 //  - Nothing searched yet: the filters *are* the page — a Form with saved
-//    searches at the top and every filter inline, plus a Search button in
-//    the bottom bar. Typing in the search field runs live (debounced), so
-//    the first results appear as you type.
+//    searches at the top and every filter inline, and a prominent Search
+//    button in the navigation bar. Typing in the search field runs live
+//    (debounced), so the first results appear as you type.
 //  - Results: the shared CardGridView. Filters move behind the toolbar
 //    icon (the same sections, in a sheet over a draft) so a search can be
-//    refined without leaving it. Clearing the field returns to the form.
+//    refined without leaving it; an X clears the search and returns to the
+//    form. Emptying the field keeps the results if filters are active (they
+//    are still a search) and returns to the form only when nothing else is.
 //
-//  Name completions from Scryfall show as a chip strip above the results
-//  rather than a list that would hide them — the live grid already answers
-//  "what matches", the strip answers "did you mean this exact card".
+//  Name completions are the distinct names *in the results*, so they obey
+//  the active filters — Scryfall's autocomplete endpoint takes only a
+//  prefix and would offer cards the filters exclude. They scroll with the
+//  grid as its header rather than sitting in a bar above it.
 //
 //  The pieces are deliberately separable: SearchController holds the
 //  query/results, SearchFilterSections edits a CardSearchQuery binding, and
@@ -34,15 +37,16 @@ struct SearchView: View {
     @State private var showSavedList = false
     @State private var showSaveAlert = false
     @State private var saveName = ""
-    @State private var completions: [String] = []
-    @State private var completionTask: Task<Void, Never>?
     @FocusState private var focusedField: FilterField?
+    /// Bumped to collapse the search field (see SearchDismisser).
+    @State private var dismissSearchTrigger = 0
 
     private var tracker: CollectionChangeTracker { .shared }
 
     var body: some View {
         NavigationStack {
             content
+                .background { SearchDismisser(trigger: dismissSearchTrigger) }
                 .navigationTitle("Search")
                 .searchable(text: $controller.query.text, prompt: "Card name, type, rules text")
                 // Live results are refined *while* the field is active, so
@@ -135,40 +139,54 @@ struct SearchView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .filterKeyboardBar($focusedField)
-        // The one action on this screen, floating above the tab bar. A
-        // .bottomBar toolbar item is drawn *under* the iOS 26 tab bar here.
-        .safeAreaInset(edge: .bottom) {
-            Button {
-                focusedField = nil
-                controller.run()
-            } label: {
-                Label("Search", systemImage: "magnifyingglass")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-            }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.capsule)
-            .disabled(controller.query.isEmpty)
-            .accessibilityIdentifier("search-run")
-            .padding(.horizontal, 20)
-            .padding(.bottom, 4)
-        }
     }
 
     private var results: some View {
-        VStack(spacing: 0) {
-            if !completions.isEmpty { completionStrip }
-            resultsHeader
-            CardGridView(items: controller.results, onAppearIndex: { controller.loadMore(near: $0) })
+        CardGridView(items: controller.results, onAppearIndex: { controller.loadMore(near: $0) }, header: {
+            let names = completions
+            if !names.isEmpty { completionStrip(names) }
+        })
+        // Quiet progress: a small pill while a new first page replaces
+        // what's shown, or the next page is on its way.
+        .overlay(alignment: .top) {
+            if controller.isRefreshing { progressPill.padding(.top, 8) }
+        }
+        .overlay(alignment: .bottom) {
+            if controller.isLoadingMore { progressPill.padding(.bottom, 12) }
         }
     }
 
-    /// Exact card names starting with what was typed.
-    private var completionStrip: some View {
+    private var progressPill: some View {
+        ProgressView()
+            .controlSize(.small)
+            .padding(10)
+            .glassEffect(.regular, in: Circle())
+    }
+
+    /// Distinct card names in the current results that match the typed
+    /// text, prefix matches first — filter-aware by construction.
+    private var completions: [String] {
+        let t = controller.query.trimmedText
+        guard t.count >= 2, !t.contains(":") else { return [] }
+        var seen = Set<String>()
+        var prefix: [String] = [], contains: [String] = []
+        for item in controller.results.prefix(200) {
+            let name = item.name
+            guard !seen.contains(name), name.caseInsensitiveCompare(t) != .orderedSame else { continue }
+            seen.insert(name)
+            if name.range(of: t, options: [.caseInsensitive, .anchored, .diacriticInsensitive]) != nil {
+                prefix.append(name)
+            } else if name.range(of: t, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                contains.append(name)
+            }
+        }
+        return Array((prefix + contains).prefix(8))
+    }
+
+    private func completionStrip(_ names: [String]) -> some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
-                ForEach(completions, id: \.self) { name in
+                ForEach(names, id: \.self) { name in
                     Button(name) {
                         controller.query.text = name
                         controller.run()
@@ -180,65 +198,36 @@ struct SearchView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 6)
         }
         .scrollIndicators(.hidden)
+        .scrollClipDisabled()
         .accessibilityLabel("Card name suggestions")
-    }
-
-    private var resultsHeader: some View {
-        HStack(spacing: 8) {
-            if let total = controller.totalCards {
-                Text("\(total.formatted()) \(total == 1 ? "card" : "cards")")
-            } else {
-                Text("\(controller.results.count.formatted())+ cards")
-            }
-            if let applied = controller.appliedQuery, applied.hasFilters {
-                Text("·")
-                Text("\(applied.activeFilterCount) \(applied.activeFilterCount == 1 ? "filter" : "filters")")
-            }
-            Spacer()
-            if controller.isRefreshing || controller.isLoadingMore {
-                ProgressView().controlSize(.small)
-            }
-            Text(controller.query.sort.label)
-        }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .monospacedDigit()
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: Typing
 
     private func textChanged(_ text: String) {
         if text.trimmingCharacters(in: .whitespaces).isEmpty {
-            // Field cleared (the ✕, or Cancel): back to the form. Filters
-            // stay set; the Search button runs them on their own.
-            controller.clear()
-            completions = []
+            if controller.phase == .idle {
+                return                          // already on the form
+            } else if controller.query.hasFilters {
+                controller.scheduleRun()        // filters are still a search
+            } else {
+                controller.clear()              // nothing left: back to the form
+            }
             return
         }
         controller.scheduleRun()
-        scheduleCompletions(text)
     }
 
-    /// Name completions from /cards/autocomplete, debounced, skipped for
-    /// anything that looks like Scryfall syntax.
-    private func scheduleCompletions(_ text: String) {
-        completionTask?.cancel()
-        let t = text.trimmingCharacters(in: .whitespaces)
-        guard t.count >= 2, !t.contains(":") else { completions = []; return }
-        completionTask = Task {
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled else { return }
-            let names = (try? await ScryfallClient.shared.autocomplete(t)) ?? []
-            guard !Task.isCancelled else { return }
-            // Typing the exact name means the strip has nothing to add.
-            completions = names.filter { $0.caseInsensitiveCompare(t) != .orderedSame }
-        }
+    /// The toolbar X: drop the search and return to the form. Filters stay
+    /// set — the form shows them, and Reset is right there.
+    private func clearSearch() {
+        controller.clear()
+        controller.query.text = ""
+        dismissSearchTrigger += 1
     }
 
     // MARK: Toolbar
@@ -265,7 +254,18 @@ struct SearchView: View {
             .accessibilityIdentifier("search-saved")
         }
 
-        if controller.phase != .idle {
+        if controller.phase == .idle {
+            // The filters are on screen; the one action left is to run them.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Search") {
+                    focusedField = nil
+                    controller.run()
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(controller.query.isEmpty)
+                .accessibilityIdentifier("search-run")
+            }
+        } else {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
                     ForEach(SearchSort.allCases) { option in
@@ -300,6 +300,9 @@ struct SearchView: View {
                 }
                 .accessibilityIdentifier("search-filters")
                 .accessibilityValue(controller.query.hasFilters ? "\(controller.query.activeFilterCount) active" : "none")
+
+                Button("Clear Search", systemImage: "xmark") { clearSearch() }
+                    .accessibilityIdentifier("search-clear")
             }
         }
     }
@@ -330,4 +333,17 @@ struct SearchView: View {
 #Preview {
     SearchView()
         .modelContainer(for: [SavedSearch.self, CollectionEntry.self, CardMeta.self], inMemory: true)
+}
+
+/// `dismissSearch` only exists in the environment *inside* a searchable
+/// modifier's content, so a view there relays it: bump `trigger` and the
+/// field collapses, keyboard and Cancel gone.
+private struct SearchDismisser: View {
+    let trigger: Int
+    @Environment(\.dismissSearch) private var dismissSearch
+
+    var body: some View {
+        Color.clear
+            .onChange(of: trigger) { _, _ in dismissSearch() }
+    }
 }

@@ -108,6 +108,7 @@ struct SearchFilterSections: View {
     private var colorsSection: some View {
         Section {
             ColorPickerRow(colors: $query.colors, colorless: $query.colorless)
+                .equatable()
             Picker("Match", selection: $query.colorMode) {
                 ForEach(ColorMode.allCases, id: \.self) { Text($0.label).tag($0) }
             }
@@ -198,6 +199,7 @@ struct SearchFilterSections: View {
             ManaSymbolKeypad { symbol in query.manaCost += "{\(symbol)}" } onDelete: {
                 query.manaCost = Self.droppingLastSymbol(query.manaCost)
             }
+            .equatable()
             Picker("Match", selection: $query.manaCostMatch) {
                 ForEach(ManaCostMatch.allCases, id: \.self) { Text($0.label).tag($0) }
             }
@@ -519,10 +521,16 @@ private struct SuggestingTextField: View {
 
 // MARK: - Rows
 
-/// W U B R G and colorless as tappable pips.
-private struct ColorPickerRow: View {
+/// W U B R G and colorless as tappable pips. Equatable on its values so
+/// the six glyph pips aren't re-rendered on every unrelated keystroke in
+/// the form (a Binding otherwise always reads as changed).
+private struct ColorPickerRow: View, Equatable {
     @Binding var colors: Set<ManaColor>
     @Binding var colorless: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.colors == rhs.colors && lhs.colorless == rhs.colorless
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -585,10 +593,13 @@ private struct ToggleChips<Option: Hashable & Identifiable>: View {
     }
 }
 
-/// Buttons that type mana symbols into the cost field.
-private struct ManaSymbolKeypad: View {
+/// Buttons that type mana symbols into the cost field. Stateless, so it
+/// compares equal to itself and its nineteen glyphs render once.
+private struct ManaSymbolKeypad: View, Equatable {
     let onTap: (String) -> Void
     let onDelete: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool { true }
 
     private let keys = ["W", "U", "B", "R", "G", "C", "X", "S", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 

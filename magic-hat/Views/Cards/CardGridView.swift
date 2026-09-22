@@ -12,13 +12,17 @@
 
 import SwiftUI
 
-struct CardGridView<Accessory: View>: View {
+struct CardGridView<Header: View, Accessory: View>: View {
     let items: [CardItem]
     var onAppearIndex: (Int) -> Void = { _ in }
     /// Bump to jump the grid to the top (the parent does this right before
     /// a re-sort lands, so the reorder is laid out from the top instead of
     /// deep into the old order).
     var scrollToTop: Int = 0
+    /// Scrolls with the content, above the first row (e.g. suggestion
+    /// chips) — inside the scroll view so it never fights the navigation
+    /// bar's collapse.
+    @ViewBuilder var header: () -> Header
     /// Floating accessory (e.g. a sort button).
     @ViewBuilder var accessory: () -> Accessory
 
@@ -35,6 +39,7 @@ struct CardGridView<Accessory: View>: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
+                header()
                 LazyVGrid(columns: columns, spacing: 10) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         CardTile(item: item)
@@ -81,8 +86,25 @@ struct CardGridView<Accessory: View>: View {
     }
 }
 
-extension CardGridView where Accessory == EmptyView {
+extension CardGridView where Header == EmptyView, Accessory == EmptyView {
     init(items: [CardItem], onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0) {
-        self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop, accessory: { EmptyView() })
+        self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
+                  header: { EmptyView() }, accessory: { EmptyView() })
+    }
+}
+
+extension CardGridView where Header == EmptyView {
+    init(items: [CardItem], onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0,
+         @ViewBuilder accessory: @escaping () -> Accessory) {
+        self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
+                  header: { EmptyView() }, accessory: accessory)
+    }
+}
+
+extension CardGridView where Accessory == EmptyView {
+    init(items: [CardItem], onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0,
+         @ViewBuilder header: @escaping () -> Header) {
+        self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
+                  header: header, accessory: { EmptyView() })
     }
 }
