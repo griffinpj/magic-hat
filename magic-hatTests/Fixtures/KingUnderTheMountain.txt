@@ -1,0 +1,85 @@
+// COMMANDER
+1 Dáin of the Ancient Halls (HOC) 104
+
+1 Aggravated Assault (SLD) 1983 *F*
+1 Arcane Signet (LTC) 273
+1 Battlefield Improvisation (ACR) 276
+1 Bearded Axe (KHM) 388
+1 Bifur, Melodic Rider (HOB) 147
+1 Big Score (SOC) 237
+1 Bilbo's Gambit (HOB) 5
+1 Bilbo's Ring (LTR) 298
+1 Blasphemous Act (LTC) 211
+1 Bloodforged Battle-Axe (PIP) 226
+1 Cadric, Soul Kindler (DMC) 10
+1 Cavern-Hoard Dragon (LTC) 31
+1 Command Tower (LCC) 325
+1 Darksteel Plate (2X2) 304
+1 Diamond Pick-Axe (LCI) 143
+1 Dragon-Cursed Halls (HOC) 8
+1 Duergar Hedge-Mage (MOC) 324
+1 Dwarven Mattock (HOB) 172
+1 Dwarven Mine (ELD) 243
+1 Dáin, Lord of the Iron Hills (HOB) 8
+1 Embercleave (SPG) 77
+1 Exotic Orchard (M3C) 341
+1 Flashback (SOS) 115
+1 Flowering of the White Tree (LTR) 15
+1 Forge Anew (LTR) 17
+1 Fíli and Kíli, Joyous (HOC) 1
+1 Gandalf the White (LTR) 19
+1 Gandalf, White Rider (LTR) 290
+1 Ghostway (RVR) 19
+1 Gimli of the Glittering Caves (LTC) 32
+1 Gimli's Reckless Might (LTC) 494
+1 Gimli, Counter of Kills (LTR) 312
+1 Gleaming Splendor (HOB) 15
+1 Glóin the Mighty (HOB) 99
+1 Glóin, Dwarf Emissary (LTR) 132
+1 Hammer of Nazahn (CMM) 388
+1 Kíli the Resourceful (HOB) 17
+1 Long-Lost Lances (HOC) 7
+1 Magda, Brazen Outlaw (KHM) 142
+1 Minas Tirith (LTR) 341
+1 Mines of Moria (LTR) 342
+1 Mithril Coat (LTR) 245 *F*
+15 Mountain (SOS) 278
+1 Multiversal Passage (SPM) 180
+1 Nori, Teller of Tales (HOB) 161
+1 Orcrist, Goblin-cleaver (HOB) 177 *F*
+1 Ori, Plate Stacker (HOC) 6
+1 Palantír of Orthanc (LTR) 247
+1 Path to Exile (SOC) 159
+14 Plains (SOS) 272
+1 Rain of Riches (BLC) 200
+1 Reprieve (LTR) 26
+1 Rogue's Passage (LTC) 326
+1 Sacred Foundry (EOE) 256
+1 Seize the Day (UMA) 147
+1 Smaug the Magnificent (HOB) 229 *F*
+1 Sol Ring (WHO) 245
+1 Spiteful Banditry (LTR) 439 *F*
+1 Sram, Senior Edificer (SOC) 176
+1 Tataru Taru (FIC) 30
+1 The Arkenstone (HOB) 170
+1 The Lonely Mountain (HOB) 187
+1 The Reaver Cleaver (M3C) 217
+1 There and Back Again (LTR) 151
+1 Thorin Oakenshield (HOB) 202
+1 Thorin, Company's Leader (HOC) 100
+1 Thorin, King of Durin's Folk (HOC) 3
+1 Thorin, Mountain-king (HOB) 114
+1 Torbran, Thane of Red Fell (ELD) 147
+1 Virtue of Loyalty (WOE) 38
+1 Waves of Aggression (EVE) 148
+1 Wrath of God (CMM) 70
+
+// SIDEBOARD
+1 An Unexpected Party (HOB) 29
+1 Kaldra Compleat (MH2) 227
+
+// MAYBEBOARD
+1 Enduring Ideal (SOK) 9
+1 Isengard Unleashed (LTC) 495
+1 Relentless Assault (CMR) 416
+1 Swords to Plowshares (SOC) 179

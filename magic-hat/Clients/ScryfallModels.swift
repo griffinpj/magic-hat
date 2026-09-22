@@ -218,11 +218,22 @@ nonisolated struct ScryfallCollectionResponse: Decodable, Sendable {
     }
 }
 
-/// Identifier used to request cards in a collection lookup.
-nonisolated struct ScryfallCardIdentifier: Codable, Sendable {
+/// Identifier used to request cards in a collection lookup: by Scryfall id,
+/// by exact name, or by set + collector number.
+nonisolated struct ScryfallCardIdentifier: Codable, Sendable, Hashable {
     let id: String?
+    let name: String?
+    let set: String?
+    let collectorNumber: String?
 
-    init(id: String) { self.id = id }
+    enum CodingKeys: String, CodingKey {
+        case id, name, set
+        case collectorNumber = "collector_number"
+    }
+
+    init(id: String) { self.id = id; name = nil; set = nil; collectorNumber = nil }
+    init(name: String) { id = nil; self.name = name; set = nil; collectorNumber = nil }
+    init(set: String, collectorNumber: String) { id = nil; name = nil; self.set = set; self.collectorNumber = collectorNumber }
 }
 
 /// Request body for POST /cards/collection.

@@ -146,6 +146,16 @@ struct ScryfallClient: CardSearching {
         )
     }
 
+    /// POST /cards/collection with arbitrary identifiers (name, or set +
+    /// number) — how an imported deck list's unknown cards are looked up.
+    func collection(identifiers: [ScryfallCardIdentifier]) async throws -> ScryfallCollectionResponse {
+        let url = baseURL.appendingPathComponent("cards").appendingPathComponent("collection")
+        let data = try JSONEncoder().encode(ScryfallCollectionRequest(identifiers: identifiers))
+        return try await http.request(
+            ScryfallCollectionResponse.self, url: url, method: .post, body: data, rateLimit: .cardsCollection
+        )
+    }
+
     /// Fetches metadata for many cards, chunking into batches of 75 and
     /// pacing via the collection rate limit. Returns all found cards.
     func cards(ids: [String]) async throws -> [ScryfallCard] {

@@ -60,15 +60,23 @@ are cross-cutting, not owned by one feature.
   - `AuditRecord.binderName` still exists. It is historical: the ledger is
     append-only and older records name their source binder. New records
     leave it empty; History labels actions by collection.
-  - Planned, not built — decks are **hidden collections**, not a second
-    concept. `MTGCollection` gains a `kind` (`.collection` / `.deck`); the
-    Collections tab hides decks, an "All Collections" view shows everything.
-    Building a deck **moves** rows: the source row's quantity drops (split,
-    if only some copies go), a row is created in the deck collection carrying
-    price/condition/date, and `sourceCollectionName` is recorded on it so
-    unbuilding returns it home. Unbuild merges back via `mergeKey` — which
-    works precisely because binder is no longer in the key. Every move is
-    two AuditRecords (−n source, +n deck) under one actionID.
+  - **Decks** (`Deck`, `DeckCard`) are two layers. The *list*: DeckCard
+    rows per board (commander / main / side / maybe) naming a printing for
+    display and an oracle id for matching. The *built* cards: CollectionEntry
+    rows in the deck's hidden collection, `collectionName ==
+    Deck.collectionKey` ("deck:<uuid>"), each carrying
+    `sourceCollectionName`. There is no MTGCollection row for a deck, so
+    the Collections tab never lists one; the store labels such rows
+    "Deck: Name" wherever an owned row's collection is shown.
+    Building (`DeckBuilder.plan` → `build`) takes copies for what the list
+    still lacks, matching by oracle id (any printing satisfies the list),
+    preferring the exact printing, then non-foils, then the largest stack:
+    the source row is decremented (deleted at zero), the deck row created or
+    merged by `mergeKey`, and two AuditRecords (−n source, +n "Deck: Name")
+    written under one actionID. Disassembling returns every row to its
+    `sourceCollectionName` (or the first collection if that one is gone),
+    merging by `mergeKey`. Copies are conserved; `DeckBuilderTests` asserts
+    it. Deleting a built deck disassembles first.
   - `AuditRecord` — append-only ledger. Records sharing an `actionID` come
     from one user action; each has a signed `quantityDelta`. Backs the
     History tab and future undo/redo.
@@ -463,6 +471,49 @@ text with pips inline (each symbol rendered once to a bitmap and
 interpolated into `Text`). `ManaGlyphView` draws any named glyph — the map
 also carries card-type and keyword-ability icons.
 
+## Decks
+
+Reads through `DeckStore` (a ModelActor): the tab's `overview()`, a deck's
+`snapshot(deckID:)` — list rows joined with their CardMeta, the copies
+built and the copies still available in collections (both by oracle id),
+sections by card type, and `DeckStats` — and `resolve(_:)` for imports.
+Writes: `DeckEditController` (main context; list edits write no audit,
+a list is a wish), `DeckBuilder` (background; moves copies, audits them).
+`DeckChangeTracker` is bumped by list edits, both trackers by builds.
+
+The deck screen: a segmented Cards / Stats / Details under the title, and
+one "…" menu for whole-deck actions. **Cards** has one search field with
+two meanings: unlocked, it *adds* — results from the collection (in
+memory, one row per card with copies owned) or All Cards (Scryfall), a
+board picker for where "+" goes, the usual filter sheet, and for commander
+decks the commander's colour identity applied as `id<=` (a toggle shows
+it). Format legality is tagged on each result ("Not legal"), not enforced:
+enforcing it hid every card whose legality wasn't cached yet. Tapping a
+result opens the viewer with `deckTarget` set, so its Add goes to the same
+board. Locked, the field *filters* the deck and nothing
+edits. With no search, the list: commander, mainboard by type with count
+and value, sideboard, maybeboard; each row says built / in collection /
+missing. **Stats**: size against the format's target, value, built /
+available / missing, a legality check (copies, format, identity), mana
+curve by colour, pips, what the mana base produces, types, rarities —
+Swift Charts over `DeckStats`, computed off-main. **Details**: name,
+format, commander (a Scryfall search restricted to `is:commander` and the
+format), lock, notes, build / disassemble / export / delete.
+
+**Build wizard** (`DeckBuildSheet`): choose source collections, review the
+plan (what moves from where, what's missing) before anything changes,
+confirm, result. Missing cards stay marked in the list; building again
+moves only what's new.
+
+**Import** (`DeckListParser` → `DeckStore.resolve` → Scryfall for the
+rest, cached through `CardMetaWriter` → `DeckEditController.importLines`).
+The parser reads the shapes deck sites export — `// COMMANDER` headers, a
+blank line ending the commander section, `1 Name (SET) 123 *F*`, `4x
+Name`, Arena's About/Name block; the fixture
+`KingUnderTheMountain.txt` is the contract. Import comes from a file or
+the clipboard (deck sites copy lists there). Export is a ShareLink of the
+same text.
+
 ## Set symbols and foil
 
 Set symbols are **text**, from the bundled Keyrune font (`Resources/keyrune.ttf`,
@@ -590,7 +641,11 @@ in-memory container (binder merge, add, replace, audit), `CollectionStore`,
 `ManaSymbol` (parsing, glyph coverage, a drawn glyph has ink),
 `SearchController` (paging, empty vs failed, ownership) with a fake client.
 `CardSearchQueryMatchingTests` covers the in-memory evaluation clause by
-clause. `SearchFlowTests` (UI) drives the landing filters, keyboard
+clause. `DeckListParserTests` (the real export), `DeckBuilderTests` (plan,
+build, disassemble, conservation, audit pairs, list edits),
+`DeckResolveTests` (the deck list against the bulk slice), `DeckStatsTests`.
+`DeckFlowTests` (UI) creates a deck, adds from the collection search,
+builds, disassembles, locks, and imports from the clipboard. `SearchFlowTests` (UI) drives the landing filters, keyboard
 dismissal and saving a search; `testCollectionSearchAndColorFilterNarrowGrid`
 the collection's field and filter sheet. None needs the network.
 

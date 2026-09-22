@@ -54,17 +54,26 @@ struct HistoryView: View {
 private struct HistoryRow: View {
     let group: HistoryAction
 
+    private var icon: String {
+        switch group.action {
+        case .deckBuild, .deckDisassemble: return "rectangle.stack"
+        default: return "square.and.arrow.down"
+        }
+    }
+
     private var title: String {
         switch group.action {
         case .importAdd, .importReplace: return "Import"
         case .manualAdd: return "Added Cards"
         case .manualRemove: return "Removed Cards"
+        case .deckBuild: return "Built Deck"
+        case .deckDisassemble: return "Disassembled Deck"
         }
     }
 
     var body: some View {
         HStack(alignment: .top) {
-            Image(systemName: "square.and.arrow.down")
+            Image(systemName: icon)
                 .foregroundStyle(.tint)
                 .padding(.top, 2)
 

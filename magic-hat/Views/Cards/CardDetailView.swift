@@ -408,7 +408,7 @@ private struct PrintingRow: View {
 /// Fills its frame with card art (aspect-fill), decoded off-main. Shows the
 /// already-decoded card image (from the grid/overlay cache) instantly while
 /// the art crop — a URL nothing has fetched before — downloads.
-private struct CardArtImage: View {
+struct CardArtImage: View {
     let urlString: String?
     var fallbackURL: String? = nil
     @Environment(\.displayScale) private var displayScale
