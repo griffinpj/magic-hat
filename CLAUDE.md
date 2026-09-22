@@ -88,7 +88,7 @@ are cross-cutting, not owned by one feature.
   - `CSVParser` — RFC-4180-ish parser + ManaBox mapping.
   - `PrintingsCache` — "all printings of this card" by oracle id. Written to
     disk with a 7-day TTL (printings only change when a set releases), so
-    cold launches don't re-run searches. The card overlay warms it for the
+    cold launches don't re-run searches. The card viewer warms it for the
     card on screen, debounced, so opening the detail screen is instant.
   - `SetSymbolLoader` — see Set symbols below.
   - `ImageLoader` — card image cache: original bytes on disk (Caches/),
@@ -163,10 +163,21 @@ reuse them later (they take plain values, not SwiftData/Scryfall models):
   `CollectionEntry`+`CardMeta` (owned) or, later, from a `ScryfallCard`
   (search). Carries `owned` so non-owned results can dim.
 - `CardGridView` — 3-wide grid of `[CardItem]`; `onAppearIndex` lets the
-  parent hydrate/prefetch. Tap → overlay; overlay eye → detail push.
-- `CardOverlayView` — enlarged card in a horizontal pager that peeks
-  neighbours; swipe flows through the grid. Info panel + Liquid Glass action
-  bar (only the eye action is wired; others are placeholders).
+  parent hydrate/prefetch. Tap → zoom into `CardViewerView`.
+- `CardViewerView` — full-screen viewer presented with `fullScreenCover` +
+  `navigationTransition(.zoom)` from the tile (`matchedTransitionSource`),
+  the Photos pattern. Horizontal pager that peeks neighbours; swipe flows
+  through the grid. Info panel below; actions in a native `.bottomBar`
+  toolbar; the detail screen is *pushed* inside the viewer's own
+  `NavigationStack`, so popping it lands on the same card. Dismiss: close
+  button, or the zoom transition's own drag/pinch.
+  The grid keeps its `ScrollViewReader` scrolled to the card the viewer is
+  on (via the `currentID` binding), so the zoom-out lands on the right tile
+  and the grid is where the user left off.
+  It is not a ZStack overlay, and shouldn't become one: an overlay drawn
+  inside the pushed screen sits *below* the navigation and tab bars (Back
+  and the tab pill stay live through the dim), gives VoiceOver no way out,
+  and can't use the toolbar API.
 - `CardDetailView` — hero art header, gameplay text, Versions/Ruling tabs,
   and all printings (grouped by set) with owned indicators.
 
@@ -314,7 +325,7 @@ Foil sheen is a Metal shader (`Shaders/FoilSheen.metal`) applied with
 SwiftUI's `layerEffect` (`FoilSheen` modifier) to the card image's own layer:
 one GPU pass, samples the art, clipped with it. Static in the grid — the time
 uniform is constant so nothing redraws; animated at 30fps only on the centred
-overlay card; off under Reduce Motion. Building `.metal` files needs Xcode's
+viewer card; off under Reduce Motion. Building `.metal` files needs Xcode's
 Metal Toolchain component: `xcodebuild -downloadComponent MetalToolchain`
 (~700MB, installed here on 2026-09-20).
 
@@ -327,7 +338,7 @@ existing row raises its quantity; editing a row so its identity matches
 another row merges them. The collection can never hold two rows that mean
 the same thing.
 
-UI (`AddCardView`, from the overlay's middle action): one sheet holding a
+UI (`AddCardView`, from the viewer's Add action): one sheet holding a
 `NavigationStack` + `Form`. The printing picker and collection picker are
 *pushed*, searchable screens, not stacked sheets. Finish is a segmented
 picker, language/condition are menu pickers, quantity is a `Stepper`,
@@ -338,9 +349,14 @@ confirms (`confirmationDialog`), and owned rows also support swipe actions.
 The sheet stays open after Add so several printings can go in; a success
 haptic marks each. `EditEntryView` reuses `EntryFormSections`.
 
-The overlay action bar: pencil = edit (owned only), middle = add (any card,
-including printings from the detail screen), trash = remove (owned only,
-confirms, then closes the overlay). Deck and mark actions remain stubs.
+The viewer's bottom toolbar: Details (absent when the viewer was opened
+from the detail screen), Edit, Add, then a flexible spacer and Remove on
+its own. Edit and Remove are enabled only for a `CardItem.isEntry` — one
+owned row; printings and search hits carry a Scryfall id, and their owned
+rows are edited from the Add sheet's owned list. Remove confirms, then the
+viewer steps to the neighbouring card (Photos after a delete) rather than
+closing; it closes only when nothing is left. Nothing is shown that doesn't
+work — deck and mark actions will join the toolbar when they exist.
 
 ## Data flow notes
 

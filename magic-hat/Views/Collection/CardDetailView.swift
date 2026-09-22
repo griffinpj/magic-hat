@@ -4,7 +4,7 @@
 //
 //  Full detail screen for a card: a hero art header, gameplay text, and a
 //  list of every printing (via Scryfall, grouped by set) with prices and an
-//  indicator for the ones we own. Reachable from the card overlay's eye
+//  indicator for the ones we own. Reachable from the card viewer's Details action
 //  action; reusable from Search later.
 //
 //  Pricing note: we show the one market price Scryfall publishes per finish
@@ -26,7 +26,10 @@ struct CardDetailView: View {
     @State private var loadError: String?
     @State private var selectedTab: Tab = .versions
     @State private var filterText = ""
-    @State private var overlayIndex: Int?
+    @Namespace private var zoom
+    /// The printing the viewer was opened on, and the one it is showing now.
+    @State private var viewing: CardItem?
+    @State private var viewingID: String?
 
     private enum Tab: Hashable { case versions, ruling }
 
@@ -80,19 +83,11 @@ struct CardDetailView: View {
         .task { await loadPrintings() }
         .task(id: CollectionChangeTracker.shared.revision) { await loadOwned() }
         .onChange(of: filterText) { _, _ in rebuildGroups() }
-        .overlay {
-            if let index = overlayIndex, printingItems.indices.contains(index) {
-                CardOverlayView(
-                    items: printingItems,
-                    index: index,
-                    onClose: {
-                        withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = nil }
-                    },
-                    // Already on the detail screen; printings share it.
-                    onOpenDetail: nil
-                )
-                .transition(.opacity)
-            }
+        .fullScreenCover(item: $viewing, onDismiss: { viewingID = nil }) { item in
+            // Already on the detail screen; every printing shares it, so the
+            // viewer has no Details action here.
+            CardViewerView(items: printingItems, currentID: $viewingID, showsDetail: false)
+                .navigationTransition(.zoom(sourceID: viewingID ?? item.id, in: zoom))
         }
     }
 
@@ -320,10 +315,12 @@ struct CardDetailView: View {
     private func printingRow(_ card: ScryfallCard) -> some View {
         PrintingRow(card: card, owned: ownedIDs.contains(card.id))
             .padding(.horizontal, 16)
+            .matchedTransitionSource(id: card.id, in: zoom)
             .contentShape(Rectangle())
             .onTapGesture {
-                if let idx = printingItems.firstIndex(where: { $0.id == card.id }) {
-                    withAnimation(.easeInOut(duration: 0.2)) { overlayIndex = idx }
+                if let item = printingItems.first(where: { $0.id == card.id }) {
+                    viewingID = item.id
+                    viewing = item
                 }
             }
     }

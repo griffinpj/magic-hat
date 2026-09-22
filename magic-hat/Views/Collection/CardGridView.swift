@@ -4,9 +4,10 @@
 //
 //  Reusable 3-wide card grid driven by a plain [CardItem] array, decoupled
 //  from where the cards come from (collection today, Search later). Tapping a
-//  card opens a paged overlay; the "eye" action in the overlay pushes the
-//  detail screen. The parent supplies items and an onAppearIndex callback so
-//  it can lazily hydrate/prefetch as tiles approach the viewport.
+//  tile zooms into the full-screen CardViewerView, which pages through the
+//  same items and pushes the detail screen inside its own stack. The parent
+//  supplies items and an onAppearIndex callback so it can lazily
+//  hydrate/prefetch as tiles approach the viewport.
 //
 
 import SwiftUI
@@ -18,66 +19,62 @@ struct CardGridView<Accessory: View>: View {
     /// a re-sort lands, so the reorder is laid out from the top instead of
     /// deep into the old order).
     var scrollToTop: Int = 0
-    /// Floating accessory (e.g. a sort button), shown only when no overlay is
-    /// open so it never covers the enlarged card.
+    /// Floating accessory (e.g. a sort button).
     @ViewBuilder var accessory: () -> Accessory
 
-    @State private var selectedIndex: Int?
-    @State private var detailItem: CardItem?
+    @Namespace private var zoom
+    /// The card the viewer was opened on; drives the presentation.
+    @State private var viewing: CardItem?
+    /// The card the viewer is showing right now — it pages, this follows.
+    @State private var viewingID: String?
 
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: 10), count: 3
     )
 
     var body: some View {
-        ZStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            CardTile(item: item)
-                                .equatable()
-                                .onAppear { onAppearIndex(index) }
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = index }
-                                }
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 10) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        CardTile(item: item)
+                            .equatable()
+                            .matchedTransitionSource(id: item.id, in: zoom)
+                            .onAppear { onAppearIndex(index) }
+                            .contentShape(Rectangle())
+                            .onTapGesture { open(item) }
                     }
-                    .padding(10)
                 }
-                .onChange(of: scrollToTop) { _, _ in
-                    guard let first = items.first?.id else { return }
-                    var t = Transaction(); t.disablesAnimations = true
-                    withTransaction(t) { proxy.scrollTo(first, anchor: .top) }
-                }
+                .padding(10)
             }
-            .overlay(alignment: .bottomTrailing) {
-                if selectedIndex == nil { accessory() }
+            .onChange(of: scrollToTop) { _, _ in
+                guard let first = items.first?.id else { return }
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) { proxy.scrollTo(first, anchor: .top) }
             }
+            // While the viewer pages, keep the tile it is on in view (the
+            // grid is hidden under it, so this is invisible): the zoom-out
+            // on dismiss lands on that tile, and the grid is where the user
+            // left off. Skipped on open (old == nil) so tapping a
+            // half-visible tile doesn't nudge the grid before the zoom.
+            .onChange(of: viewingID) { old, id in
+                guard old != nil, let id else { return }
+                var t = Transaction(); t.disablesAnimations = true
+                withTransaction(t) { proxy.scrollTo(id) }
+            }
+        }
+        .overlay(alignment: .bottomTrailing) { accessory() }
+        .fullScreenCover(item: $viewing, onDismiss: { viewingID = nil }) { item in
+            CardViewerView(items: items, currentID: $viewingID)
+                // Follows the pager, so dismissing zooms back to the card
+                // the user ended on, not the one they opened.
+                .navigationTransition(.zoom(sourceID: viewingID ?? item.id, in: zoom))
+        }
+    }
 
-            // Overlay as a top-level sibling so it fully intercepts scrolling
-            // and taps — the collection behind can't be interacted with; only a
-            // tap on the dimmed backdrop closes it.
-            if let index = selectedIndex, items.indices.contains(index) {
-                CardOverlayView(
-                    items: items,
-                    index: index,
-                    onClose: {
-                        withAnimation(.easeInOut(duration: 0.2)) { selectedIndex = nil }
-                    },
-                    onOpenDetail: { item in
-                        // Keep the overlay state so popping detail returns to it.
-                        detailItem = item
-                    }
-                )
-                .transition(.opacity)
-                .zIndex(1)
-            }
-        }
-        .navigationDestination(item: $detailItem) { item in
-            CardDetailView(item: item)
-        }
+    private func open(_ item: CardItem) {
+        viewingID = item.id
+        viewing = item
     }
 }
 

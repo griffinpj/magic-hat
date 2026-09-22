@@ -4,7 +4,7 @@
 //
 //  Drives the real app against seeded in-memory data (`-uitest-seed`, 900
 //  cards, no network) and measures the things that were laggy: entering a
-//  collection, scrolling the grid, opening the overlay, pushing detail.
+//  collection, scrolling the grid, opening the viewer, pushing detail.
 //
 //  The scroll test uses XCTOSSignpostMetric.scrollDecelerationMetric, which
 //  is Apple's own hitch counter for scroll views — the first run records a
@@ -32,7 +32,7 @@ final class CollectionFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testOpenCollectionOverlayAndDetail() {
+    func testOpenViewerAndDetail() {
         let app = launch()
         _ = openCollection(app)
 
@@ -41,25 +41,29 @@ final class CollectionFlowTests: XCTestCase {
         XCTAssertTrue(tile.waitForExistence(timeout: 5))
         tile.tap()
 
-        let eye = app.buttons["overlay-eye"]
-        XCTAssertTrue(eye.waitForExistence(timeout: 5), "overlay should open with an action bar")
-        eye.tap()
+        let details = app.buttons["viewer-details"]
+        XCTAssertTrue(details.waitForExistence(timeout: 5), "viewer should open with its toolbar")
+        details.tap()
 
-        XCTAssertTrue(app.navigationBars["Card 0"].waitForExistence(timeout: 5), "detail should push")
+        XCTAssertTrue(app.buttons["Versions"].waitForExistence(timeout: 5), "detail should push")
         app.navigationBars["Card 0"].buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(eye.waitForExistence(timeout: 5), "popping detail should return to the overlay")
+        XCTAssertTrue(details.waitForExistence(timeout: 5), "popping detail should return to the viewer")
+
+        let close = app.buttons["viewer-close"]
+        close.tap()
+        XCTAssertTrue(close.waitForNonExistence(timeout: 5), "close should dismiss the viewer")
     }
 
-    /// Overlay → Add → Add to collection → Done: the card's quantity goes up
-    /// and the overlay's info card reflects it without leaving the screen.
+    /// Viewer → Add → Add to collection → Done: the card's quantity goes up
+    /// and the viewer's info panel reflects it without leaving the screen.
     @MainActor
-    func testAddFromOverlayIncrementsQuantity() {
+    func testAddFromViewerIncrementsQuantity() {
         let app = launch()
         _ = openCollection(app)
         app.staticTexts["Card 0"].firstMatch.tap()
 
-        let add = app.buttons["overlay-plus.rectangle.on.rectangle"]
-        XCTAssertTrue(add.waitForExistence(timeout: 5), "overlay action bar")
+        let add = app.buttons["viewer-add"]
+        XCTAssertTrue(add.waitForExistence(timeout: 5), "viewer toolbar")
         add.tap()
 
         let confirm = app.buttons["add-card-confirm"]
@@ -68,26 +72,35 @@ final class CollectionFlowTests: XCTestCase {
         app.buttons["add-card-done"].tap()
 
         XCTAssertTrue(app.staticTexts["2× Card 0"].waitForExistence(timeout: 10),
-                      "overlay should show the merged quantity")
+                      "viewer should show the merged quantity")
     }
 
-    /// Overlay → trash → confirm: the card leaves the grid.
+    /// Viewer → Remove → confirm: the viewer steps to the next card, as
+    /// Photos does after a delete, and the removed card is gone from the
+    /// grid once the viewer closes.
     @MainActor
-    func testRemoveFromOverlayDeletesTheCard() {
+    func testRemoveFromViewerDeletesTheCard() {
         let app = launch()
         _ = openCollection(app)
         let tile = app.staticTexts["Card 1"].firstMatch
         XCTAssertTrue(tile.waitForExistence(timeout: 5))
         tile.tap()
 
-        let trash = app.buttons["overlay-trash"]
-        XCTAssertTrue(trash.waitForExistence(timeout: 5))
-        trash.tap()
+        let remove = app.buttons["viewer-remove"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5))
+        remove.tap()
 
-        let confirm = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove'")).firstMatch
+        // The dialog's button reads "Remove <n> from Test Collection"; the
+        // toolbar button is plain "Remove", so match on the collection.
+        let confirm = app.buttons.matching(NSPredicate(format: "label CONTAINS 'from Test Collection'")).firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "confirmation dialog")
         confirm.tap()
 
+        // Name order puts "Card 10" right after "Card 1"; the seed gives it
+        // quantity 1 + 10 % 4.
+        XCTAssertTrue(app.staticTexts["3× Card 10"].waitForExistence(timeout: 10),
+                      "viewer should step to the neighbour")
+        app.buttons["viewer-close"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10),
                       "removed card should leave the grid")
     }
