@@ -1,0 +1,19 @@
+# Mana font License
+
+Mana — https://github.com/andrewgioia/mana — by Andrew Gioia.
+
+From the project's README:
+
+All mana, tap, and card type symbol images are copyright Wizards of the
+Coast (http://magicthegathering.com).
+
+The Mana font is licensed under the SIL OFL 1.1 (http://scripts.sil.org/OFL).
+
+Mana CSS, LESS, and Sass files are licensed under the MIT License
+(http://opensource.org/licenses/mit-license.html).
+
+Attribution is greatly appreciated but not required.
+
+This app bundles `mana.ttf` (SIL OFL 1.1) and `mana-map.json`, a table of
+glyph code points generated from `css/mana.css` (MIT) by
+`scripts/make-mana-map.py`.

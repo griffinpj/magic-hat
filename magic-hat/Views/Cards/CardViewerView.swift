@@ -258,9 +258,9 @@ private struct InfoPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("\(item.quantity)× \(item.name)")
+                Text(item.isEntry ? "\(item.quantity)× \(item.name)" : item.name)
                     .font(.headline)
-                if item.finish != .normal {
+                if item.isEntry, item.finish != .normal {
                     Text(item.finish.displayName.uppercased())
                         .font(.caption2.weight(.bold))
                         .padding(.horizontal, 5).padding(.vertical, 2)
@@ -277,9 +277,19 @@ private struct InfoPanel: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 6) {
-                chip(item.language.uppercased())
-                chip(item.condition.replacingOccurrences(of: "_", with: " ").capitalized)
+            if item.isEntry {
+                HStack(spacing: 6) {
+                    chip(item.language.uppercased())
+                    chip(item.condition.replacingOccurrences(of: "_", with: " ").capitalized)
+                }
+            } else if item.owned {
+                Label("In collection", systemImage: "checkmark.seal.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
+
+            if let cost = item.manaCost, !cost.isEmpty {
+                ManaCostView(cost: cost, size: 16)
             }
 
             if let added = item.addedDate {

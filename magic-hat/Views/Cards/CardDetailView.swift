@@ -111,9 +111,7 @@ struct CardDetailView: View {
                         .font(.title2.bold())
                     Spacer()
                     if let cost = item.manaCost, !cost.isEmpty {
-                        Text(cost.replacingOccurrences(of: "{", with: "")
-                            .replacingOccurrences(of: "}", with: " ").trimmingCharacters(in: .whitespaces))
-                            .font(.headline)
+                        ManaCostView(cost: cost, size: 20)
                     }
                 }
                 HStack {
@@ -134,8 +132,7 @@ struct CardDetailView: View {
 
     @ViewBuilder private var gameplay: some View {
         if let text = item.oracleText, !text.isEmpty {
-            Text(text)
-                .font(.callout)
+            OracleTextView(text: text)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))

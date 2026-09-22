@@ -73,7 +73,7 @@ enum TestSupport {
     static func makeContainer() throws -> ModelContainer {
         let schema = Schema([
             MTGCollection.self, CollectionEntry.self, CardMeta.self,
-            AuditRecord.self, CardRuling.self,
+            AuditRecord.self, CardRuling.self, SavedSearch.self,
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try ModelContainer(for: schema, configurations: [config])

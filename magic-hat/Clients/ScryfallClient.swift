@@ -11,7 +11,14 @@
 
 import Foundation
 
-struct ScryfallClient {
+/// The two calls a search needs. SearchController depends on this rather
+/// than on ScryfallClient so tests can feed it pages without a network.
+protocol CardSearching {
+    func search(query: String, unique: String, order: String, direction: String) async throws -> ScryfallSearchPage
+    func search(pageURL: URL) async throws -> ScryfallSearchPage
+}
+
+struct ScryfallClient: CardSearching {
     static let shared = ScryfallClient()
 
     private let baseURL = URL(string: "https://api.scryfall.com")!
@@ -67,6 +74,58 @@ struct ScryfallClient {
             }
         }
         return results
+    }
+
+    /// GET /cards/search — a full-text search, first page. `q` is Scryfall
+    /// syntax (see CardSearchQuery.scryfallQuery). Scryfall answers "no
+    /// cards matched" with a 404, which is a result, not an error.
+    func search(query: String, unique: String, order: String, direction: String) async throws -> ScryfallSearchPage {
+        var comps = URLComponents(
+            url: baseURL.appendingPathComponent("cards").appendingPathComponent("search"),
+            resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "unique", value: unique),
+            URLQueryItem(name: "order", value: order),
+            URLQueryItem(name: "dir", value: direction),
+        ]
+        guard let url = comps.url else { throw HTTPError.badURL }
+        return try await search(pageURL: url)
+    }
+
+    /// GET a search page by its URL (the first, or a `next_page`).
+    func search(pageURL: URL) async throws -> ScryfallSearchPage {
+        do {
+            let page = try await http.request(ScryfallListResponse.self, url: pageURL, rateLimit: .cardsSearch)
+            let next = (page.hasMore == true) ? page.nextPage.flatMap(URL.init(string:)) : nil
+            return ScryfallSearchPage(cards: page.data, totalCards: page.totalCards, nextPage: next)
+        } catch HTTPError.badStatus(404, _) {
+            return .empty
+        }
+    }
+
+    /// GET /cards/autocomplete — up to 20 card names starting with `q`.
+    func autocomplete(_ q: String) async throws -> [String] {
+        var comps = URLComponents(
+            url: baseURL.appendingPathComponent("cards").appendingPathComponent("autocomplete"),
+            resolvingAgainstBaseURL: false
+        )!
+        comps.queryItems = [URLQueryItem(name: "q", value: q)]
+        guard let url = comps.url else { throw HTTPError.badURL }
+        return try await http.request(ScryfallStringListResponse.self, url: url, rateLimit: .other).data
+    }
+
+    /// GET /catalog/:name — a vocabulary list (creature types, artists, …).
+    func catalog(_ name: String) async throws -> [String] {
+        let url = baseURL.appendingPathComponent("catalog").appendingPathComponent(name)
+        return try await http.request(ScryfallStringListResponse.self, url: url, rateLimit: .other).data
+    }
+
+    /// GET /sets — every set, newest first (~600KB).
+    func sets() async throws -> [ScryfallSet] {
+        let url = baseURL.appendingPathComponent("sets")
+        return try await http.request(ScryfallSetListResponse.self, url: url, rateLimit: .other).data
     }
 
     /// POST /cards/collection — up to 75 cards in one request by ID.

@@ -35,7 +35,7 @@ struct CardTile: View, Equatable {
     }
 
     /// Green when it has gained, red when it has lost, white when flat or
-    /// when we have nothing to compare against.
+    /// when we have nothing to compare against (search hits, printings).
     private var priceColor: Color {
         guard let change = item.gainLoss, change.amount != 0 else { return .white }
         return change.amount > 0 ? .green : .red
@@ -50,19 +50,30 @@ struct CardTile: View, Equatable {
             .overlay(alignment: .bottomTrailing) { priceBadge }
             .overlay(alignment: .topTrailing) { foilBadge }
             .overlay(alignment: .center) { placeholderName }
-            .opacity(item.owned ? 1 : 0.55)
     }
 
-    private var quantityBadge: some View {
-        Text("\(item.quantity)")
-            .font(.caption2.weight(.bold))
-            .monospacedDigit()
-            .foregroundStyle(.white)
-            .frame(minWidth: 15)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(Color.black.opacity(0.62), in: Capsule())
-            .padding(5)
+    /// Quantity for an owned row. A search hit or printing we own (somewhere)
+    /// gets a check instead — it has no quantity of its own.
+    @ViewBuilder private var quantityBadge: some View {
+        if item.isEntry {
+            Text("\(item.quantity)")
+                .font(.caption2.weight(.bold))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .frame(minWidth: 15)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Color.black.opacity(0.62), in: Capsule())
+                .padding(5)
+        } else if item.owned {
+            Image(systemName: "checkmark")
+                .font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(width: 16, height: 16)
+                .background(Color.green, in: Circle())
+                .padding(5)
+                .accessibilityLabel("In collection")
+        }
     }
 
     @ViewBuilder private var foilBadge: some View {
