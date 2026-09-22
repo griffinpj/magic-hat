@@ -332,6 +332,23 @@ that logic, and filtering 112k SwiftData objects in memory is the kind of
 main-thread work this app avoids. Zero matches is a 404 on Scryfall; the
 client turns it into an empty page.
 
+Two states of one screen:
+
+- **Landing (nothing searched):** the filters *are* the page — a Form with
+  saved searches on top, every filter inline, a Search button in the bottom
+  bar. Edits go straight to the live query.
+- **Results:** the shared `CardGridView`; filters move behind the toolbar
+  icon, as a sheet over a *draft* (Reset / Done). Clearing the search field
+  returns to the landing with filters kept.
+
+**Live search:** typing runs the query after a 350ms pause
+(`SearchController.scheduleRun`); Return runs at once. The previous results
+stay on screen while the next page loads (`isRefreshing`, a small spinner in
+the header) so the grid never flashes empty between keystrokes. A generation
+counter drops a page from an older run even if its request finishes late.
+Name completions from `/cards/autocomplete` show as a chip strip above the
+grid rather than `.searchSuggestions`, which would hide the results.
+
 Modular on purpose — three pieces that don't know about the tab:
 
 - `CardSearchQuery` (Models) — every filter as one Codable value, plus
@@ -343,27 +360,33 @@ Modular on purpose — three pieces that don't know about the tab:
   results, pages as the grid nears the end (`loadMore(near:)`), maps
   Scryfall cards off-main, layers ownership on from `CollectionStore`.
   Depends on the `CardSearching` protocol so tests feed it pages.
-- `SearchFiltersView` — a sheet editing a `Binding<CardSearchQuery>`
-  (draft, committed on Done; Reset top-left). Any screen that owns a query
-  can present it.
+- `SearchFilterSections` — the form sections over a `Binding<CardSearchQuery>`,
+  embedded by the landing Form and by `SearchFiltersView` (the sheet). Any
+  screen that owns a query can show either.
 
 A later screen that wants search at the top composes the same three with
 `.searchable` and hands results to `CardGridView`.
 
-Filter controls are the platform's: toggles and menu pickers in a Form;
-pushed searchable Lists with checkmarks for long vocabularies (formats,
-types, sets, keywords, artists — from `ScryfallCatalogCache`, which keeps
-`/catalog/*` and `/sets` on disk for a week); button-style toggles for
-short multi-selects (rarity, finish); mana pips as toggle buttons for
-colours; number-formatted text fields for price and stats. Type-line terms
-cycle is → is not → off. Name suggestions come from `/cards/autocomplete`,
-debounced.
+**No pushed pickers.** Long vocabularies are token fields: chips for what's
+chosen, a field that suggests inline as you type (types with their catalog
+and card-type glyph, keywords, sets with their symbol, artists), Return adds
+free text. A term chip's menu flips is / is not or removes it. Formats and
+rarities are button-style toggle chips (formats: the common eight, More
+reveals the rest); colours are mana pips; price and stats are number fields.
+Vocabularies come from `FilterVocabulary`, loaded once through
+`ScryfallCatalogCache` (`/catalog/*` and `/sets`, on disk for a week) and
+matched in memory, prefix first.
+
+**Keyboard:** every field is in one `FocusState`; a Done button on the
+keyboard bar clears it (number pads have no Return), the Forms use
+`.scrollDismissesKeyboard(.interactively)`, and the results grid dismisses
+on scroll. `testKeyboardDoneDismisses` covers the number-pad case.
 
 **Saved searches** are a SwiftData model (`SavedSearch`, query stored as
 JSON so the filter model can grow without a migration), not UserDefaults:
 a real user-managed list (rename, reorder, delete) that belongs with the
-user's data and syncs with it if that ever comes. They show on the idle
-Search screen and in the bookmark menu.
+user's data and syncs with it if that ever comes. They head the landing
+screen and the bookmark menu.
 
 ## Mana symbols
 
@@ -504,8 +527,8 @@ in-memory container (binder merge, add, replace, audit), `CollectionStore`,
 `CardSearchQuery` (every filter's Scryfall syntax, JSON round trip),
 `ManaSymbol` (parsing, glyph coverage, a drawn glyph has ink),
 `SearchController` (paging, empty vs failed, ownership) with a fake client.
-`SearchFlowTests` (UI) drives the filter sheet and saving a search, neither
-of which needs the network.
+`SearchFlowTests` (UI) drives the landing filters, keyboard dismissal and
+saving a search, none of which needs the network.
 
 UI tests launch the app with `-uitest-seed`: `UITestSeed` fills an in-memory
 store with 900 image-less cards and marks the catalog ready, so nothing

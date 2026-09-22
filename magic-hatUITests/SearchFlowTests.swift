@@ -2,8 +2,9 @@
 //  SearchFlowTests.swift
 //  magic-hatUITests
 //
-//  The parts of Search that need no network: the filter sheet commits and
-//  resets, and a search can be saved and appears on the idle screen.
+//  The parts of Search that need no network: the landing screen's inline
+//  filters apply and reset, the keyboard can be dismissed, and a search can
+//  be saved and shows up on the landing screen.
 //
 
 import XCTest
@@ -22,7 +23,7 @@ final class SearchFlowTests: XCTestCase {
     /// Form rows are created lazily; swipe until the element exists.
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
         var attempts = 0
-        while !element.exists && attempts < 8 {
+        while !element.exists && attempts < 10 {
             app.swipeUp()
             attempts += 1
         }
@@ -30,61 +31,70 @@ final class SearchFlowTests: XCTestCase {
     }
 
     @MainActor
-    func testFilterSheetCommitsAndResets() {
+    func testLandingFiltersApplyAndReset() {
         let app = launchOnSearch()
-        let filters = app.buttons["search-filters"]
-        XCTAssertTrue(filters.waitForExistence(timeout: 5))
-        XCTAssertEqual(filters.value as? String, "none")
-        filters.tap()
+        let run = app.buttons["search-run"]
+        XCTAssertTrue(run.waitForExistence(timeout: 5), "landing shows the Search button")
+        XCTAssertFalse(run.isEnabled, "nothing to search yet")
 
-        let done = app.buttons["filters-done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 5), "filter sheet")
-        XCTAssertFalse(app.buttons["filters-reset"].isEnabled, "nothing to reset yet")
+        // Formats are inline chips at the top of the form.
+        let modern = app.descendants(matching: .any)["filter-format-modern"]
+        XCTAssertTrue(modern.waitForExistence(timeout: 5))
+        modern.tap()
+        XCTAssertTrue(run.isEnabled, "a filter is enough to search")
 
         let rare = app.descendants(matching: .any)["filter-rarity-rare"]
         reveal(rare, in: app)
         rare.tap()
-        let foil = app.descendants(matching: .any)["filter-finish-foil"]
-        reveal(foil, in: app)
-        foil.tap()
-        XCTAssertTrue(app.buttons["filters-reset"].isEnabled)
+
+        let reset = app.buttons["filters-reset"]
+        reveal(reset, in: app)
+        XCTAssertTrue(reset.isEnabled)
+        reset.tap()
+        XCTAssertFalse(reset.isEnabled)
+        XCTAssertFalse(run.isEnabled)
+    }
+
+    /// Number pads have no return key; the keyboard bar's Done must exist
+    /// and put the keyboard away.
+    @MainActor
+    func testKeyboardDoneDismisses() {
+        let app = launchOnSearch()
+        let minimum = app.textFields["Any"].firstMatch
+        reveal(minimum, in: app)
+        minimum.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "keyboard up")
+        minimum.typeText("5")
+        let done = app.buttons["keyboard-done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "Done on the keyboard bar")
         done.tap()
-
-        XCTAssertTrue(done.waitForNonExistence(timeout: 5))
-        XCTAssertEqual(filters.value as? String, "2 active", "two filter groups set")
-
-        filters.tap()
-        XCTAssertTrue(app.buttons["filters-reset"].waitForExistence(timeout: 5))
-        app.buttons["filters-reset"].tap()
-        app.buttons["filters-done"].tap()
-        XCTAssertEqual(filters.value as? String, "none")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5), "keyboard dismissed")
     }
 
     @MainActor
-    func testSaveSearchAppearsInMenuAndList() {
+    func testSaveSearchAppearsOnLanding() {
         let app = launchOnSearch()
-        // Set a filter so there is something to save without typing. (Done
-        // also runs the search, so the idle screen is gone from here on.)
-        app.buttons["search-filters"].tap()
-        XCTAssertTrue(app.buttons["filters-done"].waitForExistence(timeout: 5))
-        let mythic = app.descendants(matching: .any)["filter-rarity-mythic"]
-        reveal(mythic, in: app)
-        mythic.tap()
-        app.buttons["filters-done"].tap()
+        let pauper = app.descendants(matching: .any)["filter-format-pauper"]
+        XCTAssertTrue(pauper.waitForExistence(timeout: 5))
+        pauper.tap()
 
         app.buttons["search-saved"].tap()
         let save = app.buttons["Save Search…"]
         XCTAssertTrue(save.waitForExistence(timeout: 5), "saved-searches menu")
         save.tap()
 
-        // The alert proposes a name from the query ("Mythic"); accept it.
+        // The alert proposes a name from the query ("Pauper"); accept it.
         XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: 5), "name alert")
         app.buttons["Save"].tap()
 
+        // Nothing ran, so the landing form is still up — with the new row.
+        app.swipeDown()
+        XCTAssertTrue(app.staticTexts["Saved Searches"].waitForExistence(timeout: 5), "saved section on the landing")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Pauper'")).firstMatch.exists, "saved row")
+
         app.buttons["search-saved"].tap()
-        XCTAssertTrue(app.buttons["Mythic"].waitForExistence(timeout: 5), "saved search in the bookmark menu")
+        XCTAssertTrue(app.buttons["Pauper"].waitForExistence(timeout: 5), "saved search in the bookmark menu")
         app.buttons["Edit Saved Searches…"].tap()
         XCTAssertTrue(app.navigationBars["Saved Searches"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["Mythic"].firstMatch.exists, "saved search row")
     }
 }
