@@ -105,6 +105,36 @@ final class CollectionFlowTests: XCTestCase {
                       "removed card should leave the grid")
     }
 
+    /// The collection is always a search: the field narrows the grid by
+    /// name, the Filters sheet narrows it further (seed: colour = i % 6),
+    /// and Clear brings everything back.
+    @MainActor
+    func testCollectionSearchAndColorFilterNarrowGrid() {
+        let app = launch()
+        _ = openCollection(app)
+
+        let field = app.searchFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Card 12")
+        XCTAssertTrue(app.staticTexts["Card 120"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 5),
+                      "only names containing the text remain")
+
+        app.buttons["collection-filters"].tap()
+        XCTAssertTrue(app.buttons["filters-done"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.switches["filter-group-printings"].exists, "Scryfall-only option hidden")
+        app.buttons["Red"].tap()
+        app.buttons["filters-done"].tap()
+
+        XCTAssertTrue(app.staticTexts["Card 123"].firstMatch.waitForExistence(timeout: 5), "123 % 6 == 3 → red")
+        XCTAssertTrue(app.staticTexts["Card 120"].firstMatch.waitForNonExistence(timeout: 5), "120 % 6 == 0 → white")
+        XCTAssertEqual(app.buttons["collection-filters"].value as? String, "1 active")
+
+        app.buttons["collection-clear"].tap()
+        XCTAssertTrue(app.staticTexts["Card 0"].firstMatch.waitForExistence(timeout: 5), "everything back")
+    }
+
     /// Pick "Price (High)" from the sort menu: the grid should jump to the top
     /// of the new order. In the seed, price = index % 50, so the priciest tier
     /// is 49 and its alphabetically-first name is "Card 149".

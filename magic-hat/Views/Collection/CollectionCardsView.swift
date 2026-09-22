@@ -9,6 +9,12 @@
 //  fills in metadata — without reordering mid-sync, so the grid doesn't
 //  reshuffle under the user's thumb.
 //
+//  The collection is treated as a search that is always active: a search
+//  field and a Filters button (the same CardSearchQuery and filter sheet as
+//  the Search tab), evaluated in memory against this collection's cards —
+//  never Scryfall. Filtering runs off the main actor and keeps the grid's
+//  order.
+//
 
 import SwiftUI
 import SwiftData
@@ -26,6 +32,13 @@ struct CollectionCardsView: View {
     @State private var refreshTask: Task<Void, Never>?
     @State private var sortTask: Task<Void, Never>?
     @State private var scrollToTop = 0
+
+    /// What's being searched for within this collection. Text and filters
+    /// narrow `items` to `visible`; the empty query shows everything.
+    @State private var query = CardSearchQuery()
+    @State private var visible: [CardItem] = []
+    @State private var filterTask: Task<Void, Never>?
+    @State private var showFilters = false
 
     /// Remembered across launches and collections.
     @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
@@ -45,9 +58,20 @@ struct CollectionCardsView: View {
                 } description: {
                     Text("This collection has no cards.")
                 }
+            } else if visible.isEmpty, !query.isEmpty {
+                ContentUnavailableView {
+                    Label("No Matches", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Nothing in \(collectionName) matches this search.")
+                } actions: {
+                    if query.hasFilters {
+                        Button("Adjust Filters") { showFilters = true }
+                    }
+                    Button("Clear Search") { query = CardSearchQuery() }
+                }
             } else {
                 CardGridView(
-                    items: items,
+                    items: visible,
                     onAppearIndex: { prefetch(around: $0) },
                     scrollToTop: scrollToTop,
                     accessory: {
@@ -61,6 +85,34 @@ struct CollectionCardsView: View {
         }
         .navigationTitle(collectionName)
         .navigationBarTitleDisplayMode(.inline)
+        // Always shown: a pushed screen with an inline title otherwise hides
+        // the field until the user pulls down, and this screen *is* a search.
+        .searchable(text: $query.text, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Search this collection")
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    showFilters = true
+                } label: {
+                    Label("Filters", systemImage: "line.3.horizontal.decrease")
+                        .symbolVariant(query.hasFilters ? .circle.fill : .circle)
+                }
+                .accessibilityIdentifier("collection-filters")
+                .accessibilityValue(query.hasFilters ? "\(query.activeFilterCount) active" : "none")
+                // The field's own Cancel clears text; this one is for the
+                // filters, which nothing else clears in one tap.
+                if query.hasFilters {
+                    Button("Clear Search", systemImage: "xmark") { query = CardSearchQuery() }
+                        .accessibilityIdentifier("collection-clear")
+                }
+            }
+        }
+        .sheet(isPresented: $showFilters) {
+            SearchFiltersView(query: $query, context: .collection)
+        }
+        .onChange(of: query) { _, _ in applyFilter() }
+        .onChange(of: items) { _, _ in applyFilter() }
         // Initial load, and again after any write (import/delete).
         .task(id: "\(collectionName)|\(tracker.revision)") {
             await load(thenSync: true)
@@ -139,10 +191,29 @@ struct CollectionCardsView: View {
 
     /// Viewport lookahead: metadata for the next window of tiles.
     private func prefetch(around index: Int) {
-        guard !items.isEmpty, index < items.count else { return }
-        let upper = min(index + lookahead, items.count)
-        let window = items[index..<upper].map(\.scryfallID)
+        guard !visible.isEmpty, index < visible.count else { return }
+        let upper = min(index + lookahead, visible.count)
+        let window = visible[index..<upper].map(\.scryfallID)
         hydrator.hydrate(scryfallIDs: window, context: modelContext)
+    }
+
+    // MARK: Search within the collection
+
+    /// Narrows `items` to `visible` off the main actor, keeping order. A
+    /// short pause absorbs a burst of keystrokes; a newer call cancels an
+    /// older filter still running.
+    private func applyFilter() {
+        filterTask?.cancel()
+        let q = query
+        let all = items
+        guard !q.isEmpty else { visible = all; return }
+        filterTask = Task.detached(priority: .userInitiated) {
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let result = all.filter { q.matches($0) }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { visible = result }
+        }
     }
 
     // MARK: Accessories

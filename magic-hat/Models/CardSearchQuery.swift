@@ -155,6 +155,17 @@ nonisolated enum StatKind: String, CaseIterable, Codable, Hashable, Sendable, Id
 nonisolated enum NumericOperator: String, CaseIterable, Codable, Hashable, Sendable, Identifiable {
     case equal = "=", notEqual = "!=", less = "<", lessOrEqual = "<=", greater = ">", greaterOrEqual = ">="
     var id: String { rawValue }
+
+    func evaluate(_ lhs: Int, _ rhs: Int) -> Bool {
+        switch self {
+        case .equal: return lhs == rhs
+        case .notEqual: return lhs != rhs
+        case .less: return lhs < rhs
+        case .lessOrEqual: return lhs <= rhs
+        case .greater: return lhs > rhs
+        case .greaterOrEqual: return lhs >= rhs
+        }
+    }
     var label: String {
         switch self {
         case .equal: return "="
@@ -465,5 +476,110 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
         }
         flushNumber()
         return out
+    }
+}
+
+
+// MARK: - Local evaluation
+
+nonisolated extension CardSearchQuery {
+    /// The same query evaluated against one card in memory — how a
+    /// collection is searched, since its cards are already on the device.
+    /// Mirrors `scryfallQuery` clause for clause; options that only mean
+    /// something to Scryfall (grouping, extras) are ignored. Every word of
+    /// the text must appear in the name, type line, rules text or set name.
+    func matches(_ item: CardItem) -> Bool {
+        let text = trimmedText
+        if !text.isEmpty {
+            let fields = [item.name, item.typeLine ?? "", item.oracleText ?? "", item.setName]
+            for word in text.split(whereSeparator: \.isWhitespace) {
+                let w = String(word)
+                if !fields.contains(where: { Self.contains($0, w) }) { return false }
+            }
+        }
+        if let language, language != "any", item.language.lowercased() != language { return false }
+        for format in formats where item.legalities?[format.rawValue] != "legal" { return false }
+
+        let cardColors = Set(useColorIdentity ? item.colorIdentity : item.colors)
+        if !colors.isEmpty {
+            switch colorMode {
+            case .exactly: if cardColors != colors { return false }
+            case .including: if !cardColors.isSuperset(of: colors) { return false }
+            case .atMost: if !cardColors.isSubset(of: colors) { return false }
+            }
+        } else if colorless, !cardColors.isEmpty {
+            return false
+        }
+        if let minColors, cardColors.count < minColors { return false }
+        if let maxColors, cardColors.count > maxColors { return false }
+
+        for term in typeLine where !term.text.isEmpty {
+            if Self.contains(item.typeLine ?? "", term.text) == term.negated { return false }
+        }
+        for term in oracle where !term.text.isEmpty {
+            if Self.contains(item.oracleText ?? "", term.text) == term.negated { return false }
+        }
+
+        let cost = Self.normalizedManaCost(manaCost)
+        if !cost.isEmpty {
+            let wanted = ManaSymbol.parse(cost)
+            let have = ManaSymbol.parse(item.manaCost ?? "")
+            switch manaCostMatch {
+            case .exactly: if wanted != have { return false }
+            case .contains: if !Self.isSubMultiset(wanted, of: have) { return false }
+            }
+        }
+
+        if !sets.isEmpty {
+            let code = item.setCode.lowercased()
+            if !sets.contains(where: { $0.lowercased() == code }) { return false }
+        }
+        if !rarities.isEmpty, !rarities.contains(where: { $0.rawValue == item.rarity.lowercased() }) { return false }
+
+        if price.isSet {
+            guard let p = item.marketPrice else { return false }
+            if let min = price.min, p < min { return false }
+            if let max = price.max, p > max { return false }
+        }
+
+        for c in stats {
+            let value: Int?
+            switch c.stat {
+            case .manaValue: value = ManaSymbol.manaValue(of: item.manaCost ?? "")
+            case .power: value = Int(item.power ?? "")
+            case .toughness: value = Int(item.toughness ?? "")
+            case .loyalty: value = Int(item.loyalty ?? "")
+            }
+            guard let value, c.op.evaluate(value, c.value) else { return false }
+        }
+
+        if !finishes.isEmpty {
+            let finish: CardFinishFilter
+            switch item.finish {
+            case .normal: finish = .nonfoil
+            case .foil: finish = .foil
+            case .etched: finish = .etched
+            }
+            if !finishes.contains(finish) { return false }
+        }
+
+        let a = artist.trimmingCharacters(in: .whitespaces)
+        if !a.isEmpty, !Self.contains(item.artist ?? "", a) { return false }
+        return true
+    }
+
+    static func contains(_ haystack: String, _ needle: String) -> Bool {
+        haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    /// Every symbol in `part` occurs at least as often in `whole`.
+    static func isSubMultiset(_ part: [ManaSymbol], of whole: [ManaSymbol]) -> Bool {
+        var counts: [ManaSymbol: Int] = [:]
+        for s in whole { counts[s, default: 0] += 1 }
+        for s in part {
+            guard let n = counts[s], n > 0 else { return false }
+            counts[s] = n - 1
+        }
+        return true
     }
 }

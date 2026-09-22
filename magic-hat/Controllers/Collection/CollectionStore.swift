@@ -56,7 +56,9 @@ actor CollectionStore {
         for entry in entries {
             let meta = entry.card
             items.append(CardItem(entry: entry, meta: meta))
-            if let meta, meta.fetchState == .fetched {
+            // A row stored before colours were kept counts as pending so the
+            // collection filters get their data on the next hydration.
+            if let meta, meta.fetchState == .fetched, meta.colorsRaw != nil {
                 if (meta.pricesUpdatedAt ?? .distantPast) < cutoff { stale.insert(entry.scryfallID) }
             } else {
                 pending.insert(entry.scryfallID)

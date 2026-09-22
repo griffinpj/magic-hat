@@ -11,20 +11,22 @@ import SwiftUI
 
 struct SearchFiltersView: View {
     @Binding var query: CardSearchQuery
+    var context: FilterContext = .scryfall
 
     @Environment(\.dismiss) private var dismiss
     @State private var draft: CardSearchQuery
     @FocusState private var focused: FilterField?
 
-    init(query: Binding<CardSearchQuery>) {
+    init(query: Binding<CardSearchQuery>, context: FilterContext = .scryfall) {
         _query = query
+        self.context = context
         _draft = State(initialValue: query.wrappedValue)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                SearchFilterSections(query: $draft, focused: $focused, showsSort: false)
+                SearchFilterSections(query: $draft, focused: $focused, context: context, showsSort: false)
             }
             .scrollDismissesKeyboard(.interactively)
             .filterKeyboardBar($focused)

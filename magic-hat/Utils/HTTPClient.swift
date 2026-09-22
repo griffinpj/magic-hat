@@ -47,14 +47,9 @@ nonisolated struct HTTPClient {
         self.session = session
     }
 
-    private let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        return d
-    }()
-
     /// Issues a request after waiting on the rate limiter, decoding the
     /// response body into `T`.
-    func request<T: Decodable>(
+    func request<T: Decodable & Sendable>(
         _ type: T.Type,
         url: URL,
         method: HTTPMethod = .get,
@@ -64,8 +59,19 @@ nonisolated struct HTTPClient {
         let data = try await requestData(
             url: url, method: method, body: body, rateLimit: category
         )
+        return try await Self.decode(T.self, from: data)
+    }
+
+    /// Decoding runs on the global executor, never the caller's actor.
+    /// With approachable concurrency a nonisolated async function runs on
+    /// the *caller's* actor, and every client here is called from the main
+    /// actor — so a 175-card search page, a 10k-name catalog or a
+    /// hydration batch was being parsed on the main thread, right under
+    /// the keyboard. `@concurrent` opts this one step out.
+    @concurrent
+    private static func decode<T: Decodable & Sendable>(_ type: T.Type, from data: Data) async throws -> T {
         do {
-            return try decoder.decode(T.self, from: data)
+            return try JSONDecoder().decode(T.self, from: data)
         } catch {
             throw HTTPError.decoding(error)
         }

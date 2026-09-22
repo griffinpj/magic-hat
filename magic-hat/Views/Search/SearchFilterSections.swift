@@ -24,9 +24,18 @@ enum FilterField: Hashable {
     case stat(StatKind)
 }
 
+/// Where the filters apply. A collection is searched in memory, so the
+/// Scryfall-only options (grouping printings, hiding extras, sort) don't
+/// appear there.
+enum FilterContext {
+    case scryfall
+    case collection
+}
+
 struct SearchFilterSections: View {
     @Binding var query: CardSearchQuery
     @FocusState.Binding var focused: FilterField?
+    var context: FilterContext = .scryfall
     /// Sort lives in the results toolbar too; on the landing screen it is
     /// only reachable here.
     var showsSort = true
@@ -54,24 +63,29 @@ struct SearchFilterSections: View {
 
     private var optionsSection: some View {
         Section {
-            if showsSort {
+            if showsSort, context == .scryfall {
                 Picker("Sort", selection: $query.sort) {
                     ForEach(SearchSort.allCases) { Label($0.label, systemImage: $0.systemImage).tag($0) }
                 }
                 .onChange(of: query.sort) { _, _ in query.direction = nil }
             }
             Picker("Language", selection: $query.language) {
-                Text("English").tag(String?.none)
+                Text(context == .collection ? "Any Language" : "English").tag(String?.none)
+                if context == .collection { Text("English").tag(Optional("en")) }
                 ForEach(Self.languages, id: \.code) { lang in
                     Text(lang.name).tag(Optional(lang.code))
                 }
-                Text("Any Language").tag(Optional("any"))
+                if context == .scryfall { Text("Any Language").tag(Optional("any")) }
             }
-            Toggle("Group Printings", isOn: $query.groupPrintings)
-                .accessibilityIdentifier("filter-group-printings")
-            Toggle("Hide Tokens & Un-cards", isOn: $query.excludeExtras)
+            if context == .scryfall {
+                Toggle("Group Printings", isOn: $query.groupPrintings)
+                    .accessibilityIdentifier("filter-group-printings")
+                Toggle("Hide Tokens & Un-cards", isOn: $query.excludeExtras)
+            }
         } footer: {
-            Text("Group Printings shows one result per card instead of every printing.")
+            if context == .scryfall {
+                Text("Group Printings shows one result per card instead of every printing.")
+            }
         }
     }
 
@@ -85,21 +99,8 @@ struct SearchFilterSections: View {
 
     private var formatSection: some View {
         Section("Legal In") {
-            let showAll = showAllFormats || query.formats.contains { !MagicFormat.common.contains($0) }
-            let shown = showAll ? MagicFormat.allCases : MagicFormat.common
-            FlowLayout {
-                ForEach(shown) { format in
-                    chip(format.label, isOn: query.formats.contains(format), id: "filter-format-\(format.rawValue)") { on in
-                        if on { query.formats.insert(format) } else { query.formats.remove(format) }
-                    }
-                }
-                if !showAll {
-                    Button("More…") { withAnimation(.snappy) { showAllFormats = true } }
-                        .buttonStyle(.borderless)
-                        .padding(.horizontal, 6)
-                }
-            }
-            .padding(.vertical, 2)
+            FormatChips(formats: $query.formats, showAll: $showAllFormats)
+                .equatable()
         }
     }
 
@@ -292,15 +293,41 @@ struct SearchFilterSections: View {
         }
     }
 
-    // MARK: Helpers
+}
 
-    private func chip(_ title: String, isOn: Bool, id: String, set: @escaping (Bool) -> Void) -> some View {
-        Toggle(title, isOn: Binding(get: { isOn }, set: set))
-            .toggleStyle(.button)
-            .buttonBorderShape(.capsule)
-            .lineLimit(1)
-            .fixedSize()
-            .accessibilityIdentifier(id)
+/// The format chips: the common eight, More reveals the rest (or all, once
+/// an uncommon one is chosen). Equatable on its values so twenty-one
+/// toggles aren't re-laid out on every unrelated change in the form.
+private struct FormatChips: View, Equatable {
+    @Binding var formats: Set<MagicFormat>
+    @Binding var showAll: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.formats == rhs.formats && lhs.showAll == rhs.showAll
+    }
+
+    var body: some View {
+        let expanded = showAll || formats.contains { !MagicFormat.common.contains($0) }
+        let shown = expanded ? MagicFormat.allCases : MagicFormat.common
+        FlowLayout {
+            ForEach(shown) { format in
+                Toggle(format.label, isOn: Binding(
+                    get: { formats.contains(format) },
+                    set: { on in if on { formats.insert(format) } else { formats.remove(format) } }
+                ))
+                .toggleStyle(.button)
+                .buttonBorderShape(.capsule)
+                .lineLimit(1)
+                .fixedSize()
+                .accessibilityIdentifier("filter-format-\(format.rawValue)")
+            }
+            if !expanded {
+                Button("More…") { withAnimation(.snappy) { showAll = true } }
+                    .buttonStyle(.borderless)
+                    .padding(.horizontal, 6)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
