@@ -35,7 +35,10 @@ nonisolated enum EDHRECSynergyLoader {
     static let cache = DiskJSONCache(folder: "Synergies")
     static let ttl: TimeInterval = 7 * 24 * 3600
 
-    /// The page's cards, best first, at most `limit` (nil for all).
+    /// The page's cards, best first, at most `limit` (nil for all). On the
+    /// global executor: its callers are on the main actor, and sorting and
+    /// matching a commander's whole page used to run there.
+    @concurrent
     static func picks(for item: CardItem, limit: Int?, store: DeckStore, writer: CardMetaWriter) async -> Result {
         let slug = EDHRECClient.slug(for: item.name)
         guard !slug.isEmpty else { return Result() }
