@@ -53,3 +53,28 @@ nonisolated struct CollectionOverview: Hashable, Sendable, Codable {
     var collectionValue: Double { all.totalValue - deckValue }
     var deckFraction: Double { all.totalCopies > 0 ? Double(deckCopies) / Double(all.totalCopies) : 0 }
 }
+
+/// The last overview the Collections tab computed, kept in UserDefaults so
+/// the tab's first frame shows its numbers rather than a loading card while
+/// every row is read (0.6s on the real collection in a debug build — and
+/// seconds when the launch is stalled behind a debugger's library loads).
+/// Read once, synchronously: a few KB, from defaults already in memory. The
+/// fresh overview replaces it the moment it lands. Per store, and never for
+/// the in-memory stores of seeded UI tests.
+nonisolated enum LastOverview {
+    private static var key: String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-uitest-seed") { return nil }
+        return arguments.contains("-uitest-real") ? "collections.lastOverview.uitest-real" : "collections.lastOverview"
+    }
+
+    static let saved: CollectionOverview? = {
+        guard let key, let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(CollectionOverview.self, from: data)
+    }()
+
+    static func save(_ overview: CollectionOverview) {
+        guard let key, let data = try? JSONEncoder().encode(overview) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+}

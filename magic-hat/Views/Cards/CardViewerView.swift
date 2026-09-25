@@ -95,7 +95,9 @@ struct CardViewerView: View {
             _ = await (printings, art)
         }
         .onChange(of: items) { old, new in reconcile(old: old, new: new) }
-        .sensoryFeedback(.success, trigger: deckAdds)
+        // Only a deck's viewer steps copies; elsewhere the haptic never
+        // fires, so its feedback machinery isn't set up on the first open.
+        .modifier(DeckAddFeedback(enabled: deck != nil, trigger: deckAdds))
         .sheet(item: $adding) { AddCardView(item: $0) }
         .sheet(item: $editing) { EditEntryView(item: $0) }
         .alert("Couldn't remove", isPresented: Binding(get: { deleteError != nil },
@@ -352,6 +354,19 @@ struct CardViewerView: View {
     private static func prefetchArt(for item: CardItem, maxPixel: CGFloat) async {
         guard let url = item.artCropURL else { return }
         _ = try? await ImageLoader.shared.image(for: url, maxPixel: maxPixel)
+    }
+}
+
+private struct DeckAddFeedback: ViewModifier {
+    let enabled: Bool
+    let trigger: Int
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.sensoryFeedback(.success, trigger: trigger)
+        } else {
+            content
+        }
     }
 }
 

@@ -196,10 +196,13 @@ screen. Instead:
   36ms, opening a deck 550ms → 15ms, the analysis's candidates 600ms →
   16ms). The overview carries `entryCollectionNames`, which the tab
   backfills MTGCollection rows from.
-- The tab shows the **last overview** (Caches/Overview, keyed by store
-  file, never for UI-test in-memory stores) the moment it appears, then
-  replaces it with the fresh one — the totals used to take ~0.6s after
-  the first frame on the real collection. It **skips its refresh while a
+- The tab shows the **last overview** (`LastOverview`: a few KB in
+  UserDefaults, per store, never for seeded UI-test stores) in its first
+  frame — read synchronously as the view's initial state, not through an
+  async file read, which under a debugger waited seconds behind the
+  launch's library loads — then replaces it with the fresh one. The totals
+  used to take ~0.6s after the first frame on the real collection, and
+  "Adding up your collection…" only shows on the very first run. It **skips its refresh while a
   collection is pushed** on top and runs once on the way back: during a
   sync each pass re-read every row on the store's queue, the queue the
   pushed grid's own refreshes wait on.
@@ -219,7 +222,8 @@ screen. Instead:
   tap only has to show the keys — two seconds, not 0.6, because it is the
   one deliberate main-thread cost at launch and it used to land under the
   Collections tab's first fill (the foil warm-up follows it at 2.6s so the
-  two never stack); every SF Symbol the app draws (`symbolNames`,
+  two never stack) — skipped when a debugger is attached (see
+  "Measuring on a device" below); every SF Symbol the app draws (`symbolNames`,
   checked against the source by `LaunchPrewarmTests` — every literal on a
   symbol line, ternaries and `.symbolVariant` forms included, after
   "lock" in the deck menu cost 0.22s opening a deck; and no `""` names,
@@ -528,6 +532,12 @@ so it adapts to light/dark. Given a `rarity:` the symbol takes that
 rarity's colour as printed on the card (`RarityPalette`, Keyrune's
 palette: uncommon silver, rare gold, mythic bronze-orange, special
 purple); common keeps the tint. Pass it wherever a card is known.
+The web view is created only when a symbol actually has to be
+rasterized — after the PNG cache missed. It used to be warmed on every
+`symbol(setCode:)` call, so each launch's first card from such a set
+loaded ScreenTime and built a web view for a symbol already on disk
+(measured on a device under the debugger: 3.1s on dyld's lock plus 3.3s
+in `WKWebView.init`, taps queuing behind the viewer).
 The web view is created at launch, never on demand: the first WKWebView
 makes WebKit soft-link ScreenTime, and dyld runs that load on the calling
 thread with synchronous XPC inside — 4.0s on the main thread when the
@@ -578,9 +588,39 @@ from the same disk. The ingest also runs at `.background` priority so the
 system throttles its I/O. Owned-card prices already refresh every 6h
 through the cheap batched call.
 
+### Measuring on a device
+
+Instruments can't record on the iOS 27 phone with Xcode 26
+("An unknown problem is preventing this device from recording"), so the
+device is measured with HangDetector through the console:
+
+```
+xcrun devicectl device process launch --device <coredevice id> --terminate-existing \
+  --console -e '{"UITEST_HANG_THRESHOLD":"0.2"}' com.griffin.magic-hat
+```
+
+Reproduce under a debugger (what Xcode's Run does) by attaching LLDB at
+launch — `device select <udid>`, `device process attach -w -n magic-hat`,
+then `process continue` once it stops. **The same build behaves very
+differently with a debugger attached.** Without one: cached totals in
+0.1s, fresh overview 0.35s, no main-thread stall ≥0.2s through launch,
+a collection, the viewer and a deck. With one, every library the process
+loads stops *every thread* while LLDB handles it — over Wi-Fi debugging
+(`transportType: localNetwork`) each of those costs a network round trip.
+The keyboard prewarm's chain of soft-linked frameworks froze the app for
+8.6s two seconds after launch (0.1s without), the store's 0.3s overview
+took 6s because its thread was stopped too, and the first frames' own
+system loads (Markdown for `Text` localization, HDR colour conversion)
+cost ~2s. So: judge performance with the scheme's "Debug executable"
+off or with the phone on a cable, and keep lazy framework loads off
+launch and off first opens (`LaunchPrewarm.isBeingDebugged` skips the
+keyboard prewarm; WebKit loads only for a symbol never drawn before).
+
 Debug builds start `HangDetector` at launch: a watchdog that samples the
 main thread's stack when it stops answering for 0.4s and logs it (subsystem
-`magic-hat`, category `hang`, also printed). It pings at half the
+`magic-hat`, category `hang`, also printed). A long hang is sampled
+again every half second (up to 16 samples), so a multi-second freeze
+shows what it spent its time on. It pings at half the
 threshold: with a fixed quarter-second gap a stall shorter than that was
 only seen if it overlapped a ping. `UITEST_HANG_THRESHOLD`
 lowers the bar and `UITEST_HANG_LOG=<path>` appends each report as a JSON
@@ -777,12 +817,18 @@ cards named Nazgûl", "any number of"), and basic lands including snow
 are unlimited. Each row's name is led by its set symbol in the rarity's
 colour. Its search field only *filters* the list. Adding is
 `DeckAddCardsView`, a sheet (the "Add to Playlist" shape): field focused
-on arrival, Filters in its bar, Done to leave; a header under the field
-holds the scope (collection — in memory, one row per card with copies
-owned, everything owned listed until something is typed — or All Cards,
-Scryfall), the board "+" adds to, and for commander decks the commander's
-colour identity as `id<=` (a toggle shows it); a row's context menu adds
-to another board. It was a mode of the deck screen's own field before:
+on arrival, Filters in its bar, Done to leave; a top `safeAreaBar` under
+the field (so the rows scroll beneath it with the scroll-edge effect)
+holds, in two rows, the scope picker and one line of small bordered
+capsule chips — "In collection", the commander's identity as its pips
+alone (VoiceOver: "Within identity, …"), and the board menu trailing —
+with what the deck breaks as one caption line under them. Section
+headers are a line of text with their source trailing ("EDHREC"), not
+the plain list's tall default. The scope is All Cards (Scryfall, or with
+"In collection" an in-memory search of what is owned, one row per card,
+everything owned listed until something is typed) or Recommended; for
+commander decks the identity chip applies `id<=`; a row's context menu
+adds to another board. It was a mode of the deck screen's own field before:
 Filters had no natural place, the section picker had to step aside, and
 Back popped the deck instead of ending the search. Row bodies
 (`DeckRows`) are two lines on a landscape art crop (`CardArtThumb`, the
