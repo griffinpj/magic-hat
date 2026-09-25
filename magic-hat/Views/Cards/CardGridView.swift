@@ -58,9 +58,10 @@ struct CardGridView<Header: View, Accessory: View>: View {
                     // element by element on every update (see CardItemList).
                     ForEach(items.ids, id: \.self) { id in
                         if let item = items.item(for: id) {
-                            CardTile(item: item)
+                            // The tile marks its image, not its caption, as
+                            // the zoom's source.
+                            CardTile(item: item, zoom: zoom)
                                 .equatable()
-                                .matchedTransitionSource(id: id, in: zoom)
                                 .onAppear {
                                     let index = items.index(of: id) ?? 0
                                     onAppearIndex(index)

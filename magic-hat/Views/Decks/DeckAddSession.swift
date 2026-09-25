@@ -64,7 +64,7 @@ final class DeckAddSession {
         rows = out
     }
 
-    static func key(of item: CardItem) -> String { item.oracleID ?? item.scryfallID }
+    nonisolated static func key(of item: CardItem) -> String { item.oracleID ?? item.scryfallID }
 
     func quantity(of item: CardItem) -> Int { rows[Self.key(of: item)]?.quantity ?? 0 }
 
