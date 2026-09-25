@@ -57,4 +57,39 @@ struct CollectionStoreTests {
         #expect(summary.totalValue == 43)           // 3×1 + 1×40 (foil priced as foil)
         #expect(summary.highlights.first?.id == e2.id.uuidString)
     }
+
+    /// One read of the rows serves the overview (with the names the tab
+    /// backfills from), every snapshot and the deck screens' owned cards
+    /// under the same stamp; decks' hidden collections count as deck copies
+    /// and are never offered as collections or as owned cards.
+    @Test @MainActor func overviewSnapshotsAndOwnedCardsShareOneRead() async throws {
+        let container = try TestSupport.makeContainer()
+        let ctx = container.mainContext
+        ctx.insert(MTGCollection(name: "Main"))
+        let meta = CardMeta(scryfallID: "a", name: "Alpha", fetchState: .fetched)
+        meta.priceUSD = 2
+        ctx.insert(meta)
+        // "Legacy" has rows but no MTGCollection yet: the backfill's case.
+        for (collection, quantity) in [("Main", 2), ("Legacy", 1), ("deck:123", 1)] {
+            let entry = CollectionEntry(scryfallID: "a", collectionName: collection, quantity: quantity)
+            entry.card = meta
+            ctx.insert(entry)
+        }
+        try ctx.save()
+
+        let store = CollectionStore.shared(for: container)
+        let stamp = StoreStamp(change: 1, hydration: 1)
+        let overview = try await store.overview(stamp: stamp)
+        #expect(overview.entryCollectionNames == ["Main", "Legacy"])
+        #expect(overview.collections.map(\.name) == ["Main"])
+        #expect(overview.all.totalCopies == 4 && overview.deckCopies == 1)
+        #expect(overview.all.totalValue == 8)
+
+        let main = try await store.snapshot(collectionName: "Main", sort: .name, stamp: stamp)
+        #expect(main.items.map(\.quantity) == [2])
+        let all = try await store.snapshot(collectionName: CollectionScope.allKey, sort: .name, stamp: stamp)
+        #expect(all.items.count == 3)
+        let owned = try await store.ownedCards(stamp: stamp)
+        #expect(owned.map(\.collectionName).sorted() == ["Legacy", "Main"])
+    }
 }

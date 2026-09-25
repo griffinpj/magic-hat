@@ -46,17 +46,27 @@ struct CardDetailView: View {
     /// synchronously during the transition.
     private func loadOwned() async {
         let store = CollectionStore.shared(for: modelContext.container)
-        if let ids = try? await store.ownedScryfallIDs(), !Task.isCancelled {
+        if let ids = try? await store.ownedScryfallIDs(stamp: .current), !Task.isCancelled {
             ownedIDs = ids
             rebuildPrintingItems()
         }
     }
 
+    /// Off the main actor: a basic land has hundreds of printings, and this
+    /// ran on arrival and again when ownership landed, under the push.
     private func rebuildPrintingItems() {
-        printingItems = printings.map {
-            CardItem(scryfallCard: $0, owned: ownedIDs.contains($0.id))
+        let printings = self.printings
+        let owned = ownedIDs
+        itemsTask?.cancel()
+        itemsTask = Task {
+            let items = await Task.detached(priority: .userInitiated) {
+                printings.map { CardItem(scryfallCard: $0, owned: owned.contains($0.id)) }
+            }.value
+            guard !Task.isCancelled else { return }
+            printingItems = items
         }
     }
+    @State private var itemsTask: Task<Void, Never>?
 
     init(item: CardItem) {
         self.item = item
@@ -245,19 +255,32 @@ struct CardDetailView: View {
     /// field and on unrelated state changes.
     @State private var filteredGroups: [PrintingGroup] = []
 
-    struct PrintingGroup: Identifiable {
+    nonisolated struct PrintingGroup: Identifiable, Sendable {
         let setName: String
         let code: String
         let cards: [ScryfallCard]
         var id: String { setName }
     }
 
+    /// Filter, group and sort off the main actor — per keystroke in the
+    /// filter field, over every printing.
     private func rebuildGroups() {
-        let filtered = filterText.isEmpty ? printings : printings.filter {
-            $0.setName.localizedCaseInsensitiveContains(filterText)
-                || $0.set.localizedCaseInsensitiveContains(filterText)
+        let printings = self.printings
+        let text = filterText
+        groupsTask?.cancel()
+        groupsTask = Task {
+            let groups = await Task.detached(priority: .userInitiated) { Self.groups(of: printings, matching: text) }.value
+            guard !Task.isCancelled else { return }
+            filteredGroups = groups
         }
-        filteredGroups = Dictionary(grouping: filtered) { $0.setName }
+    }
+    @State private var groupsTask: Task<Void, Never>?
+
+    nonisolated private static func groups(of printings: [ScryfallCard], matching text: String) -> [PrintingGroup] {
+        let filtered = text.isEmpty ? printings : printings.filter {
+            $0.setName.localizedCaseInsensitiveContains(text) || $0.set.localizedCaseInsensitiveContains(text)
+        }
+        return Dictionary(grouping: filtered) { $0.setName }
             .map { PrintingGroup(setName: $0.key, code: $0.value.first?.set.uppercased() ?? "", cards: $0.value) }
             .sorted { ($0.cards.first?.releasedAt ?? "") > ($1.cards.first?.releasedAt ?? "") }
     }
@@ -417,10 +440,26 @@ struct CardArtImage: View {
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
 
+    /// Already decoded — the art itself, or the card from the grid or the
+    /// viewer — read during the body so the hero is never grey for a frame.
+    private var memoryImage: UIImage? {
+        guard let urlString, !urlString.isEmpty else { return nil }
+        if let art = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, min(1200, 430 * displayScale))) {
+            return art
+        }
+        guard let fallbackURL else { return nil }
+        for width in [480.0, 150.0] {
+            if let smaller = ImageMemoryCache.shared.image(ImageMemoryCache.key(fallbackURL, width * displayScale)) {
+                return smaller
+            }
+        }
+        return nil
+    }
+
     var body: some View {
         GeometryReader { geo in
             Group {
-                if let image {
+                if let image = image ?? memoryImage {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
                     Rectangle().fill(.quaternary)

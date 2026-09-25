@@ -75,9 +75,11 @@ enum LaunchPrewarm {
     /// Every SF Symbol the app draws (kept by hand; `symbolNames` is
     /// checked against the source by `LaunchPrewarmTests`).
     static let symbolNames: [String] = [
+        "arrow.down",
         "arrow.left.arrow.right",
         "arrow.right",
         "arrow.turn.down.right",
+        "arrow.up",
         "arrow.up.arrow.down",
         "arrow.up.right",
         "arrow.uturn.backward",
@@ -113,8 +115,12 @@ enum LaunchPrewarm {
         "hammer",
         "info.circle",
         "line.3.horizontal.decrease",
+        "line.3.horizontal.decrease.circle",
+        "line.3.horizontal.decrease.circle.fill",
         "link",
+        "lock",
         "lock.fill",
+        "lock.open",
         "magnifyingglass",
         "minus",
         "minus.circle",

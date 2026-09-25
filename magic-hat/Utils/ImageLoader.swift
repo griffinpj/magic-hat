@@ -6,9 +6,10 @@
 //  so images survive relaunches without bloating the SwiftData store; decoded,
 //  downsampled UIImages are cached in memory keyed by URL + target size.
 //
-//  Crucially, decode + downsample happen off the main thread (on this actor)
-//  via ImageIO, so scrolling the grid never triggers a main-thread decode of
-//  a full-resolution card image — the usual cause of scroll jank.
+//  Crucially, decode + downsample happen off the main thread (on the global
+//  executor, several at once) via ImageIO, so scrolling the grid never
+//  triggers a main-thread decode of a full-resolution card image — the
+//  usual cause of scroll jank.
 //
 
 import Foundation
@@ -62,8 +63,8 @@ actor ImageLoader {
     }
 
     /// Loads a card image downsampled to `maxPixel` (longest edge, in pixels).
-    /// Order: memory → disk bytes → network. Decode/downsample runs here on
-    /// the actor, off the main thread.
+    /// Order: memory → disk bytes → network. Reading and decoding run off
+    /// the main thread and off this actor (see `decodeFile`).
     func image(for urlString: String, maxPixel: CGFloat) async throws -> UIImage {
         let key = ImageMemoryCache.key(urlString, maxPixel)
         if let cached = ImageMemoryCache.shared.image(key) { return cached }
@@ -74,20 +75,11 @@ actor ImageLoader {
 
         let file = fileURL(for: urlString)
         let task = Task<UIImage, Error> { [http] in
-            let data: Data
-            if let onDisk = try? Data(contentsOf: file) {
-                data = onDisk
-            } else {
-                guard let url = URL(string: urlString) else { throw HTTPError.badURL }
-                // Card images are on the general (10/sec) limit family.
-                let downloaded = try await http.requestData(url: url, rateLimit: .other)
-                try? downloaded.write(to: file, options: .atomic)
-                data = downloaded
-            }
-            guard let img = Self.downsample(data: data, maxPixel: maxPixel) else {
-                throw HTTPError.badURL
-            }
-            return img
+            if let onDisk = await Self.decodeFile(file, maxPixel: maxPixel) { return onDisk }
+            guard let url = URL(string: urlString) else { throw HTTPError.badURL }
+            // Card images are on the general (10/sec) limit family.
+            let downloaded = try await http.requestData(url: url, rateLimit: .other)
+            return try await Self.keepAndDecode(downloaded, at: file, maxPixel: maxPixel)
         }
         inFlight[key] = task
 
@@ -112,6 +104,27 @@ actor ImageLoader {
             if ImageMemoryCache.shared.image(ImageMemoryCache.key(url, maxPixel)) != nil { continue }
             _ = try? await image(for: url, maxPixel: maxPixel)
         }
+    }
+
+    // Disk and decode on the global executor, several at once. The task
+    // above inherits this actor, so they used to run *on* it, one at a
+    // time: the viewer's large image decoded only after whatever the grid
+    // had queued to warm, and every `image(for:)` call — even a memory
+    // hit — waited behind the decode in progress.
+
+    /// The cached original, decoded; nil if absent or unreadable (a
+    /// corrupt file is then fetched again rather than failing forever).
+    @concurrent
+    private nonisolated static func decodeFile(_ file: URL, maxPixel: CGFloat) async -> UIImage? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return downsample(data: data, maxPixel: maxPixel)
+    }
+
+    @concurrent
+    private nonisolated static func keepAndDecode(_ data: Data, at file: URL, maxPixel: CGFloat) async throws -> UIImage {
+        try? data.write(to: file, options: .atomic)
+        guard let image = downsample(data: data, maxPixel: maxPixel) else { throw HTTPError.badURL }
+        return image
     }
 
     /// Decodes and downsamples image data to `maxPixel` (longest edge) using

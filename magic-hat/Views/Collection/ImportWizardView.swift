@@ -14,19 +14,24 @@ import SwiftData
 
 struct ImportWizardView: View {
     let rows: [ManaBoxRow]
+    /// Card counts per binder in the parsed file, counted with the parse,
+    /// off the main thread (`binderCounts(of:)`). As a computed property it
+    /// regrouped every row on each keystroke; worked out in `init` it still
+    /// did, on every update of the presenting tab — once per hydration
+    /// batch while this sheet showed "Fetching card data".
+    let binderCounts: [BinderCount]
     /// Existing collection names, offered as import destinations.
     let existingCollectionNames: [String]
-    /// Card counts per binder in the parsed file. Computed once: as a
-    /// computed property it regrouped every row on each keystroke in the
-    /// collection-name field.
-    private let binderCounts: [(name: String, count: Int)]
 
-    init(rows: [ManaBoxRow], existingCollectionNames: [String]) {
-        self.rows = rows
-        self.existingCollectionNames = existingCollectionNames
-        self.binderCounts = Dictionary(grouping: rows, by: \.binderName)
-            .map { ($0.key, $0.value.reduce(0) { $0 + $1.quantity }) }
-            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+    nonisolated struct BinderCount: Hashable, Sendable {
+        let name: String
+        let count: Int
+    }
+
+    nonisolated static func binderCounts(of rows: [ManaBoxRow]) -> [BinderCount] {
+        Dictionary(grouping: rows, by: \.binderName)
+            .map { BinderCount(name: $0.key, count: $0.value.reduce(0) { $0 + $1.quantity }) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     @Environment(\.modelContext) private var modelContext
@@ -96,7 +101,7 @@ struct ImportWizardView: View {
                 }
         }
         .onAppear {
-            if selected.isEmpty { selected = Set(rows.map(\.binderName)) }
+            if selected.isEmpty { selected = Set(binderCounts.map(\.name)) }
             if existingCollectionNames.isEmpty {
                 destination = .new
             } else if selectedCollection.isEmpty {
@@ -300,6 +305,6 @@ final class ImportProgress {
 }
 
 #Preview {
-    ImportWizardView(rows: [], existingCollectionNames: ["My Library"])
+    ImportWizardView(rows: [], binderCounts: [], existingCollectionNames: ["My Library"])
         .modelContainer(for: [MTGCollection.self, CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
 }

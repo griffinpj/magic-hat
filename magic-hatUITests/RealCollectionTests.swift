@@ -42,7 +42,9 @@ final class RealCollectionTests: XCTestCase {
         app.launchArguments = ["-uitest-real"]
         app.launchEnvironment["UITEST_IMPORT_CSV"] = csv
         app.launchEnvironment["UITEST_HANG_LOG"] = hangLog.path
-        app.launchEnvironment["UITEST_HANG_THRESHOLD"] = "0.1"
+        // `TEST_RUNNER_UITEST_HANG_THRESHOLD` lowers the bar for an audit
+        // (0.05 is three dropped frames); 100ms is the pass/fail line.
+        app.launchEnvironment["UITEST_HANG_THRESHOLD"] = ProcessInfo.processInfo.environment["UITEST_HANG_THRESHOLD"] ?? "0.1"
         if reset { app.launchEnvironment["UITEST_RESET"] = "1" }
         app.launch()
         return app
@@ -83,7 +85,7 @@ final class RealCollectionTests: XCTestCase {
             let report = fresh.map { hang in
                 String(format: "%.2fs\n", hang.duration) + hang.frames.prefix(16).joined(separator: "\n")
             }.joined(separator: "\n---\n")
-            XCTFail("\(step): \(fresh.count) main-thread stall(s) over 100ms\n\(report)")
+            XCTFail("\(step): \(fresh.count) main-thread stall(s) over the threshold\n\(report)")
         }
         return all.count
     }
@@ -248,6 +250,104 @@ final class RealCollectionTests: XCTestCase {
         app.swipeUp()
         settle()
         assertNoHangs(since: mark, "scrolling search results")
+    }
+
+    /// Every screen transition once, on the real collection after launch:
+    /// the Collections tab settling, All Collection and a collection pushed
+    /// and popped, a card's viewer, detail and rulings, the Decks tab, a
+    /// deck and its three pages, the add sheet, History and Search. Each
+    /// step is checked on its own so a stall names the transition.
+    @MainActor
+    func testTransitionsTour() {
+        let app = launch()
+        let card = collectionCard(app)
+        settle(3)
+        var mark = hangs().count
+
+        app.buttons["collection-all"].tap()
+        XCTAssertTrue(app.navigationBars["All Collection"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "push into All Collection")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "pop back to Collections")
+
+        card.tap()
+        XCTAssertTrue(app.navigationBars["Real Collection"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "push into the collection")
+
+        let tile = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH '#' OR label CONTAINS ' #'")).element(boundBy: 4)
+        XCTAssertTrue(tile.waitForExistence(timeout: 10), "a tile's set badge")
+        tile.tap()
+        XCTAssertTrue(app.buttons["viewer-close"].waitForExistence(timeout: 10), "viewer opens")
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "open the viewer")
+
+        app.buttons["viewer-details"].tap()
+        XCTAssertTrue(app.buttons["Versions"].waitForExistence(timeout: 10), "detail pushes")
+        settle(2)
+        mark = assertNoHangs(since: mark, "push the detail screen")
+        app.buttons["Ruling"].tap()
+        settle()
+        mark = assertNoHangs(since: mark, "rulings tab")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["viewer-close"].waitForExistence(timeout: 5))
+        settle()
+        app.buttons["viewer-close"].tap()
+        XCTAssertTrue(app.buttons["viewer-close"].waitForNonExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "pop detail and close the viewer")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        settle()
+        mark = assertNoHangs(since: mark, "back to Collections")
+
+        app.tabBars.buttons["Decks"].tap()
+        XCTAssertTrue(app.navigationBars["Decks"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "first tap on Decks")
+        let deck = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deck-tile-'")).firstMatch
+        if deck.waitForExistence(timeout: 5) {
+            deck.tap()
+            let tabs = app.segmentedControls["deck-tabs"]
+            XCTAssertTrue(tabs.waitForExistence(timeout: 10), "deck opens")
+            settle(2)
+            mark = assertNoHangs(since: mark, "open a deck")
+            tabs.buttons["Stats"].tap()
+            settle(2)
+            mark = assertNoHangs(since: mark, "deck Stats page")
+            tabs.buttons["Details"].tap()
+            settle(1.5)
+            mark = assertNoHangs(since: mark, "deck Details page")
+            tabs.buttons["Cards"].tap()
+            settle(1.5)
+            mark = assertNoHangs(since: mark, "back to deck Cards page")
+            app.buttons["deck-add-cards"].tap()
+            XCTAssertTrue(app.buttons["deck-add-done"].waitForExistence(timeout: 10), "add sheet")
+            settle(2)
+            mark = assertNoHangs(since: mark, "open the add sheet")
+            app.buttons["deck-add-done"].tap()
+            settle(1.5)
+            mark = assertNoHangs(since: mark, "close the add sheet")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            settle()
+            mark = assertNoHangs(since: mark, "pop the deck")
+        }
+
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "first tap on History")
+
+        app.tabBars.buttons["Search"].tap()
+        XCTAssertTrue(app.navigationBars["Search"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "first tap on Search")
+
+        app.tabBars.buttons["Collection"].tap()
+        settle()
+        assertNoHangs(since: mark, "back to the Collection tab")
     }
 
     /// A real deck from the real collection: the row right after the

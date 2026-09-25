@@ -273,6 +273,8 @@ final class DeckAnalysisController {
         planningFor = (hash, collectionRevision, version)
         isPlanning = true
         let store = DeckStore.shared(for: container)
+        let rows = CollectionStore.shared(for: container)
+        let stamp = StoreStamp.current
         let writer = CardMetaWriter.shared(for: container)
         let allowNetwork = Self.allowsNetwork
         let cachedCollection = collectionCandidates?.revision == collectionRevision ? collectionCandidates?.cards : nil
@@ -283,7 +285,10 @@ final class DeckAnalysisController {
             if let cachedCollection {
                 owned = cachedCollection
             } else {
-                owned = (try? await store.collectionCandidates()) ?? []
+                // The rows the Collections tab built for this stamp, when it
+                // has; grouped off the main actor.
+                let cards = (try? await rows.ownedCards(stamp: stamp)) ?? []
+                owned = await Task.detached(priority: .userInitiated) { DeckStore.candidates(from: cards) }.value
                 guard let self, !Task.isCancelled else { return }
                 self.collectionCandidates = (collectionRevision, owned)
             }

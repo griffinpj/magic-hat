@@ -18,9 +18,16 @@ actor DeckStore: ModelActor {
     private nonisolated let queue = DispatchSerialQueue(label: "magic-hat.deck-store", qos: .userInitiated)
     nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
-    init(modelContainer: ModelContainer) {
+    /// Where ownership comes from: the rows CollectionStore has built for
+    /// the current stamp (usually already there — the Collections tab reads
+    /// them first). Nil for a store made on its own (tests), which counts
+    /// for itself on every call.
+    private let rows: CollectionStore?
+
+    init(modelContainer: ModelContainer, rows: CollectionStore? = nil) {
         self.modelContainer = modelContainer
         self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+        self.rows = rows
     }
 
     @MainActor private static var instances: [ObjectIdentifier: DeckStore] = [:]
@@ -29,17 +36,19 @@ actor DeckStore: ModelActor {
     static func shared(for container: ModelContainer) -> DeckStore {
         let key = ObjectIdentifier(container)
         if let existing = instances[key] { return existing }
-        let store = DeckStore(modelContainer: container)
+        let store = DeckStore(modelContainer: container, rows: CollectionStore.shared(for: container))
         instances[key] = store
         return store
     }
 
     // MARK: Overview
 
-    func overview() throws -> [DeckSummary] {
+    func overview() async throws -> [DeckSummary] {
+        // One count of the collection for every tile, not one per deck.
+        let owned = try await ownedIndex()
         let decks = try modelContext.fetch(FetchDescriptor<Deck>(sortBy: [SortDescriptor(\.updatedDate, order: .reverse)]))
         return try decks.map { deck in
-            let snapshot = try snapshot(of: deck)
+            let snapshot = try snapshot(of: deck, owned: owned)
             return DeckSummary(
                 id: deck.id, name: deck.name, format: deck.format,
                 mainCopies: snapshot.mainCopies, builtCopies: snapshot.builtCopies,
@@ -58,16 +67,17 @@ actor DeckStore: ModelActor {
 
     // MARK: Snapshot
 
-    func snapshot(deckID: UUID) throws -> DeckSnapshot? {
+    func snapshot(deckID: UUID) async throws -> DeckSnapshot? {
+        let owned = try await ownedIndex()
         guard let deck = try fetchDeck(deckID) else { return nil }
-        return try snapshot(of: deck)
+        return try snapshot(of: deck, owned: owned)
     }
 
     private func fetchDeck(_ id: UUID) throws -> Deck? {
         try modelContext.fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == id })).first
     }
 
-    private func snapshot(of deck: Deck) throws -> DeckSnapshot {
+    private func snapshot(of deck: Deck, owned: OwnedIndex) throws -> DeckSnapshot {
         let cards = deck.cards.sorted { a, b in
             if a.board != b.board { return boardOrder(a.board) < boardOrder(b.board) }
             return a.name < b.name
@@ -80,10 +90,11 @@ actor DeckStore: ModelActor {
         let matchKeys = Set(cards.map { $0.oracleID ?? metaByID[$0.scryfallID]?.oracleID ?? $0.scryfallID })
         let key = deck.collectionKey
         var builtByKey = try quantities(where: #Predicate { $0.collectionName == key }, keys: matchKeys)
-        var availableByKey = try quantities(
-            where: #Predicate { !$0.collectionName.starts(with: "deck:") },
-            keys: matchKeys
-        )
+        // Copies still in collections, from the ownership index. Each
+        // snapshot used to read every collection row and its CardMeta for
+        // this — 0.4s of opening a deck on a real collection (debug build),
+        // before the list could show, and again for every tile of the tab.
+        var availableByKey = owned.copiesByKey.filter { matchKeys.contains($0.key) }
 
         var items: [DeckCardItem] = []
         items.reserveCapacity(cards.count)
@@ -161,7 +172,8 @@ actor DeckStore: ModelActor {
     /// names one, else by name — preferring a printing the collection owns,
     /// so the deck shows what the user actually holds. Double-faced cards
     /// match on their front face name.
-    func resolve(_ lines: [DeckListLine]) throws -> [ResolvedDeckLine] {
+    func resolve(_ lines: [DeckListLine]) async throws -> [ResolvedDeckLine] {
+        let owned = try await ownedIndex().scryfallIDs
         let names = Array(Set(lines.map(\.name)))
         let byName = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { names.contains($0.name) }))
         var metasByName: [String: [CardMeta]] = [:]
@@ -183,8 +195,6 @@ actor DeckStore: ModelActor {
         )
         let byPrinting = Dictionary(bySet.map { ("\($0.setCode)|\($0.collectorNumber)", $0) }, uniquingKeysWith: { a, _ in a })
 
-        let owned = try ownedScryfallIDs()
-
         return lines.map { line in
             var meta: CardMeta?
             if let set = line.setCode, let number = line.collectorNumber {
@@ -197,12 +207,6 @@ actor DeckStore: ModelActor {
         }
     }
 
-    private func ownedScryfallIDs() throws -> Set<String> {
-        var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { !$0.collectionName.starts(with: "deck:") })
-        descriptor.propertiesToFetch = [\.scryfallID]
-        return Set(try modelContext.fetch(descriptor).map(\.scryfallID))
-    }
-
     /// Every card in the real collections, one item per row, for searching
     /// the collection from a deck (grouped by card in the view).
     func ownedCards() throws -> [CardItem] {
@@ -213,24 +217,46 @@ actor DeckStore: ModelActor {
 
     // MARK: Cards for the analysis and the synergy screen
 
-    /// Copies owned per card key (oracle id, else Scryfall id) across the
-    /// real collections — decks' hidden collections excluded.
-    func ownedCopiesByKey() throws -> [String: Int] {
+    /// Who owns what across the real collections: CollectionStore's
+    /// count over the rows it holds for the current stamp — read on the
+    /// main actor, where the trackers live — or, for a store made on its
+    /// own, one pass here. Every consumer on this queue (the deck screen,
+    /// each tile of the tab, the analysis and synergy lookups) used to make
+    /// its own pass over every row and its CardMeta.
+    func ownedIndex() async throws -> OwnedIndex {
+        if let rows {
+            let stamp = await MainActor.run { StoreStamp.current }
+            return try await rows.ownedIndex(stamp: stamp)
+        }
         var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { !$0.collectionName.starts(with: "deck:") })
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        var out: [String: Int] = [:]
+        var ids = Set<String>()
+        var byKey: [String: Int] = [:]
         for entry in try modelContext.fetch(descriptor) {
-            out[entry.card?.oracleID ?? entry.scryfallID, default: 0] += entry.quantity
+            ids.insert(entry.scryfallID)
+            byKey[entry.card?.oracleID ?? entry.scryfallID, default: 0] += entry.quantity
         }
-        return out
+        return OwnedIndex(scryfallIDs: ids, copiesByKey: byKey)
+    }
+
+    /// Copies owned per card key (oracle id, else Scryfall id) across the
+    /// real collections — decks' hidden collections excluded.
+    func ownedCopiesByKey() async throws -> [String: Int] {
+        try await ownedIndex().copiesByKey
     }
 
     /// The collection as candidates for a deck: one per card across every
     /// printing owned, copies summed, hydrated rows only (a row with no
     /// text cannot be read).
     func collectionCandidates() throws -> [DeckSearchResult] {
+        Self.candidates(from: try ownedCards())
+    }
+
+    /// `collectionCandidates` over cards already read — the analysis hands
+    /// it the rows CollectionStore holds for the Collections tab.
+    nonisolated static func candidates(from cards: [CardItem]) -> [DeckSearchResult] {
         var byKey: [String: DeckSearchResult] = [:]
-        for item in try ownedCards() where item.oracleText != nil || item.typeLine != nil {
+        for item in cards where item.oracleText != nil || item.typeLine != nil {
             let key = item.oracleID ?? item.scryfallID
             if let existing = byKey[key] {
                 byKey[key] = DeckSearchResult(card: existing.card, ownedCopies: existing.ownedCopies + item.quantity)
@@ -244,11 +270,11 @@ actor DeckStore: ModelActor {
     /// Catalog cards by Scryfall id, in the order asked (ids the catalog
     /// lacks are skipped). `owned` says whether any printing is in a
     /// collection.
-    func items(scryfallIDs: [String]) throws -> [CardItem] {
+    func items(scryfallIDs: [String]) async throws -> [CardItem] {
+        let owned = try await ownedIndex().copiesByKey
         let ids = scryfallIDs
         let metas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { ids.contains($0.scryfallID) }))
         let byID = Dictionary(metas.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
-        let owned = try ownedCopiesByKey()
         return scryfallIDs.compactMap { id in
             guard let meta = byID[id] else { return nil }
             return CardItem(meta: meta, owned: (owned[meta.oracleID ?? meta.scryfallID] ?? 0) > 0)
@@ -262,7 +288,8 @@ actor DeckStore: ModelActor {
     /// raised inside CoreData), so ids with a known name are fetched by
     /// name and the rest one at a time — a table scan each, so callers
     /// pass names whenever they have them.
-    func items(oracleIDs: [String], names: [String: String] = [:]) throws -> [String: CardItem] {
+    func items(oracleIDs: [String], names: [String: String] = [:]) async throws -> [String: CardItem] {
+        let owned = try await ownedIndex()
         let wanted = Set(oracleIDs)
         var metas: [CardMeta] = []
         let named = Array(Set(oracleIDs.compactMap { names[$0] }))
@@ -274,15 +301,16 @@ actor DeckStore: ModelActor {
             let one = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.oracleID == oracle }))
             if !one.isEmpty { found.insert(oracle); metas.append(contentsOf: one) }
         }
-        return try pick(metas.filter { $0.oracleID.map(wanted.contains) ?? false }, key: { $0.oracleID ?? "" })
+        return pick(metas.filter { $0.oracleID.map(wanted.contains) ?? false }, key: { $0.oracleID ?? "" }, owned: owned)
     }
 
     /// One catalog card per name, front faces included ("Bloomvine Regent"
     /// finds "Bloomvine Regent // …"), keyed by the name asked for.
-    func items(names: [String]) throws -> [String: CardItem] {
+    func items(names: [String]) async throws -> [String: CardItem] {
+        let owned = try await ownedIndex()
         let metas = try catalogRows(names: names)
         let front = CardReading.frontName
-        let byFront = try pick(metas, key: { front($0.name) })
+        let byFront = pick(metas, key: { front($0.name) }, owned: owned)
         var out: [String: CardItem] = [:]
         for name in names { if let item = byFront[front(name)] { out[name] = item } }
         return out
@@ -300,9 +328,9 @@ actor DeckStore: ModelActor {
         return metas
     }
 
-    private func pick(_ metas: [CardMeta], key: (CardMeta) -> String) throws -> [String: CardItem] {
-        let ownedIDs = try ownedScryfallIDs()
-        let owned = try ownedCopiesByKey()
+    private func pick(_ metas: [CardMeta], key: (CardMeta) -> String, owned index: OwnedIndex) -> [String: CardItem] {
+        let ownedIDs = index.scryfallIDs
+        let owned = index.copiesByKey
         var chosen: [String: CardMeta] = [:]
         for meta in metas {
             let k = key(meta)

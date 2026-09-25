@@ -24,18 +24,36 @@ struct CardArtThumb: View {
     @State private var image: UIImage?
     @State private var isCardFace = false
 
+    /// The crop, or else a decoded card face, if either is in memory — read
+    /// during the body so a row scrolling in draws its art in its first
+    /// frame rather than a placeholder that `.task` replaces a frame later.
+    private var memoryImage: (image: UIImage, isCardFace: Bool)? {
+        guard let artURL, !artURL.isEmpty else { return nil }
+        if let art = ImageMemoryCache.shared.image(ImageMemoryCache.key(artURL, max(width, height) * displayScale)) {
+            return (art, false)
+        }
+        guard let fallbackURL else { return nil }
+        for size in [480.0, 150.0] {
+            if let face = ImageMemoryCache.shared.image(ImageMemoryCache.key(fallbackURL, size * displayScale)) {
+                return (face, true)
+            }
+        }
+        return nil
+    }
+
     var body: some View {
+        let shown = image.map { (image: $0, isCardFace: isCardFace) } ?? memoryImage
         ZStack {
-            if let image, isCardFace {
+            if let shown, shown.isCardFace {
                 // A card face scaled to the thumb's width is ~1.39× as tall;
                 // the art box is centred about a third of the way down.
-                Image(uiImage: image)
+                Image(uiImage: shown.image)
                     .resizable()
                     .scaledToFit()
                     .frame(width: width)
                     .offset(y: -0.24 * width)
-            } else if let image {
-                Image(uiImage: image)
+            } else if let shown {
+                Image(uiImage: shown.image)
                     .resizable()
                     .scaledToFill()
             } else {

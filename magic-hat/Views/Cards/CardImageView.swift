@@ -34,10 +34,22 @@ struct CardImageView: View {
         targetWidth * displayScale
     }
 
+    /// What's already decoded for this URL, looked up during the body — an
+    /// NSCache read, microseconds. `.task` only runs after the first frame
+    /// has been committed, so a tile scrolling in used to draw its
+    /// placeholder first and swap the image in a frame later, even when the
+    /// grid had warmed it; and the viewer's zoom grew out of a grey card.
+    private var memoryImage: UIImage? {
+        guard let urlString, !urlString.isEmpty else { return nil }
+        if let exact = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, maxPixel)) { return exact }
+        guard let fallbackTargetWidth else { return nil }
+        return ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, fallbackTargetWidth * displayScale))
+    }
+
     var body: some View {
         ZStack {
-            if let image {
-                Image(uiImage: image)
+            if let shown = image ?? memoryImage {
+                Image(uiImage: shown)
                     .resizable()
                     .scaledToFit()
                     // Sheen is a layerEffect over the image's own layer, so it
@@ -52,7 +64,7 @@ struct CardImageView: View {
                             Image(systemName: "photo")
                                 .font(.title3)
                                 .foregroundStyle(.secondary)
-                        } else {
+                        } else if targetWidth >= Self.spinnerMinWidth {
                             ProgressView()
                         }
                     }
@@ -62,6 +74,12 @@ struct CardImageView: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: urlString) { await load() }
     }
+
+    /// Only a card shown large gets a spinner. A ProgressView is a UIKit
+    /// activity indicator sized through Auto Layout, and a grid scrolling
+    /// into unloaded tiles built and measured one per tile; small tiles
+    /// keep a plain grey card, as Photos does.
+    private static let spinnerMinWidth: CGFloat = 300
 
     private func load() async {
         didFail = false

@@ -51,6 +51,23 @@ actor CollectionStore: ModelActor {
     /// message to race against.
     private var snapshots: [String: (stamp: StoreStamp, snapshot: CollectionSnapshot)] = [:]
 
+    /// Every owned row as a card, built once per stamp and shared by the
+    /// overview, the backfill and every snapshot. Building them is the
+    /// expensive part of any read: the first property read on each CardMeta
+    /// fires its fault and materialises the whole model (0.25s for 3,900
+    /// rows in a debug build), and the tab used to pay it three times per
+    /// stamp — once to list the collection names for the backfill, once for
+    /// the totals, once more for the sorted snapshots.
+    private var rowsCache: (stamp: StoreStamp, rows: [Row])?
+
+    nonisolated struct Row: Sendable {
+        let item: CardItem
+        /// No fetched metadata yet (or stored before colours were kept).
+        let pending: Bool
+        /// Fetched, but the prices are older than DataPolicy.priceTTL.
+        let stale: Bool
+    }
+
     private func cached(_ key: String, _ stamp: StoreStamp?) -> CollectionSnapshot? {
         guard let stamp, let entry = snapshots[key], entry.stamp == stamp else { return nil }
         return entry.snapshot
@@ -74,6 +91,34 @@ actor CollectionStore: ModelActor {
         return Dictionary(decks.map { ($0.collectionKey, "Deck: \($0.name)") }, uniquingKeysWith: { a, _ in a })
     }
 
+    /// Every owned row, decks included, each labelled with where it lives.
+    /// Cached for `stamp`; without one (tests) always fresh.
+    private func allRows(stamp: StoreStamp?) throws -> [Row] {
+        if let stamp, let cache = rowsCache, cache.stamp == stamp { return cache.rows }
+        var descriptor = FetchDescriptor<CollectionEntry>()
+        descriptor.relationshipKeyPathsForPrefetching = [\.card]
+        let rows = Self.rows(of: try modelContext.fetch(descriptor), labels: try deckLabels())
+        if let stamp { rowsCache = (stamp, rows) }
+        return rows
+    }
+
+    private static func rows(of entries: [CollectionEntry], labels: [String: String]) -> [Row] {
+        let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
+        var rows: [Row] = []
+        rows.reserveCapacity(entries.count)
+        for entry in entries {
+            let meta = entry.card
+            var item = CardItem(entry: entry, meta: meta)
+            if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
+            // A row stored before colours were kept counts as pending so the
+            // collection filters get their data on the next hydration.
+            let fetched = meta.map { $0.fetchState == .fetched && $0.colorsRaw != nil } ?? false
+            let stale = fetched && (meta?.pricesUpdatedAt ?? .distantPast) < cutoff
+            rows.append(Row(item: item, pending: !fetched, stale: stale))
+        }
+        return rows
+    }
+
     /// Every card in a collection, sorted, plus what still needs fetching.
     /// `CollectionScope.allKey` means every row in the store, decks
     /// included, each labelled with where it lives.
@@ -82,41 +127,31 @@ actor CollectionStore: ModelActor {
     func snapshot(collectionName: String, sort: CardSort, stamp: StoreStamp? = nil) throws -> CollectionSnapshot {
         let key = "\(collectionName)|\(sort.rawValue)"
         if let hit = cached(key, stamp) { return hit }
-        let all = CollectionScope.isAll(collectionName)
-        var descriptor = all
-            ? FetchDescriptor<CollectionEntry>()
-            : FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
-        descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        let entries = try modelContext.fetch(descriptor)
-        let labels = all ? try deckLabels() : [:]
-        let snapshot = Self.snapshot(of: entries, labels: labels, sort: sort)
+        let rows: [Row]
+        if CollectionScope.isAll(collectionName) {
+            rows = try allRows(stamp: stamp)
+        } else if let stamp, let cache = rowsCache, cache.stamp == stamp {
+            rows = cache.rows.filter { $0.item.collectionName == collectionName }
+        } else {
+            // One collection, nothing shared to reuse: fetch just its rows.
+            var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
+            descriptor.relationshipKeyPathsForPrefetching = [\.card]
+            rows = Self.rows(of: try modelContext.fetch(descriptor), labels: [:])
+        }
+        let snapshot = Self.snapshot(of: rows, sort: sort)
         if let stamp { snapshots[key] = (stamp, snapshot) }
         return snapshot
     }
 
-    private static func snapshot(of entries: [CollectionEntry], labels: [String: String], sort: CardSort) -> CollectionSnapshot {
-        let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
-        var items: [CardItem] = []
-        items.reserveCapacity(entries.count)
+    private static func snapshot(of rows: [Row], sort: CardSort) -> CollectionSnapshot {
         var pending = Set<String>()
         var stale = Set<String>()
-
-        for entry in entries {
-            let meta = entry.card
-            var item = CardItem(entry: entry, meta: meta)
-            if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
-            items.append(item)
-            // A row stored before colours were kept counts as pending so the
-            // collection filters get their data on the next hydration.
-            if let meta, meta.fetchState == .fetched, meta.colorsRaw != nil {
-                if (meta.pricesUpdatedAt ?? .distantPast) < cutoff { stale.insert(entry.scryfallID) }
-            } else {
-                pending.insert(entry.scryfallID)
-            }
+        for row in rows {
+            if row.pending { pending.insert(row.item.scryfallID) }
+            if row.stale { stale.insert(row.item.scryfallID) }
         }
-
         return CollectionSnapshot(
-            items: CardSorting.sorted(items, by: sort),
+            items: CardSorting.sorted(rows.map(\.item), by: sort),
             pendingIDs: Array(pending),
             stalePriceIDs: Array(stale)
         )
@@ -147,105 +182,107 @@ actor CollectionStore: ModelActor {
         .sorted { $0.timestamp > $1.timestamp }
     }
 
-    /// Per-collection totals and top cards (the Add sheet's picker).
-    func summaries() throws -> [CollectionSummary] {
-        try overview().collections
+    /// Per-collection totals and top cards (the Add sheet's picker). With
+    /// the caller's stamp, the rows the Collections tab read are reused.
+    func summaries(stamp: StoreStamp? = nil) throws -> [CollectionSummary] {
+        try overview(stamp: stamp).collections
     }
 
     /// Builds and caches every collection's snapshot (and All Collection's)
     /// in `sort`, so the tap that follows the tab is a lookup. Its own call
-    /// rather than part of `overview`: the totals are cheap and the tab
-    /// wants them first; the sorts are the slow part and can land after.
+    /// rather than part of `overview`: the totals are what the tab draws
+    /// and land first; the sorts follow, over the rows the overview built.
     func prewarmSnapshots(sort: CardSort, stamp: StoreStamp) throws {
-        let collections = try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)]))
-        let key = "\(CollectionScope.allKey)|\(sort.rawValue)"
-        if let cached = snapshots[key], cached.stamp == stamp,
-           collections.allSatisfy({ snapshots["\($0.name)|\(sort.rawValue)"]?.stamp == stamp }) { return }
-        var descriptor = FetchDescriptor<CollectionEntry>()
-        descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        let entries = try modelContext.fetch(descriptor)
-        let byCollection = Dictionary(grouping: entries, by: \.collectionName)
-        let labels = try deckLabels()
-        for collection in collections {
-            snapshots["\(collection.name)|\(sort.rawValue)"] =
-                (stamp, Self.snapshot(of: byCollection[collection.name] ?? [], labels: [:], sort: sort))
+        let names = try collectionNames()
+        let keys = [CollectionScope.allKey] + names
+        guard !keys.allSatisfy({ snapshots["\($0)|\(sort.rawValue)"]?.stamp == stamp }) else { return }
+        let rows = try allRows(stamp: stamp)
+        let byCollection = Dictionary(grouping: rows, by: \.item.collectionName)
+        for name in names {
+            snapshots["\(name)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: byCollection[name] ?? [], sort: sort))
         }
-        snapshots[key] = (stamp, Self.snapshot(of: entries, labels: labels, sort: sort))
+        snapshots["\(CollectionScope.allKey)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: rows, sort: sort))
     }
 
-    /// The Collections tab: every collection, the whole library, and the
-    /// share of it built into decks — one pass over the entries. With a
-    /// `sort`, the same pass also builds and caches every collection's
-    /// snapshot (and All Collection's), so the tap that follows is instant
-    /// (the tab asks for the totals first and prewarms afterwards).
-    func overview(prewarming sort: CardSort? = nil, stamp: StoreStamp? = nil) throws -> CollectionOverview {
-        let collections = try modelContext.fetch(
-            FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)])
-        )
-        var descriptor = FetchDescriptor<CollectionEntry>()
-        descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        let entries = try modelContext.fetch(descriptor)
-        let byCollection = Dictionary(grouping: entries, by: \.collectionName)
+    /// The Collections tab: every collection, the whole library, the share
+    /// of it built into decks, and the collection names found on rows (for
+    /// the backfill) — one pass over rows shared with the snapshots.
+    func overview(stamp: StoreStamp? = nil) throws -> CollectionOverview {
+        let names = try collectionNames()
+        let rows = try allRows(stamp: stamp)
+        let byCollection = Dictionary(grouping: rows, by: \.item.collectionName)
 
-        if let sort, let stamp {
-            let labels = try deckLabels()
-            for collection in collections {
-                snapshots["\(collection.name)|\(sort.rawValue)"] =
-                    (stamp, Self.snapshot(of: byCollection[collection.name] ?? [], labels: [:], sort: sort))
-            }
-            snapshots["\(CollectionScope.allKey)|\(sort.rawValue)"] =
-                (stamp, Self.snapshot(of: entries, labels: labels, sort: sort))
-        }
-
-        let perCollection = collections.map { Self.summary(name: $0.name, rows: byCollection[$0.name] ?? []) }
-        let all = Self.summary(name: CollectionScope.allName, rows: entries)
+        let perCollection = names.map { Self.summary(name: $0, rows: byCollection[$0] ?? []) }
+        let all = Self.summary(name: CollectionScope.allName, rows: rows)
         var deckCopies = 0
         var deckValue = 0.0
         for (name, rows) in byCollection where Deck.isDeckCollection(name) {
             for row in rows {
-                deckCopies += row.quantity
-                deckValue += Self.value(of: row)
+                deckCopies += row.item.quantity
+                deckValue += Self.value(of: row.item)
             }
         }
-        return CollectionOverview(collections: perCollection, all: all, deckCopies: deckCopies, deckValue: deckValue)
+        let onRows = Set(byCollection.keys.filter { !$0.isEmpty && !Deck.isDeckCollection($0) })
+        return CollectionOverview(collections: perCollection, all: all, deckCopies: deckCopies, deckValue: deckValue,
+                                  entryCollectionNames: onRows)
     }
 
-    private static func value(of row: CollectionEntry) -> Double {
-        let unit = row.finish == .normal
-            ? row.card?.priceUSD
-            : (row.card?.priceUSDFoil ?? row.card?.priceUSD)
-        return (unit ?? 0) * Double(row.quantity)
+    private static func value(of item: CardItem) -> Double {
+        (item.marketPrice ?? 0) * Double(item.quantity)
     }
 
-    private static func summary(name: String, rows: [CollectionEntry]) -> CollectionSummary {
+    private static func summary(name: String, rows: [Row]) -> CollectionSummary {
         var total = 0.0
-        var valued: [(value: Double, entry: CollectionEntry)] = []
+        var valued: [(value: Double, item: CardItem)] = []
         for row in rows {
-            let value = value(of: row)
+            let value = value(of: row.item)
             total += value
-            if value > 0 { valued.append((value, row)) }
+            if value > 0 { valued.append((value, row.item)) }
         }
         let top = valued.sorted { $0.value > $1.value }.prefix(5).map {
-            CollectionSummary.Highlight(
-                id: $0.entry.id.uuidString,
-                imageURL: $0.entry.card?.imageNormalURL,
-                aspectRatio: $0.entry.card?.aspectRatio ?? (488.0 / 680.0)
-            )
+            CollectionSummary.Highlight(id: $0.item.id, imageURL: $0.item.imageURL, aspectRatio: $0.item.aspectRatio)
         }
         return CollectionSummary(
             name: name,
             uniqueCards: rows.count,
-            totalCopies: rows.reduce(0) { $0 + $1.quantity },
+            totalCopies: rows.reduce(0) { $0 + $1.item.quantity },
             totalValue: total,
             highlights: Array(top)
         )
     }
 
+    /// Every card in the real collections — decks' rows left out — one item
+    /// per row. With the caller's stamp these are the rows the Collections
+    /// tab already built, so a deck's add sheet and its analysis don't read
+    /// and fault the whole collection again on DeckStore's queue.
+    func ownedCards(stamp: StoreStamp? = nil) throws -> [CardItem] {
+        try allRows(stamp: stamp).compactMap { Deck.isDeckCollection($0.item.collectionName) ? nil : $0.item }
+    }
+
+    /// The real collections' printings and copies per card key (oracle id,
+    /// else Scryfall id), decks' rows left out — what DeckStore counts
+    /// "in collection" and "owned" by. Cached per stamp over the rows.
+    func ownedIndex(stamp: StoreStamp? = nil) throws -> OwnedIndex {
+        if let stamp, let cache = ownedIndexCache, cache.stamp == stamp { return cache.index }
+        var ids = Set<String>()
+        var byKey: [String: Int] = [:]
+        for row in try allRows(stamp: stamp) where !Deck.isDeckCollection(row.item.collectionName) {
+            ids.insert(row.item.scryfallID)
+            byKey[row.item.oracleID ?? row.item.scryfallID, default: 0] += row.item.quantity
+        }
+        let index = OwnedIndex(scryfallIDs: ids, copiesByKey: byKey)
+        if let stamp { ownedIndexCache = (stamp, index) }
+        return index
+    }
+    private var ownedIndexCache: (stamp: StoreStamp, index: OwnedIndex)?
+
     /// Every Scryfall id owned in any collection (for "in binder" markers).
-    func ownedScryfallIDs() throws -> Set<String> {
-        var descriptor = FetchDescriptor<CollectionEntry>()
-        descriptor.propertiesToFetch = [\.scryfallID]
-        return Set(try modelContext.fetch(descriptor).map(\.scryfallID))
+    /// From the rows when they are built for the caller's stamp; otherwise
+    /// one plain fetch (a `propertiesToFetch` fetch measured slower here:
+    /// SwiftData faults each partial row in as it is read).
+    func ownedScryfallIDs(stamp: StoreStamp? = nil) throws -> Set<String> {
+        if let stamp, let cache = rowsCache, cache.stamp == stamp { return Set(cache.rows.map(\.item.scryfallID)) }
+        return Set(try modelContext.fetch(FetchDescriptor<CollectionEntry>()).map(\.scryfallID))
     }
 
     /// Scryfall ids of every printing we know for an oracle id.
@@ -293,6 +330,12 @@ actor CollectionStore: ModelActor {
         return Set(try modelContext.fetch(descriptor).map(\.collectionName))
             .filter { !$0.isEmpty && !Deck.isDeckCollection($0) }
     }
+}
+
+/// Who owns what, for the deck screens: see `CollectionStore.ownedIndex`.
+nonisolated struct OwnedIndex: Sendable {
+    let scryfallIDs: Set<String>
+    let copiesByKey: [String: Int]
 }
 
 /// What a cached snapshot is valid for: the collection change revision and

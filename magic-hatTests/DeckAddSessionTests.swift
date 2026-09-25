@@ -34,11 +34,17 @@ struct DeckAddSessionTests {
         let item = CardItem(meta: delta, owned: false)
 
         try session.add(item)
+        #expect(session.quantity(of: item) == 1, "the count moves on the tap, before the deck is re-read")
         session.update(from: try #require(try await store.snapshot(deckID: w.deck.id)))
         #expect(session.quantity(of: item) == 1)
+        try session.setQuantity(item, 3)
+        #expect(session.quantity(of: item) == 3)
+        session.update(from: try #require(try await store.snapshot(deckID: w.deck.id)))
+        #expect(session.quantity(of: item) == 3)
         #expect(session.touched == ["oracle-d"])
 
         try session.setQuantity(item, 0)
+        #expect(session.quantity(of: item) == 0)
         session.update(from: try #require(try await store.snapshot(deckID: w.deck.id)))
         #expect(session.quantity(of: item) == 0)
         #expect(session.touched == ["oracle-d"], "a card stepped back to zero stays where the list showed it")

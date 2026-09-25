@@ -343,7 +343,7 @@ struct SearchView: View {
 
     private func refreshOwned() async {
         let store = CollectionStore.shared(for: modelContext.container)
-        guard let ids = try? await store.ownedScryfallIDs(), !Task.isCancelled else { return }
+        guard let ids = try? await store.ownedScryfallIDs(stamp: .current), !Task.isCancelled else { return }
         controller.updateOwned(ids)
     }
 }

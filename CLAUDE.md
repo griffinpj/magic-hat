@@ -126,9 +126,17 @@ are cross-cutting, not owned by one feature.
     card on screen, debounced, so opening the detail screen is instant.
   - `SetSymbolLoader` — see Set symbols below.
   - `ImageLoader` — card image cache: original bytes on disk (Caches/),
-    decoded+downsampled UIImages in memory keyed by URL+size. Decode and
-    downsample run on the actor (off-main) via ImageIO so scrolling never
-    triggers a main-thread decode of a full-resolution image.
+    decoded+downsampled UIImages in memory keyed by URL+size. Disk reads,
+    decode and downsample run in `@concurrent` helpers via ImageIO, several
+    at once — a `Task` made in the actor inherits it, and they used to run
+    on the actor one at a time, so the viewer's large image decoded only
+    after the grid's queued warm-ups. The views (`CardImageView`,
+    `CardArtThumb`, `CardArtImage`) read `ImageMemoryCache` synchronously
+    in their body: `.task` runs after the first frame is committed, so a
+    warmed tile used to draw its placeholder first and the viewer's zoom
+    grew out of a grey card. Only a card shown large (the viewer) gets a
+    spinner: a `ProgressView` is a UIKit activity indicator sized through
+    Auto Layout, one per unloaded tile while scrolling.
   `cached(oracleID:)` is memory only; disk is read, decoded and written
   `@concurrent` inside `printings` — it used to decode every printing of
   the card on the main actor each time the pager rested on a card, which
@@ -174,6 +182,36 @@ screen. Instead:
   (`RealCollectionTests`): launch and the first push into the collection
   record no app-side stall; the two records are XCUITest's own
   (accessibility bundle load, its os_log).
+- **One read of the rows per stamp.** `CollectionStore.allRows(stamp:)`
+  builds every owned row as a `CardItem` (with its pending/stale flags)
+  once and caches it; the overview, every snapshot, All Collection,
+  `ownedCards(stamp:)` (a deck's add sheet and its analysis),
+  `ownedIndex(stamp:)` (what DeckStore counts as owned/available) and
+  `ownedScryfallIDs(stamp:)` all come from it. Building it is the cost of
+  any read — the first property read on each CardMeta fires its fault and
+  decodes the whole model — and the tab used to pay it three times per
+  stamp (a backfill names pass, the totals, the prewarm), then every deck
+  tile, deck screen, analysis and synergy lookup paid it again on
+  DeckStore's queue (Time Profiler, real export, debug: Decks tab 530ms →
+  36ms, opening a deck 550ms → 15ms, the analysis's candidates 600ms →
+  16ms). The overview carries `entryCollectionNames`, which the tab
+  backfills MTGCollection rows from.
+- The tab shows the **last overview** (Caches/Overview, keyed by store
+  file, never for UI-test in-memory stores) the moment it appears, then
+  replaces it with the fresh one — the totals used to take ~0.6s after
+  the first frame on the real collection. It **skips its refresh while a
+  collection is pushed** on top and runs once on the way back: during a
+  sync each pass re-read every row on the store's queue, the queue the
+  pushed grid's own refreshes wait on.
+- SwiftData, measured on the real export (debug, simulator, on-disk
+  store): a `propertiesToFetch` fetch is *slower* than a plain one
+  (87 vs 60ms for 3.8k entries, 126 vs 90ms for 3.5k metas) — each
+  partial row is faulted in as it is read — and reading `entry.card` is
+  the expensive part of a row (330ms without prefetch, 410ms *with*
+  `relationshipKeyPathsForPrefetching`; a separate CardMeta fetch by
+  `ids.contains` joined in a dictionary is 90ms). Reads keep the
+  relationship because DeckBuilder matches copies through it; share the
+  rows rather than adding passes.
 - `LaunchPrewarm` runs from `RootView`: the Mana and Keyrune fonts are
   parsed off-main (the first pip drawn used to parse the file on the main
   thread, 0.79s); an invisible field with an empty inputView loads the
@@ -182,7 +220,10 @@ screen. Instead:
   one deliberate main-thread cost at launch and it used to land under the
   Collections tab's first fill (the foil warm-up follows it at 2.6s so the
   two never stack); every SF Symbol the app draws (`symbolNames`,
-  checked against the source by `LaunchPrewarmTests`) is resolved on a
+  checked against the source by `LaunchPrewarmTests` — every literal on a
+  symbol line, ternaries and `.symbolVariant` forms included, after
+  "lock" in the deck menu cost 0.22s opening a deck; and no `""` names,
+  which are looked up and fail like any other) is resolved on a
   background queue, because the first lookup of a name in CoreUI's
   catalog is disk-bound — 0.44s on the first tap of the Search tab, two
   0.3s stalls opening a deck; and the foil sheen's Metal pipeline is
@@ -199,6 +240,13 @@ screen. Instead:
 - Hydration bumps `CardHydrationController.revision` per 75-card batch;
   views refetch on a **debounce** (longer while a sync is running) and merge
   in place without reordering, so the grid doesn't reshuffle mid-sync.
+  Screens observe it through `HydrationObserver` in a `.background`, not
+  an `onChange` in their own body: reading the revision there re-rendered
+  the screen — the collection grid, the Collections tab and the import
+  sheet it presents (whose init regrouped all 3.9k parsed rows) — on
+  every batch. The grid's "Syncing n/N" pill is its own view for the same
+  reason. The wizard's binder counts are worked out with the parse,
+  off-main.
 - Small tables (`MTGCollection`, `SavedSearch`, per-oracle rulings) are
   fine as `@Query`. The audit ledger is not small: History reads it through
   `CollectionStore.history()`. A `@Query` re-runs on the main thread after
@@ -331,7 +379,9 @@ detail screen and actions as an owned card:
   and the tab pill stay live through the dim), gives VoiceOver no way out,
   and can't use the toolbar API.
 - `CardDetailView` — hero art header, gameplay text, Versions/Ruling tabs,
-  and all printings (grouped by set) with owned indicators.
+  and all printings (grouped by set) with owned indicators. Mapping the
+  printings to cards and filtering/grouping them (per keystroke in
+  "Filter sets") run on a detached task — a basic land has hundreds.
 - Present the viewer with `.fullScreenCover(item:)` over a
   `CardViewerSession` — the items, the current id and any deck target
   travel *in the item*. Reading them from the presenter's other `@State`
@@ -429,7 +479,11 @@ downloaded there) are swept at launch.
 `CatalogSyncBar` narrates it above whichever tab is showing. Two things that
 matter for scrolling: the bar observes the controller itself (reading `phase`
 from `MainTabView` would re-render every tab on each batch), and ingest
-progress is reported once per ~10 batches rather than per batch.
+progress is reported once per ~10 batches rather than per batch. Its
+show/hide animation is attached inside the bar's own body: as an
+`.animation(value: phase…)` in `catalogSyncBar()` it was evaluated in the
+`safeAreaBar` closure — which runs in MainTabView's body — and did exactly
+that.
 
 MTGJSON **set files carry no prices** (verified) — only `identifiers`,
 `legalities`, `foreignData`, `purchaseUrls` and similar. Prices live solely in
@@ -526,7 +580,9 @@ through the cheap batched call.
 
 Debug builds start `HangDetector` at launch: a watchdog that samples the
 main thread's stack when it stops answering for 0.4s and logs it (subsystem
-`magic-hat`, category `hang`, also printed). `UITEST_HANG_THRESHOLD`
+`magic-hat`, category `hang`, also printed). It pings at half the
+threshold: with a fixed quarter-second gap a stall shorter than that was
+only seen if it overlapped a ping. `UITEST_HANG_THRESHOLD`
 lowers the bar and `UITEST_HANG_LOG=<path>` appends each report as a JSON
 line, which is how `RealCollectionTests` fails a flow on any stall. It samples with Mach thread
 APIs (suspend, read registers, walk frame pointers, resume), **not a
@@ -680,9 +736,18 @@ Reads through `DeckStore` (a ModelActor): the tab's `overview()`, a deck's
 `snapshot(deckID:)` — list rows joined with their CardMeta, the copies
 built and the copies still available in collections (both by oracle id),
 sections by card type, and `DeckStats` — and `resolve(_:)` for imports.
+Ownership ("in collection", "owned") comes from `ownedIndex()`: the
+shared store asks `CollectionStore.ownedIndex(stamp:)` with the current
+stamp (one hop to the main actor for it), so it is a lookup over rows
+already built; a DeckStore made on its own (tests) counts for itself.
 Writes: `DeckEditController` (main context; list edits write no audit,
 a list is a wish), `DeckBuilder` (background; moves copies, audits them).
 `DeckChangeTracker` is bumped by list edits, both trackers by builds.
+A stepper or "+" shows its new count on the tap: `DeckAddSession`
+updates its rows as it writes, and the deck list keeps a written count
+until a snapshot dated at or after the write arrives — the re-read of
+the deck queues behind the Decks tab's and the add sheet's re-reads of
+the same write.
 
 The deck screen: a segmented Cards / Stats / Details in a top
 `safeAreaBar` under the title, the three as pages of a paged `TabView`
@@ -877,7 +942,10 @@ runtime with CoreText, so no Info.plist entry. Promo/token codes (`p…`, `t…`
 fall back to the parent set's glyph, as Keyrune itself does. `KeyruneFontTests`
 draws a glyph and counts opaque pixels — the WebKit rasterizer could only ever
 be checked by eye, and failed that repeatedly. WebKit remains as a fallback for
-sets newer than the font: one persistent web view, SVG + PNG cached on disk.
+sets newer than the font: one persistent web view, SVG + PNG cached on disk
+(read, decoded and written `@concurrent` — a Task made in the main-actor
+loader ran them on the main thread; the SVG comes through `HTTPClient`,
+never `URLSession.shared` from the main actor).
 
 Foil sheen is a Metal shader (`Shaders/FoilSheen.metal`) applied with
 SwiftUI's `layerEffect` (`FoilSheen` modifier) to the card image's own layer:
@@ -1039,8 +1107,14 @@ as they do for a user, only the 79MB catalog download is skipped. It
 drives the flows that felt slow (entering the collection mid-sync, every
 sort, scrolling real images, the first tap on Search, the first field
 tap and typing, a real deck's rows and viewer, the add sheet over the
-whole collection) with the hang threshold at 100ms, and fails any step
-that stalled the main thread, with the sampled stack in the message. Run
+whole collection, and `testTransitionsTour`: every push, sheet and tab
+once) with the hang threshold at 100ms (`TEST_RUNNER_UITEST_HANG_THRESHOLD`
+lowers it for an audit), and fails any step that stalled the main
+thread, with the sampled stack in the message. For where the time goes
+rather than whether it stalled, attach Time Profiler to the test's app
+(`xcrun xctrace record --template 'Time Profiler' --device <udid>
+--attach <pid>`, with `-parallel-testing-enabled NO` so the test runs on
+that simulator and not a clone). Run
 it alone — another simulator job on the same Mac starves the app and
 every wait in system code shows up as a stall:
 

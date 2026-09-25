@@ -9,7 +9,7 @@
 
 import Foundation
 
-nonisolated struct CollectionSummary: Identifiable, Hashable, Sendable {
+nonisolated struct CollectionSummary: Identifiable, Hashable, Sendable, Codable {
     let name: String
     let uniqueCards: Int
     let totalCopies: Int
@@ -18,7 +18,7 @@ nonisolated struct CollectionSummary: Identifiable, Hashable, Sendable {
     let highlights: [Highlight]
     var id: String { name }
 
-    struct Highlight: Identifiable, Hashable, Sendable {
+    struct Highlight: Identifiable, Hashable, Sendable, Codable {
         let id: String
         let imageURL: String?
         let aspectRatio: Double
@@ -38,12 +38,16 @@ nonisolated enum CollectionScope {
 }
 
 /// The Collections tab in one value: each collection, the whole library,
-/// and how much of it sits in built decks.
-nonisolated struct CollectionOverview: Hashable, Sendable {
+/// and how much of it sits in built decks. Codable so the last one can be
+/// shown the moment the tab appears after a launch (see CollectionsView).
+nonisolated struct CollectionOverview: Hashable, Sendable, Codable {
     let collections: [CollectionSummary]
     let all: CollectionSummary
     let deckCopies: Int
     let deckValue: Double
+    /// Collection names found on owned rows, decks' hidden ones left out —
+    /// what the tab backfills MTGCollection rows from.
+    var entryCollectionNames: Set<String> = []
 
     var collectionCopies: Int { all.totalCopies - deckCopies }
     var collectionValue: Double { all.totalValue - deckValue }
