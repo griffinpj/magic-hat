@@ -7,11 +7,13 @@
 //  append-only AuditRecord ledger under a single actionID for grouping and
 //  future undo/redo.
 //
-//  Writes run on the main context, chunked with Task.yield() between batches
-//  so the run loop keeps animating. (Reads go through CollectionStore on a
-//  background context; writes stay here so @Query-backed views see them
-//  without a merge step.) When it finishes it bumps CollectionChangeTracker
-//  so snapshot-backed views refetch.
+//  The rows are written on CardMetaWriter's background context, not the
+//  main one. They used to go through the main context, chunked with
+//  Task.yield(): a 3,900-row import then left every entry, meta and audit
+//  row registered in the main context, which paid for that on every
+//  background save that followed (each hydration batch, each catalog
+//  batch). Now the main context only ever holds what a screen fetched.
+//  Progress hops to the main actor about a hundred times per import.
 //
 
 import Foundation
@@ -34,18 +36,33 @@ enum ImportController {
     }
 
     /// Imports the rows whose file-binder is in `selectedBinders` into one
-    /// collection. The binder is a selection filter and nothing more: once a
-    /// row is in, it is indistinguishable from any other row in the collection,
-    /// and identical printings from different binders merge into one row.
-    /// Reports progress in [0, 1]; yields between chunks so the main thread
-    /// never stalls on a large import.
+    /// collection, on the container's background writer. The binder is a
+    /// selection filter and nothing more: once a row is in, it is
+    /// indistinguishable from any other row in the collection, and identical
+    /// printings from different binders merge into one row. Reports progress
+    /// in [0, 1] on the main actor.
     static func apply(
         rows: [ManaBoxRow],
         selectedBinders: Set<String>,
         collectionName: String,
         mode: ImportMode,
-        context modelContext: ModelContext,
-        progress: (Double) -> Void
+        container: ModelContainer,
+        progress: @escaping @MainActor @Sendable (Double) -> Void
+    ) async throws -> Summary {
+        try await CardMetaWriter.shared(for: container).runImport(
+            rows: rows, selectedBinders: selectedBinders, collectionName: collectionName,
+            mode: mode, progress: progress
+        )
+    }
+
+    /// The import itself, against whichever context the caller owns.
+    nonisolated static func apply(
+        rows: [ManaBoxRow],
+        selectedBinders: Set<String>,
+        collectionName: String,
+        mode: ImportMode,
+        in modelContext: ModelContext,
+        progress: @escaping @MainActor @Sendable (Double) -> Void
     ) async throws -> Summary {
         let actionID = UUID()
         let now = Date()
@@ -55,7 +72,7 @@ enum ImportController {
         let relevant = rows.filter { selectedBinders.contains($0.binderName) && $0.quantity > 0 }
         let total = max(relevant.count, 1)
 
-        progress(0)
+        await progress(0)
 
         // 0. Ensure the target collection exists.
         let existingCollections = try modelContext.fetch(
@@ -107,10 +124,15 @@ enum ImportController {
 
         // 3. Ensure a CardMeta placeholder exists per Scryfall ID (hydrated
         //    lazily later). Track which we've seen to avoid dup inserts.
-        var metaByID = Dictionary(
-            try modelContext.fetch(FetchDescriptor<CardMeta>()).map { ($0.scryfallID, $0) },
-            uniquingKeysWith: { a, _ in a }
-        )
+        //    Fetched by the ids the file names, in chunks: the whole table
+        //    is the 112k-row catalog once ingested.
+        var metaByID: [String: CardMeta] = [:]
+        for chunk in Array(Set(relevant.map(\.scryfallID))).chunked(into: 500) {
+            let metas = try modelContext.fetch(
+                FetchDescriptor<CardMeta>(predicate: #Predicate { chunk.contains($0.scryfallID) })
+            )
+            for meta in metas { metaByID[meta.scryfallID] = meta }
+        }
 
         // 4. Insert/upsert rows, reporting progress and saving in batches so
         //    memory stays bounded for very large imports. Progress updates
@@ -189,17 +211,15 @@ enum ImportController {
             processed += 1
             if processed % saveEvery == 0 {
                 try modelContext.save()
-                // Let the run loop breathe: UI updates and stays responsive.
-                await Task.yield()
             }
             if processed % reportEvery == 0 {
-                progress(Double(processed) / Double(total))
+                await progress(Double(processed) / Double(total))
             }
         }
 
         try modelContext.save()
-        progress(1)
-        CollectionChangeTracker.shared.bump()
+        await progress(1)
+        await MainActor.run { CollectionChangeTracker.shared.bump() }
 
         return Summary(
             actionID: actionID,

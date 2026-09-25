@@ -72,7 +72,7 @@ struct BulkIngestTests {
         let rows = try CSVParser.parseManaBox(try TestSupport.manaBoxFixture())
         _ = try await ImportController.apply(
             rows: rows, selectedBinders: Set(rows.map(\.binderName)),
-            collectionName: "Library", mode: .add, context: container.mainContext
+            collectionName: "Library", mode: .add, container: container
         ) { _ in }
 
         let known = Set(try container.mainContext.fetch(FetchDescriptor<CardMeta>())

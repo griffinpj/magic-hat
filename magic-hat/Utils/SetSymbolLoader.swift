@@ -17,6 +17,17 @@
 //  Rendered white on transparent and shown as a `.template` image, so it
 //  tints with `.primary` and adapts to light/dark.
 //
+//  The web view is never created on the caller's frame. Creating the
+//  first WKWebView makes WebKit soft-link the ScreenTime framework, and
+//  dyld runs a framework's load on the calling thread with synchronous
+//  XPC inside: 4.0s on the main thread the first time a set outside the
+//  Keyrune font (four of 204 in a real collection) was shown in the
+//  viewer. So the first symbol that needs WebKit has ScreenTime loaded on
+//  a background thread (LaunchPrewarm.loadScreenTime), then the web view
+//  is created on the main actor; until then jobs queue and SetSymbolView
+//  shows the set code as a badge. Not at launch: a background dlopen then
+//  held dyld's lock under the main thread's own framework loads.
+//
 
 import SwiftUI
 import WebKit
@@ -33,6 +44,8 @@ final class SetSymbolLoader {
     private let fm = FileManager.default
     private let directory: URL
     private let rasterizer = SVGRasterizer()
+    private var screenTimeReady = false
+    private var warmScheduled = false
 
     private init() {
         let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -40,9 +53,38 @@ final class SetSymbolLoader {
         try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
+    /// First need of the rasterizer: load ScreenTime off-main, then create
+    /// the web view. Retried later if there is no window scene yet.
+    private func warmWhenNeeded() {
+        guard !rasterizer.isWarm, !warmScheduled else { return }
+        warmScheduled = true
+        if screenTimeReady {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                warmScheduled = false
+                if !rasterizer.warm() { retryWarm() }
+            }
+        } else {
+            LaunchPrewarm.loadScreenTime { [self] in
+                screenTimeReady = true
+                warmScheduled = false
+                warmWhenNeeded()
+            }
+        }
+    }
+
+    private func retryWarm() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            warmWhenNeeded()
+        }
+    }
+
     /// A tintable raster of the set symbol at `size` points. Nil on failure.
     func symbol(setCode: String, size: CGFloat) async -> UIImage? {
         let code = setCode.lowercased()
+        // Never on the caller's frame: the badge shows meanwhile.
+        if !rasterizer.isWarm { warmWhenNeeded() }
         let scale = rasterizer.scale
         let key = "\(code)@\(Int(size))@\(Int(scale))"
 
@@ -110,6 +152,15 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
     private var current: Job?
 
     var scale: CGFloat { host?.screen.scale ?? UITraitCollection.current.displayScale }
+    var isWarm: Bool { webView != nil }
+
+    /// Creates the web view (and its host window). False when there is no
+    /// window scene to host it in yet.
+    func warm() -> Bool {
+        let ready = ensureWebView() != nil
+        if ready { pump() }
+        return ready
+    }
 
     func rasterize(svg: Data, size: CGFloat) async -> UIImage? {
         await withCheckedContinuation { continuation in
@@ -118,11 +169,12 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
         }
     }
 
+    /// Runs the next job on the web view — only once `warm()` has made
+    /// one; jobs wait otherwise.
     private func pump() {
-        guard current == nil, !queue.isEmpty else { return }
+        guard current == nil, !queue.isEmpty, let webView else { return }
         let job = queue.removeFirst()
         current = job
-        guard let webView = ensureWebView() else { finish(nil); return }
 
         let px = Int(job.size)
         webView.frame = CGRect(x: 0, y: 0, width: job.size, height: job.size)
@@ -192,21 +244,41 @@ private final class SVGRasterizer: NSObject, WKNavigationDelegate {
     }
 }
 
+/// The colours a set symbol is printed in, by rarity — Keyrune's own
+/// palette, which is what the cards use: uncommon silver, rare gold, mythic
+/// bronze-orange, timeshifted purple. Common has no colour of its own; it
+/// is printed black, so it takes the caller's tint and follows the theme.
+nonisolated enum RarityPalette {
+    static func color(for rarity: String) -> Color? {
+        switch rarity.lowercased() {
+        case "uncommon": return Color(red: 0x70 / 255.0, green: 0x78 / 255.0, blue: 0x83 / 255.0)
+        case "rare", "bonus": return Color(red: 0xA5 / 255.0, green: 0x8E / 255.0, blue: 0x4A / 255.0)
+        case "mythic": return Color(red: 0xBF / 255.0, green: 0x44 / 255.0, blue: 0x27 / 255.0)
+        case "special": return Color(red: 0x65 / 255.0, green: 0x29 / 255.0, blue: 0x78 / 255.0)
+        default: return nil
+        }
+    }
+}
+
 /// SwiftUI view that shows a set symbol, tinted. Keyrune glyph when the font
 /// has the set (instant, offline); otherwise the WebKit-rasterized SVG;
-/// otherwise a system glyph.
+/// otherwise a system glyph. Given a rarity, the symbol takes that rarity's
+/// colour, as it is printed on the card; common keeps `tint`.
 struct SetSymbolView: View {
     let setCode: String
     var size: CGFloat = 22
     var tint: Color = .secondary
+    var rarity: String? = nil
 
     @State private var image: UIImage?
+
+    private var color: Color { rarity.flatMap(RarityPalette.color) ?? tint }
 
     var body: some View {
         if let glyph = KeyruneFont.glyph(for: setCode), let font = KeyruneFont.fontName {
             Text(glyph)
                 .font(.custom(font, size: size * 0.92))
-                .foregroundStyle(tint)
+                .foregroundStyle(color)
                 .frame(width: size, height: size)
                 .accessibilityLabel(setCode.uppercased())
         } else {
@@ -214,6 +286,9 @@ struct SetSymbolView: View {
         }
     }
 
+    /// The set code as a small badge stands in until the raster arrives —
+    /// it says which set this is, and it is what a set the rasterizer
+    /// can't draw keeps.
     private var rasterized: some View {
         Group {
             if let image {
@@ -221,12 +296,19 @@ struct SetSymbolView: View {
                     .renderingMode(.template)
                     .resizable()
                     .scaledToFit()
-                    .foregroundStyle(tint)
+                    .foregroundStyle(color)
             } else {
-                Image(systemName: "square.stack.3d.up")
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(tint.opacity(0.5))
+                Text(setCode.uppercased())
+                    .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(1)
+                    .padding(.horizontal, 2)
+                    .foregroundStyle(color)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: size * 0.18, style: .continuous)
+                            .strokeBorder(color.opacity(0.6), lineWidth: 1)
+                    }
+                    .accessibilityLabel(setCode.uppercased())
             }
         }
         .frame(width: size, height: size)

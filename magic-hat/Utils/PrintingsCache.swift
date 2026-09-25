@@ -19,7 +19,7 @@ final class PrintingsCache {
     /// fresh and removes essentially all repeat traffic.
     static let ttl: TimeInterval = 7 * 24 * 3600
 
-    private struct Entry: Codable {
+    nonisolated private struct Entry: Codable, Sendable {
         let cards: [ScryfallCard]
         let fetchedAt: Date
     }
@@ -36,27 +36,33 @@ final class PrintingsCache {
         try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    /// Cached printings, or nil if absent/expired. Never hits the network —
-    /// callers that only want an instant answer can use this.
+    /// Printings already in memory, or nil. Never touches disk or the
+    /// network — the instant answer for a view that is drawing right now.
+    /// (It used to read and decode the disk entry here, on the main actor:
+    /// every printing of the card, hundreds for a basic land, once per
+    /// card the pager rested on — the stalls while swiping the viewer.)
     func cached(oracleID: String) -> [ScryfallCard]? {
         if let entry = memory[oracleID], isFresh(entry) { return entry.cards }
-        guard let entry = readDisk(oracleID), isFresh(entry) else { return nil }
-        memory[oracleID] = entry
-        return entry.cards
+        return nil
     }
 
     func printings(oracleID: String) async throws -> [ScryfallCard] {
         if let cards = cached(oracleID: oracleID) { return cards }
         if let existing = inFlight[oracleID] { return try await existing.value }
 
-        let task = Task { try await ScryfallClient.shared.printings(oracleID: oracleID) }
+        let task = Task { () throws -> [ScryfallCard] in
+            if let entry = await Self.readDisk(self.fileURL(oracleID)), self.isFresh(entry) {
+                return entry.cards
+            }
+            let cards = try await ScryfallClient.shared.printings(oracleID: oracleID)
+            await Self.writeDisk(Entry(cards: cards, fetchedAt: Date()), to: self.fileURL(oracleID))
+            return cards
+        }
         inFlight[oracleID] = task
         defer { inFlight[oracleID] = nil }
 
         let cards = try await task.value
-        let entry = Entry(cards: cards, fetchedAt: Date())
-        memory[oracleID] = entry
-        writeDisk(entry, oracleID: oracleID)
+        memory[oracleID] = Entry(cards: cards, fetchedAt: Date())
         return cards
     }
 
@@ -77,13 +83,17 @@ final class PrintingsCache {
         directory.appendingPathComponent("\(oracleID).json")
     }
 
-    private func readDisk(_ oracleID: String) -> Entry? {
-        guard let data = try? Data(contentsOf: fileURL(oracleID)) else { return nil }
+    // Read, decode, encode and write on the global executor — see
+    // HTTPClient.decode for why a nonisolated async function is not enough.
+    @concurrent
+    private static func readDisk(_ url: URL) async -> Entry? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(Entry.self, from: data)
     }
 
-    private func writeDisk(_ entry: Entry, oracleID: String) {
+    @concurrent
+    private static func writeDisk(_ entry: Entry, to url: URL) async {
         guard let data = try? JSONEncoder().encode(entry) else { return }
-        try? data.write(to: fileURL(oracleID), options: .atomic)
+        try? data.write(to: url, options: .atomic)
     }
 }

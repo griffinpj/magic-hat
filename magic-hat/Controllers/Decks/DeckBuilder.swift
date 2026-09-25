@@ -13,8 +13,18 @@
 import Foundation
 import SwiftData
 
-@ModelActor
-actor DeckBuilder {
+/// Own serial queue as executor — see CollectionStore for why.
+actor DeckBuilder: ModelActor {
+    nonisolated let modelExecutor: any ModelExecutor
+    nonisolated let modelContainer: ModelContainer
+    private nonisolated let queue = DispatchSerialQueue(label: "magic-hat.deck-builder", qos: .userInitiated)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+        self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+    }
+
     @MainActor private static var instances: [ObjectIdentifier: DeckBuilder] = [:]
 
     @MainActor

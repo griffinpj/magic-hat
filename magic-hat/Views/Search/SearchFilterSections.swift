@@ -16,6 +16,13 @@
 //  keyboard presentation on device. The FocusState remains so token fields
 //  know when to show suggestions.
 //
+//  Suggestions appear as rows under their field, so the field has to be
+//  near the top of what the keyboard leaves visible or the rows land
+//  under the keys. A Form scrolls a focused field only far enough to show
+//  it; with the host's `ScrollViewProxy`, focusing a token field scrolls
+//  it to the top instead (Contacts and Mail do the same for a field
+//  that grows), so its suggestions have the space above the keyboard.
+//
 
 import SwiftUI
 
@@ -40,6 +47,9 @@ struct SearchFilterSections: View {
     /// Sort lives in the results toolbar too; on the landing screen it is
     /// only reachable here.
     var showsSort = true
+    /// The host Form's proxy, so a focused token field can scroll to the
+    /// top and leave room for its suggestions.
+    var scrollProxy: ScrollViewProxy? = nil
 
     @State private var vocabulary = FilterVocabulary.shared
     @State private var showAllFormats = false
@@ -47,6 +57,7 @@ struct SearchFilterSections: View {
     var body: some View {
         optionsSection
             .task { await vocabulary.load() }
+            .onChange(of: focused) { _, field in scrollToSuggestions(for: field) }
         formatSection
         colorsSection
         typeLineSection
@@ -58,6 +69,20 @@ struct SearchFilterSections: View {
         statsSection
         finishSection
         artistSection
+    }
+
+    /// The fields that suggest as you type.
+    private static let suggestingFields: Set<FilterField> = [.types, .oracle, .sets, .artist]
+
+    private func scrollToSuggestions(for field: FilterField?) {
+        guard let field, Self.suggestingFields.contains(field), let scrollProxy else { return }
+        Task { @MainActor in
+            // After the keyboard has claimed its inset, so "top" is the top
+            // of what remains.
+            try? await Task.sleep(for: .milliseconds(120))
+            guard focused == field else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { scrollProxy.scrollTo(field, anchor: .top) }
+        }
     }
 
     // MARK: Options
@@ -365,6 +390,7 @@ private struct TermTokenRows: View {
             .padding(.vertical, 2)
         }
         TextField(placeholder, text: $text)
+            .id(field)
             .focused($focus, equals: field)
             .submitLabel(.done)
             .autocorrectionDisabled()
@@ -468,6 +494,7 @@ private struct SetTokenRows: View {
             .padding(.vertical, 2)
         }
         TextField("Add a set: name or code", text: $text)
+            .id(FilterField.sets)
             .focused($focus, equals: .sets)
             .submitLabel(.done)
             .autocorrectionDisabled()
@@ -510,6 +537,7 @@ private struct SuggestingTextField: View {
 
     var body: some View {
         TextField(placeholder, text: $text)
+            .id(field)
             .focused($focus, equals: field)
             .submitLabel(.done)
             .autocorrectionDisabled()

@@ -18,7 +18,7 @@ struct CollectionCard: View {
 
     private var valueText: String {
         guard let value = summary?.totalValue, value > 0 else { return "—" }
-        return value >= 1000 ? String(format: "$%.0f", value) : String(format: "$%.2f", value)
+        return PriceFormat.whole(value)
     }
 
     var body: some View {
@@ -32,14 +32,22 @@ struct CollectionCard: View {
                         Text("\(s.totalCopies) cards · \(s.uniqueCards) unique")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    } else if showsValue {
+                        // Not counted yet: a placeholder the count replaces,
+                        // not a blank that makes the card look empty.
+                        Text("0,000 cards · 000 unique")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .redacted(reason: .placeholder)
                     }
                 }
                 Spacer(minLength: 12)
                 if showsValue {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text(valueText)
+                        Text(summary == nil ? "$0,000" : valueText)
                             .font(.title3.weight(.bold))
                             .monospacedDigit()
+                            .redacted(reason: summary == nil ? .placeholder : [])
                         Text("MARKET")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.secondary)
@@ -54,6 +62,9 @@ struct CollectionCard: View {
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        // The whole card, not just its text: as a Button's label only the
+        // drawn content was tappable, and the glass is a background.
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
     /// Overlapped like a hand of cards, most valuable in front.

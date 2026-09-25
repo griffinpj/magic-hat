@@ -145,16 +145,15 @@ nonisolated final class DeckCard {
     var matchKey: String { oracleID ?? scryfallID }
 }
 
-/// Where the card viewer's Add action goes when the viewer was opened from a
-/// deck's search: that deck, that board.
-nonisolated struct DeckAddTarget: Hashable, Sendable {
-    let deckID: UUID
-    let deckName: String
-    let board: DeckBoard
-}
-
-/// What a deck's search offers: the user's own cards, or everything.
+/// What a deck's search offers: everything, or the cards recommended for
+/// this deck. "In collection" is a chip on either, not a scope: it
+/// narrows what is shown to what is owned.
 nonisolated enum DeckSearchScope: String, CaseIterable, Hashable, Sendable {
-    case collection, all
-    var label: String { self == .collection ? "Collection" : "All Cards" }
+    case all, recommended
+    var label: String {
+        switch self {
+        case .all: return "All Cards"
+        case .recommended: return "Recommended"
+        }
+    }
 }

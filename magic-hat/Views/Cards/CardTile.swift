@@ -23,6 +23,11 @@ import SwiftUI
 struct CardTile: View, Equatable {
     let item: CardItem
 
+    /// The tile image's longest edge in points; the grid warms images at
+    /// this size so a warmed image is the one the tile then finds in
+    /// memory.
+    static let imageTargetWidth: CGFloat = 150
+
     static func == (lhs: CardTile, rhs: CardTile) -> Bool {
         lhs.item.id == rhs.item.id
             && lhs.item.quantity == rhs.item.quantity
@@ -44,7 +49,7 @@ struct CardTile: View, Equatable {
     var body: some View {
         // Sheen on foils, static here so the grid never redraws for it.
         CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio,
-                      foil: item.finish != .normal)
+                      targetWidth: Self.imageTargetWidth, foil: item.finish != .normal)
             .overlay(alignment: .topLeading) { quantityBadge }
             .overlay(alignment: .bottomLeading) { setBadge }
             .overlay(alignment: .bottomTrailing) { priceBadge }

@@ -27,7 +27,11 @@ struct CollectionCardsView: View {
     private var hydrator: CardHydrationController { .shared }
     private var tracker: CollectionChangeTracker { .shared }
 
-    @State private var items: [CardItem] = []
+    /// Every card, in the current sort. A stamped list, not an array: a
+    /// `@State` array is copied into the view value and compared card by
+    /// card by the parent on each of *its* updates — 1.68s mid-sync with
+    /// the real collection (see CardItemList).
+    @State private var items = CardItemList()
     @State private var hasLoaded = false
     @State private var refreshTask: Task<Void, Never>?
     @State private var sortTask: Task<Void, Never>?
@@ -36,7 +40,9 @@ struct CollectionCardsView: View {
     /// What's being searched for within this collection. Text and filters
     /// narrow `items` to `visible`; the empty query shows everything.
     @State private var query = CardSearchQuery()
-    @State private var visible: [CardItem] = []
+    /// What the grid shows: stamped, so handing it to the grid costs one
+    /// compare, not one per card (see CardItemList).
+    @State private var visible = CardItemList()
     @State private var filterTask: Task<Void, Never>?
     @State private var showFilters = false
 
@@ -62,7 +68,7 @@ struct CollectionCardsView: View {
                 ContentUnavailableView {
                     Label("No Matches", systemImage: "magnifyingglass")
                 } description: {
-                    Text("Nothing in \(collectionName) matches this search.")
+                    Text("Nothing in \(CollectionScope.displayName(collectionName)) matches this search.")
                 } actions: {
                     if query.hasFilters {
                         Button("Adjust Filters") { showFilters = true }
@@ -84,7 +90,7 @@ struct CollectionCardsView: View {
             }
         }
         .background { SearchDismisser(isEmpty: query.text.isEmpty) }
-        .navigationTitle(collectionName)
+        .navigationTitle(CollectionScope.displayName(collectionName))
         .navigationBarTitleDisplayMode(.inline)
         // Always shown: a pushed screen with an inline title otherwise hides
         // the field until the user pulls down, and this screen *is* a search.
@@ -132,9 +138,9 @@ struct CollectionCardsView: View {
     /// for anything stale — both from ids the store already computed, so no
     /// extra store round-trips on the main thread.
     private func load(thenSync: Bool) async {
-        let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: sort)) ?? .empty
+        let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: sort, stamp: .current)) ?? .empty
         guard !Task.isCancelled else { return }
-        items = snapshot.items
+        items = CardItemList(snapshot.items)
         applyFilter()
         hasLoaded = true
         prefetch(around: 0)
@@ -144,24 +150,29 @@ struct CollectionCardsView: View {
         await hydrator.refreshPrices(stale: snapshot.stalePriceIDs, context: modelContext)
         guard !Task.isCancelled else { return }
         // Sync finished: now a full re-sort is welcome (prices/rarity landed).
-        if let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort) {
-            items = fresh.items
+        if let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort, stamp: .current) {
+            items = CardItemList(fresh.items)
             applyFilter()
         }
     }
 
-    /// Jump to the top first, then re-sort one frame later. With precomputed
-    /// keys the sort itself is a few milliseconds, so it runs on the main
-    /// actor with no async hop; the one-frame gap lets the grid reset to the
-    /// top before the reorder lands, so LazyVGrid lays out the first screen
-    /// rather than re-laying out a reordered grid deep into the old order.
+    /// Jump to the top first, then re-sort one frame later: the gap lets
+    /// the grid reset to the top before the reorder lands, so LazyVGrid
+    /// lays out the first screen rather than re-laying out a reordered
+    /// grid deep into the old order. The sort itself runs off the main
+    /// actor — a few milliseconds in a release build, tens in a debug one,
+    /// and either way not the main thread's to spend.
     private func applySort() {
         sortTask?.cancel()
         scrollToTop &+= 1
-        sortTask = Task { @MainActor in
+        let sort = self.sort
+        let all = items.items
+        sortTask = Task {
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
-            items = CardSorting.sorted(items, by: sort)
+            let sorted = await Task.detached(priority: .userInitiated) { CardItemList(CardSorting.sorted(all, by: sort)) }.value
+            guard !Task.isCancelled else { return }
+            items = sorted
             applyFilter()
         }
     }
@@ -179,17 +190,24 @@ struct CollectionCardsView: View {
     }
 
     /// Pulls fresh fields for the items we have, preserving current order.
+    /// The merge (a dictionary of every card, then a pass over the order)
+    /// runs off the main actor; only the assignment lands there.
     private func refreshInPlace() async {
-        guard let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort),
+        guard let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort, stamp: .current),
               !Task.isCancelled else { return }
-        let byID = Dictionary(fresh.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        var seen = Set<String>()
-        var next: [CardItem] = []
-        next.reserveCapacity(fresh.items.count)
-        for item in items {
-            if let updated = byID[item.id] { next.append(updated); seen.insert(item.id) }
-        }
-        for item in fresh.items where !seen.contains(item.id) { next.append(item) }
+        let current = items.items
+        let next = await Task.detached(priority: .userInitiated) { () -> CardItemList in
+            let byID = Dictionary(fresh.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            var seen = Set<String>()
+            var next: [CardItem] = []
+            next.reserveCapacity(fresh.items.count)
+            for item in current {
+                if let updated = byID[item.id] { next.append(updated); seen.insert(item.id) }
+            }
+            for item in fresh.items where !seen.contains(item.id) { next.append(item) }
+            return CardItemList(next)
+        }.value
+        guard !Task.isCancelled else { return }
         items = next
         applyFilter()
     }
@@ -198,7 +216,7 @@ struct CollectionCardsView: View {
     private func prefetch(around index: Int) {
         guard !visible.isEmpty, index < visible.count else { return }
         let upper = min(index + lookahead, visible.count)
-        let window = visible[index..<upper].map(\.scryfallID)
+        let window = visible.items[index..<upper].map(\.scryfallID)
         hydrator.hydrate(scryfallIDs: window, context: modelContext)
     }
 
@@ -217,7 +235,7 @@ struct CollectionCardsView: View {
         filterTask = Task.detached(priority: .userInitiated) {
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled else { return }
-            let result = all.filter { q.matches($0) }
+            let result = CardItemList(all.items.filter { q.matches($0) })
             guard !Task.isCancelled else { return }
             await MainActor.run { visible = result }
         }

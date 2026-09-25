@@ -1,0 +1,13 @@
+{
+ "result_code": "success",
+ "data": {
+  "recommendations": [
+   {
+    "oracle_id": "d06d7065-27e5-4119-a226-6f6d990d72c7",
+    "name": "Goliath, Mass Manipulator",
+    "score": 0.8583970665931702
+   }
+  ]
+ },
+ "error": null
+}

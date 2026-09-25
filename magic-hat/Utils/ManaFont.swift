@@ -17,7 +17,7 @@ import Foundation
 import CoreText
 import UIKit
 
-enum ManaFont {
+nonisolated enum ManaFont {
     /// PostScript name of the registered font, or nil if registration failed.
     nonisolated(unsafe) private(set) static var fontName: String? = nil
 

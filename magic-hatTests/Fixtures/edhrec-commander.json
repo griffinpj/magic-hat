@@ -1,0 +1,134 @@
+{
+ "container": {
+  "json_dict": {
+   "card": {
+    "id": "d0d33d52-3d28-4635-b985-51e126289259",
+    "name": "Atraxa, Praetors' Voice",
+    "num_decks": 44928,
+    "potential_decks": null,
+    "salt": 1.722789115646258,
+    "rank": 4,
+    "sanitized": "atraxa-praetors-voice"
+   },
+   "cardlists": [
+    {
+     "header": "New Cards",
+     "tag": "newcards",
+     "cardviews": [
+      {
+       "id": "2185c08f-bb4d-49d5-8b6c-c629a48bb61c",
+       "name": "Sanctum Lurker",
+       "sanitized": "sanctum-lurker",
+       "slug": "sanctum-lurker",
+       "url": "/cards/sanctum-lurker",
+       "synergy": 0.023070469668851137,
+       "num_decks": 77,
+       "potential_decks": 1371,
+       "trend_zscore": 15.693664393555368
+      },
+      {
+       "id": "490dae91-94ce-42a9-a11f-6c5e77c4e486",
+       "name": "Loyal Tutor",
+       "sanitized": "loyal-tutor",
+       "slug": "loyal-tutor",
+       "url": "/cards/loyal-tutor",
+       "synergy": 0.017031241145823495,
+       "num_decks": 94,
+       "potential_decks": 2267,
+       "trend_zscore": 10.447192291995869
+      },
+      {
+       "id": "20bb8c55-4b0b-425f-8201-b54fa2fdde86",
+       "name": "The Theorist, Jace Beleren",
+       "sanitized": "the-theorist-jace-beleren",
+       "slug": "the-theorist-jace-beleren",
+       "url": "/cards/the-theorist-jace-beleren",
+       "synergy": 0.011380720626894106,
+       "num_decks": 224,
+       "potential_decks": 7268,
+       "trend_zscore": 2.490360110447958
+      }
+     ]
+    },
+    {
+     "header": "High Synergy Cards",
+     "tag": "highsynergycards",
+     "cardviews": [
+      {
+       "id": "2d389264-e2d2-4589-9636-faa11fe46710",
+       "name": "Tekuthal, Inquiry Dominus",
+       "sanitized": "tekuthal-inquiry-dominus",
+       "slug": "tekuthal-inquiry-dominus",
+       "url": "/cards/tekuthal-inquiry-dominus",
+       "synergy": 0.2729901718087694,
+       "num_decks": 29969,
+       "potential_decks": 44928,
+       "trend_zscore": 0.23032662217878727
+      },
+      {
+       "id": "1d58d08d-cd62-416d-8d8e-7d9c56d5c4da",
+       "name": "Evolution Sage",
+       "sanitized": "evolution-sage",
+       "slug": "evolution-sage",
+       "url": "/cards/evolution-sage",
+       "synergy": 0.24052715096297667,
+       "num_decks": 26608,
+       "potential_decks": 44928,
+       "trend_zscore": 0.23823363982777374
+      },
+      {
+       "id": "22017ec2-3552-4865-af76-dba042b141f5",
+       "name": "Karn's Bastion",
+       "sanitized": "karns-bastion",
+       "slug": "karns-bastion",
+       "url": "/cards/karns-bastion",
+       "synergy": 0.23703153176051517,
+       "num_decks": 26831,
+       "potential_decks": 44928,
+       "trend_zscore": 0.1919458694017367
+      }
+     ]
+    },
+    {
+     "header": "Top Cards",
+     "tag": "topcards",
+     "cardviews": [
+      {
+       "id": "f7e12477-d59f-442b-a678-1be746d0b7be",
+       "name": "Swords to Plowshares",
+       "sanitized": "swords-to-plowshares",
+       "slug": "swords-to-plowshares",
+       "url": "/cards/swords-to-plowshares",
+       "synergy": -0.02242101734804658,
+       "num_decks": 25004,
+       "potential_decks": 44928,
+       "trend_zscore": 0.728553688147693
+      },
+      {
+       "id": "c1aac0f5-1d01-4673-b8d3-878d9a1d423c",
+       "name": "Farseek",
+       "sanitized": "farseek",
+       "slug": "farseek",
+       "url": "/cards/farseek",
+       "synergy": 0.06457176744686743,
+       "num_decks": 21006,
+       "potential_decks": 44928,
+       "trend_zscore": 0.807161108976408
+      },
+      {
+       "id": "ac625f30-ed91-4b21-ada8-aaa5b2ad79b8",
+       "name": "Prologue to Phyresis",
+       "sanitized": "prologue-to-phyresis",
+       "slug": "prologue-to-phyresis",
+       "url": "/cards/prologue-to-phyresis",
+       "synergy": 0.15867978841227043,
+       "num_decks": 18163,
+       "potential_decks": 44928,
+       "trend_zscore": 0.25801475144031344
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

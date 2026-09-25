@@ -25,10 +25,13 @@ struct SearchFiltersView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                SearchFilterSections(query: $draft, focused: $focused, context: context, showsSort: false)
+            ScrollViewReader { proxy in
+                Form {
+                    SearchFilterSections(query: $draft, focused: $focused, context: context, showsSort: false,
+                                         scrollProxy: proxy)
+                }
+                .scrollDismissesKeyboard(.interactively)
             }
-            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

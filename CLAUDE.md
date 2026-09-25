@@ -84,8 +84,23 @@ are cross-cutting, not owned by one feature.
 - `Clients/` — API clients. Only describe endpoints + request/response
   shapes.
   - `ScryfallClient` — `/cards/:id`, batched `/cards/collection`,
-    `/cards/search` (printings by oracle id), `/sets/:code`. Primary source
-    for card data, images and a single market price per finish.
+    `/cards/search` (printings by oracle id; `oracleIndex` pages a search
+    into oracle id → name for `is:gamechanger` and the `otag:` lists),
+    `/sets/:code`. Primary source for card data, images and a single
+    market price per finish.
+  - `CommanderSpellbookClient` — `POST /find-my-combos` (a whole list →
+    the combos in it and the ones one card short) and `GET /variants/?q=
+    card:"Name"` (every combo a card is in). No key.
+  - `RecommanderClient` — `POST /decks/recommend/top` (commander + list →
+    the meta's picks with a 0–1 co-occurrence score, keyed by oracle id).
+    Needs ten or more cards. No key.
+  - `EDHRECClient` — `json.edhrec.com/pages/{cards|commanders}/<slug>.json`,
+    the JSON behind EDHREC's pages rather than a published API: card lists
+    with `lift` (card pages) or `synergy` (commander pages), inclusion
+    counts and salt; every field optional, an unknown slug is a 403, and a
+    page that fails to decode is "no EDHREC data", never an error shown.
+    `slug(for:)` is EDHREC's name form. All three pace through
+    `RateLimiter` (2/sec) and cache through `DiskJSONCache`.
   - `MTGJSONClient` — second provider, bulk-only (no per-card endpoint):
     `<SET>.json` per set and `AllPricesToday.json`. Its value is the full
     retail picture (low/mid/market/buylist across TCGplayer, Cardmarket,
@@ -95,6 +110,14 @@ are cross-cutting, not owned by one feature.
     only ever fetch it from an explicit user action with progress.
 - `Utils/` — cross-cutting infrastructure, no API-specific logic.
   - `HTTPClient` — transport, required headers (User-Agent/Accept), decoding.
+  It never touches `URLSession.shared` at init: the first touch
+  initialises CFNetwork, and dyld's lazy binding of it ran 8.8s on the
+  main thread at launch when `SearchView.init` reached
+  `ScryfallClient.shared`. `requestData` is `@concurrent`, so the first
+  touch happens inside the first request, on the global executor —
+  building and starting a request never runs on the main actor (the
+  first search keystrokes used to pay CFNetwork's first-use setup). Not
+  prewarmed at launch either: see the dyld note under set symbols.
   - `RateLimiter` — actor enforcing Scryfall per-endpoint limits.
   - `CSVParser` — RFC-4180-ish parser + ManaBox mapping.
   - `PrintingsCache` — "all printings of this card" by oracle id. Written to
@@ -106,6 +129,10 @@ are cross-cutting, not owned by one feature.
     decoded+downsampled UIImages in memory keyed by URL+size. Decode and
     downsample run on the actor (off-main) via ImageIO so scrolling never
     triggers a main-thread decode of a full-resolution image.
+  `cached(oracleID:)` is memory only; disk is read, decoded and written
+  `@concurrent` inside `printings` — it used to decode every printing of
+  the card on the main actor each time the pager rested on a card, which
+  for a basic land is hundreds of cards (the stalls while swiping).
 - `Controllers/Collection/`
   - `ImportController` — applies a parsed import (add/replace), writes audit.
   - `CardHydrationController` — fetches card metadata (whole collection, then
@@ -134,6 +161,41 @@ screen. Instead:
 - Every write path (import, delete, later deck moves) calls
   `CollectionChangeTracker.shared.bump()` once when done. Views key a
   `.task(id: tracker.revision)` on it to refetch.
+- The store caches snapshots per "collection|sort" under a `StoreStamp`
+  (change revision + hydration revision, read on the main actor and passed
+  in). The Collections tab asks `overview(stamp:)` for the totals first —
+  cheap, and they are what the tab draws — then `prewarmSnapshots(sort:
+  stamp:)` builds every collection's snapshot, and All Collection's, so
+  the first tap into a collection is a lookup instead of a second full
+  fetch queued behind the first. Until the totals land the tab shows a
+  loading card and redacted counts, not empty cards. A caller whose stamp
+  moved on gets a fresh fetch; a call without a stamp (tests) is always
+  fresh. Measured on the real export with the 100ms watchdog
+  (`RealCollectionTests`): launch and the first push into the collection
+  record no app-side stall; the two records are XCUITest's own
+  (accessibility bundle load, its os_log).
+- `LaunchPrewarm` runs from `RootView`: the Mana and Keyrune fonts are
+  parsed off-main (the first pip drawn used to parse the file on the main
+  thread, 0.79s); an invisible field with an empty inputView loads the
+  text-input stack two seconds after the first frame so the first search
+  tap only has to show the keys — two seconds, not 0.6, because it is the
+  one deliberate main-thread cost at launch and it used to land under the
+  Collections tab's first fill (the foil warm-up follows it at 2.6s so the
+  two never stack); every SF Symbol the app draws (`symbolNames`,
+  checked against the source by `LaunchPrewarmTests`) is resolved on a
+  background queue, because the first lookup of a name in CoreUI's
+  catalog is disk-bound — 0.44s on the first tap of the Search tab, two
+  0.3s stalls opening a deck; and the foil sheen's Metal pipeline is
+  compiled (`Shader.compile`) and then drawn once by a 1pt
+  `FoilWarmupView` ~2.6s after launch, since RenderBox builds a specialised
+  pipeline on the main thread at the first real draw (0.47s under the
+  first push into the collection) — `FoilSheen` draws nothing until
+  `FoilWarmup.isReady`, and removed after a frame so nothing keeps
+  running. The SF Symbol prewarm runs four seconds after launch. A
+  hidden `CardViewerView` to warm its view types was tried and removed:
+  it built a real navigation bar, toolbar and haptics engine behind the
+  tabs — 9.8s on a device, with Auto Layout complaining about a 106pt
+  bar in a 90pt container.
 - Hydration bumps `CardHydrationController.revision` per 75-card batch;
   views refetch on a **debounce** (longer while a sync is running) and merge
   in place without reordering, so the grid doesn't reshuffle mid-sync.
@@ -148,6 +210,65 @@ For this to compile, the `@Model` classes, `CardItem` (and its extensions),
 and the enums they use are all `nonisolated` — opted out of the project's
 default MainActor isolation. Without that no data work can leave the main
 thread. New model/value types must follow suit.
+
+**A `@ModelActor` is not off-main by itself.** Its
+`DefaultSerialModelExecutor` runs each job on whatever thread awaited it:
+called from a view, `CollectionStore.snapshot` fetched, mapped and sorted
+on the main thread (measured with `HangDetector`: 0.47s stalls in the
+sort and in CoreData SQL generation while pushing into a 4k-card
+collection during a catalog ingest), and only `CardMetaWriter` was ever
+off-main because the ingest calls it from a detached task. So the four
+actors (`CollectionStore`, `CardMetaWriter`, `DeckStore`, `DeckBuilder`)
+conform to `ModelActor` by hand and use a `DispatchSerialQueue` as
+`unownedExecutor` — readers at `.userInitiated`, the writer at
+`.utility`. `testEnteringCollectionIsFastDuringCatalogIngest` keeps the
+push measured under a real on-disk store (`UITEST_DISK_STORE`), a 4k
+seed (`UITEST_SEED_COUNT`) and a looping ingest of the bulk slice
+(`UITEST_INGEST_FILE`). Any new ModelActor must do the same.
+
+## Big card lists are never a view input as an array
+
+SwiftUI decides whether a view needs updating by comparing its inputs,
+element by element for arrays — and it materialises a `ForEach`'s data
+and compares that too. With the real collection (3,900 `CardItem`s, ~40
+fields each) that comparison ran 0.86–1.14s on the main thread, once per
+hydration batch, per sort and per push into the collection (HangDetector:
+`AGDispatchEquatable → Array.== → CardItem.==`). So:
+
+- `CardItemList` is the view-facing shape of a card list: Equatable by a
+  stamp taken at construction (one integer compare), with `ids` (a plain
+  `[String]`, cheap to compare) and `item(for:)` / `index(of:)` lookups.
+  `CardGridView`, `CardViewerView`, `CardViewerSession` and
+  `SearchController.resultList` take it; the grid, the pager and the
+  deck add sheet's Lists iterate `ForEach(list.ids, id: \.self)` and
+  fetch each card by id. Hold a list in state and assign a new one when
+  the cards change; never build one inside a body, and never hand a
+  `ForEach` or `List` thousands of card values.
+- A `@State` array of cards is just as bad: the current value is copied
+  into the view value and the *parent* compares it card by card on each
+  of its own updates (1.68s during a mid-sync sort). `CollectionCardsView`
+  and `DeckAddCardsView` hold `CardItemList`s, never `[CardItem]`.
+- Sorting and the hydration merge in `CollectionCardsView` run on a
+  detached task; only the assignment lands on the main actor.
+- The deck add sheet lists at most `browseLimit` (400) owned cards when
+  nothing is typed, with a footer saying the rest are a search away: a
+  List of 3,800 rows costs SwiftUI a third of a second to rebuild its
+  identity list on every update.
+- Per-row menus use `ForEach(…, id: \.rawValue)`: the Identifiable
+  default `\.id` is a generic key path re-instantiated per row, resolving
+  generic arguments by mangled name — 0.25s over the first rows of a
+  debug build. Deck rows draw one detail line rather than a `ViewThatFits`
+  over two, which built both trees per row.
+- What is left, measured on the real collection with a 100ms bar
+  (debug build, XCUITest attached): the system Paste button's
+  synchronous XPC on the import sheet (0.3s), UIKit instantiating the
+  search Form's switches on the first tap of the tab (0.2s), UIKit trait
+  propagation when the viewer is presented (0.14s), and a 0.12s
+  residual of the foil pipeline's specialisation on the first grid draw.
+  None has an app frame in its stack.
+- `CardHydrationController.hydrate(scryfallIDs:)` tests membership over
+  the window rather than `subtract`ing the whole hydrated set (0.12s per
+  tile appearing with 3,900 ids hydrated).
 
 ## Keep work off the main thread
 
@@ -168,14 +289,18 @@ bulk data writes — belongs off the main thread.
   explicitly: `HTTPClient` decodes JSON in a `@concurrent` function. Before
   that, every search page, catalog and hydration batch was parsed on the
   main thread — under the keyboard during live search.
-- Bulk SwiftData writes go through `CardMetaWriter`, a `@ModelActor` with
+- Bulk SwiftData writes go through `CardMetaWriter`, a `ModelActor` with
   its own background context: hydration batches, the catalog ingest,
-  rulings, and the hydration "what's still needed" lookup. A 75-card save
-  on the main context was enough to stall the keyboard, and the catalog
-  ingest ran for minutes. Small user-initiated writes (add/edit/remove,
-  import rows with progress) stay on the main context. The main actor
-  learns of background writes through `CardHydrationController.revision`
-  and `CollectionChangeTracker`, never by observing the models.
+  rulings, the hydration "what's still needed" lookup, and the ManaBox
+  import (`ImportController.apply` hands the rows to
+  `CardMetaWriter.runImport`; progress hops to the main actor ~100 times).
+  A 75-card save on the main context was enough to stall the keyboard, the
+  catalog ingest ran for minutes, and a 3,900-row import on the main
+  context left every row registered there, taxing every background save
+  that followed. Only small user-initiated writes (add/edit/remove, deck
+  list edits) stay on the main context. The main actor learns of
+  background writes through `CardHydrationController.revision` and
+  `CollectionChangeTracker`, never by observing the models.
 - Long-running user actions should show progress and keep the UI interactive
   (or explicitly disable only the controls that must not change mid-operation).
 
@@ -207,6 +332,13 @@ detail screen and actions as an owned card:
   and can't use the toolbar API.
 - `CardDetailView` — hero art header, gameplay text, Versions/Ruling tabs,
   and all printings (grouped by set) with owned indicators.
+- Present the viewer with `.fullScreenCover(item:)` over a
+  `CardViewerSession` — the items, the current id and any deck target
+  travel *in the item*. Reading them from the presenter's other `@State`
+  gave a blank viewer from a deck's search results: inside an active
+  search session the presentation closure was evaluated against a copy
+  of the presenter whose state was still at its initial values. The item
+  is the one thing SwiftUI hands the closure fresh.
 - Owned vs not: `CardItem.isEntry` (an owned row with a quantity) vs
   `CardItem.owned` (a search hit/printing we hold somewhere). The tile shows
   a quantity badge for entries, a green check for owned hits, nothing for the
@@ -256,10 +388,30 @@ screen's Rulings tab work offline):
 
 1. `GET /bulk-data`; each dataset's `updated_at` is compared with the stored
    value, so nothing downloads unless it actually changed.
-2. A real `URLSessionDownloadTask` (bytes land in a file, not memory) with
-   delegate progress. `allowsExpensiveNetworkAccess` and
-   `allowsConstrainedNetworkAccess` are false and `waitsForConnectivity` is
-   true, so a ~79MB catalog waits for Wi-Fi rather than spending cellular.
+2. A **background `URLSession`** (`com.griffin.magic-hat.bulk`): the
+   transfer belongs to the system, survives the app being suspended or
+   dropped, and a finished file comes back through
+   `AppDelegate.application(_:handleEventsForBackgroundURLSession:)` if
+   the app was relaunched for it. The delegate moves the file to
+   `Caches/bulk-pending/<dataset>.jsonl.gz` synchronously (the system's
+   temp location dies with the callback) and resumes whoever is awaiting
+   it; with nobody waiting the file is ingested on the next foreground
+   (`resumeIfNeeded`) or launch. Progress is reported at most once per
+   half a percent — the delegate fires per chunk, thousands of times, and
+   each report is a main-actor hop that re-renders the setup screen or the
+   bar. Expensive/constrained access is refused per request, so a ~79MB
+   catalog waits for Wi-Fi rather than spending cellular. A relaunch
+   mid-download reattaches to the running task instead of starting over.
+   **When:** the first launch downloads and ingests in the foreground,
+   attended. Once a catalog exists, a newer build is never fetched at
+   launch: `syncIfNeeded` schedules a `BGProcessingTask`
+   (`com.griffin.magic-hat.catalog-refresh`, network + external power) and
+   the system runs `runRefresh` when the phone is charging on Wi-Fi. That
+   is the case BGTaskScheduler exists for; hydration stays attended and
+   out of it. The identifiers live in `magic-hat/Info.plist`
+   (`INFOPLIST_FILE`, merged with the generated keys; the synchronized
+   folder has a membership exception so it isn't also copied as a
+   resource).
 3. `GzipLineReader` pulls the file a line at a time. It is hand-rolled because
    Foundation only gunzips when the server sends `Content-Encoding: gzip`
    (these are files whose content is gzip), and Compression speaks raw DEFLATE,
@@ -268,6 +420,11 @@ screen's Rulings tab work offline):
    actor to be written. SwiftData models are main-actor-bound here, so this
    keeps JSON off the main thread while writes stay where they must be — and
    awaiting each batch throttles the reader, so memory stays flat.
+
+`RootView` also calls `resumeIfNeeded` when the scene becomes active: a
+pending file is ingested, and the manifest is re-checked if the last look
+was over an hour ago. Stray `.jsonl.gz` files in tmp (earlier builds
+downloaded there) are swept at launch.
 
 `CatalogSyncBar` narrates it above whichever tab is showing. Two things that
 matter for scrolling: the bar observes the controller itself (reading `phase`
@@ -313,7 +470,21 @@ overlay shows the gain/loss vs the price paid at import (`CollectionEntry
 Set symbols: Scryfall serves set icons as SVG only, and SwiftUI cannot decode
 a remote SVG. `SetSymbolLoader` rasterizes it once via a WKWebView snapshot,
 caches it, and `SetSymbolView` renders it as a `.template` tinted `.primary`
-so it adapts to light/dark. Two non-obvious constraints: WebKit only paints a
+so it adapts to light/dark. Given a `rarity:` the symbol takes that
+rarity's colour as printed on the card (`RarityPalette`, Keyrune's
+palette: uncommon silver, rare gold, mythic bronze-orange, special
+purple); common keeps the tint. Pass it wherever a card is known.
+The web view is created at launch, never on demand: the first WKWebView
+makes WebKit soft-link ScreenTime, and dyld runs that load on the calling
+thread with synchronous XPC inside — 4.0s on the main thread when the
+viewer showed a set the font lacks (four of 204 in a real collection).
+The first symbol that needs it loads ScreenTime on a background thread
+(`LaunchPrewarm.loadScreenTime`), then the web view is created on the
+main actor; jobs queue until then, and the placeholder is the set code
+as a badge, which is also what a set the rasterizer can't draw keeps.
+Never at launch: a background `dlopen` holds dyld's loader lock, and the
+main thread's own framework loads (keyboard, haptics, CFNetwork) queued
+behind it — 4.5s in the keyboard prewarm on a device. Two non-obvious constraints: WebKit only paints a
 web view that is **in a window**, and `takeSnapshot` captures the view at its
 own alpha — so the render host is a real `UIWindow` layered *behind* the app
 (`windowLevel = .normal - 1`) at **full alpha**. Rendering it faded produced a
@@ -329,8 +500,14 @@ Two different surfaces for the same sync, because they're different moments:
   background" hands off to the bar. This is the pattern of apps that need a
   one-time asset pull (games, dictionary/reference apps): a single explained
   screen with real progress, never a spinner with no words.
-- **Later refreshes** — `CatalogSyncBar`, a thin glass strip above whichever
-  tab is showing. Non-modal; the app stays usable on the data it has.
+- **Later refreshes** — `CatalogSyncBar`, a glass pill just above the
+  tab bar in every tab's bottom `safeAreaBar` (`.catalogSyncBar()` on
+  each tab root), never over the top of the screen where it covered
+  titles and buttons. Not `tabViewBottomAccessory`: that slot is for a
+  control that stays (Music's mini-player) and kept showing the last
+  status line after the sync went idle — `SyncBarTour` drives a fake sync
+  (`-uitest-fake-sync`) and checks the bar comes and goes. Non-modal; the
+  app stays usable on the data it has.
 
 Network: the catalog refuses metered paths unless the user opts in. That is
 made *visible* — `.waitingForWiFi` phase, "Use cellular data (80 MB)" button
@@ -349,7 +526,9 @@ through the cheap batched call.
 
 Debug builds start `HangDetector` at launch: a watchdog that samples the
 main thread's stack when it stops answering for 0.4s and logs it (subsystem
-`magic-hat`, category `hang`, also printed). It samples with Mach thread
+`magic-hat`, category `hang`, also printed). `UITEST_HANG_THRESHOLD`
+lowers the bar and `UITEST_HANG_LOG=<path>` appends each report as a JSON
+line, which is how `RealCollectionTests` fails a flow on any stall. It samples with Mach thread
 APIs (suspend, read registers, walk frame pointers, resume), **not a
 signal**: lldb stops the process on a signal, and a launch-time stall trips
 the threshold on every run, so a signal-based sampler froze the app at
@@ -431,6 +610,13 @@ Vocabularies come from `FilterVocabulary`, loaded once through
 `ScryfallCatalogCache` (`/catalog/*` and `/sets`, on disk for a week) and
 matched in memory, prefix first.
 
+**Suggestions and the keyboard:** a token field's suggestions are rows
+under it, so focusing one of the four (types, rules text, sets, artist)
+scrolls that field to the top of the Form (the host passes its
+`ScrollViewProxy` into `SearchFilterSections`), leaving the space above
+the keyboard for the rows; a Form on its own scrolls a focused field only
+far enough to show it, and the rows landed under the keys.
+
 **Keyboard:** every field has a Return key labelled Done — the number
 fields use `.numbersAndPunctuation` rather than a pad, which has none —
 the Forms use `.scrollDismissesKeyboard(.interactively)`, and the results
@@ -440,6 +626,20 @@ first keyboard presentation on device. `testReturnDismissesNumberField`
 covers the number field. The landing and collection search fields use
 `.navigationBarDrawer(displayMode: .always)`; with `.automatic` a drawer
 above a long scroll view starts hidden until the user pulls down.
+
+**All Collection.** The Collections tab leads with an overview card
+(cards, market value, and the share built into decks) and a synthetic
+"All Collection" — `CollectionScope.allKey`, a scope the store understands
+rather than an `MTGCollection` row — that lists every owned row across
+every collection and every built deck, each labelled with where it lives.
+Its row is the name alone: count, value and the card fan would repeat
+the overview card above it. The rows are glass cards pushed through a
+`NavigationStack(path:)` from plain Buttons, not `NavigationLink`s — a
+link in a List draws a disclosure chevron beside the card — and the card
+carries a `contentShape`, since as a Button's label only its drawn text
+was tappable.
+`entryCollectionNames()` skips `deck:` names so backfilling never lists a
+deck's hidden collection as a collection.
 
 **Searching a collection.** `CollectionCardsView` treats the collection as
 a search that is always active: a search field and a Filters button (the
@@ -468,7 +668,10 @@ tokens; `ManaSymbolView` draws a pip in Mana's cost palette; hybrids
 pip because the font has no single glyph for them — exactly what Mana's own
 CSS does. `ManaCostView` lays out a cost; `OracleTextView` renders rules
 text with pips inline (each symbol rendered once to a bitmap and
-interpolated into `Text`). `ManaGlyphView` draws any named glyph — the map
+interpolated into `Text`). That bitmap is drawn with Core Graphics and
+Core Text (`ManaSymbolBitmap`), not `ImageRenderer`: an ImageRenderer
+image is backed by a lazily rendering RenderBox provider, and the text
+layer that drew the pip waited 0.51s on it opening a detail screen. `ManaGlyphView` draws any named glyph — the map
 also carries card-type and keyword-ability icons.
 
 ## Decks
@@ -481,30 +684,66 @@ Writes: `DeckEditController` (main context; list edits write no audit,
 a list is a wish), `DeckBuilder` (background; moves copies, audits them).
 `DeckChangeTracker` is bumped by list edits, both trackers by builds.
 
-The deck screen: a segmented Cards / Stats / Details under the title, and
-one "…" menu for whole-deck actions. **Cards** has one search field with
-two meanings: unlocked, it *adds* — results from the collection (in
-memory, one row per card with copies owned) or All Cards (Scryfall), a
-board picker for where "+" goes, the usual filter sheet, and for commander
-decks the commander's colour identity applied as `id<=` (a toggle shows
-it). The scope / board / filters header appears as soon as the field is
-*active* (read from `isSearching` by a relay view inside the searchable
-content), not only once text is typed, so filters can be set first; while
-the search is active the Cards / Stats / Details picker steps aside for
-the room. Row bodies are plain Buttons beside the +/stepper controls
-rather than a tap gesture over the row — sibling buttons keep their own
-hit areas in a List. Format legality is tagged on each result ("Not legal"), not enforced:
-enforcing it hid every card whose legality wasn't cached yet. Tapping a
-result opens the viewer with `deckTarget` set, so its Add goes to the same
-board. Locked, the field *filters* the deck and nothing
-edits. With no search, the list: commander, mainboard by type with count
-and value, sideboard, maybeboard; each row says built / in collection /
-missing. **Stats**: size against the format's target, value, built /
-available / missing, a legality check (copies, format, identity), mana
-curve by colour, pips, what the mana base produces, types, rarities —
-Swift Charts over `DeckStats`, computed off-main. **Details**: name,
-format, commander (a Scryfall search restricted to `is:commander` and the
-format), lock, notes, build / disassemble / export / delete.
+The deck screen: a segmented Cards / Stats / Details in a top
+`safeAreaBar` under the title, the three as pages of a paged `TabView`
+so a horizontal swipe moves between them too, a "+" that opens the
+add-cards sheet, and one "…" menu for whole-deck actions. The picker is
+a bar, not a view above the pages: it joins the bar region with the
+navigation bar and search field, the lists scroll beneath it with the
+same scroll-edge effect, and pinned headers pin under it. The page
+container paints the grouped grey behind the bars on Stats and Details
+and white on Cards — the pages stop at the bar, so without it the bar
+strip was white over a grey Form. **Cards** is
+the list: commander, mainboard by type with count and value, sideboard,
+maybeboard; each row says built / in collection / missing, with a
+quantity stepper (a locked deck shows ×n and edits nothing). It is a
+*plain* list so the type headers pin while scrolling — mid-scroll the
+header says which group this is (Contacts, Music's Songs); inset-grouped
+never pins. Rows have no swipe actions: the stepper removes, and a
+trailing swipe fought the page swipe. When the deck breaks a rule of its
+format (`DeckStats.violations`: over the size, outside the commander's
+identity, over a copy limit, not legal — not "still short", which every
+deck under construction is) the list leads with a banner row that opens
+Stats' Check section; the add sheet shows the same line in its header
+and answers a breaking add with the warning haptic instead of the
+success one. No alert: the state is allowed and common mid-build. Copy
+limits read the card's own exception text ("A deck can have up to nine
+cards named Nazgûl", "any number of"), and basic lands including snow
+are unlimited. Each row's name is led by its set symbol in the rarity's
+colour. Its search field only *filters* the list. Adding is
+`DeckAddCardsView`, a sheet (the "Add to Playlist" shape): field focused
+on arrival, Filters in its bar, Done to leave; a header under the field
+holds the scope (collection — in memory, one row per card with copies
+owned, everything owned listed until something is typed — or All Cards,
+Scryfall), the board "+" adds to, and for commander decks the commander's
+colour identity as `id<=` (a toggle shows it); a row's context menu adds
+to another board. It was a mode of the deck screen's own field before:
+Filters had no natural place, the section picker had to step aside, and
+Back popped the deck instead of ending the search. Row bodies
+(`DeckRows`) are two lines on a landscape art crop (`CardArtThumb`, the
+Scryfall art_crop — a whole card at 42pt was tall and unreadable), a
+plain Button beside the +/stepper controls rather than a tap gesture
+over the row (sibling buttons keep their own hit areas in a List), and
+`ViewThatFits` drops the price, then truncates the type, so a long
+status never pushes the row past its edges. Format legality is tagged on
+each result ("Not legal"), not enforced: enforcing it hid every card
+whose legality wasn't cached yet. Tapping a result opens the viewer with
+a `DeckAddSession` — the sheet's board and per-card counts, one
+observable shared with the viewer — so the viewer's bar is the same
+−/n/+ as the row (Add until the first copy is in) and Remove is not
+offered. Both list screens present the viewer with the zoom transition
+from the row's art (`CardRowLead` takes the namespace), which is what
+gives it the collection grid's drag-to-dismiss, and scroll the list to
+the viewer's row so the zoom-out lands on it.
+
+**Presenting from the deck screen, never from a page.** The viewer's
+`fullScreenCover` and the add sheet are attached to `DeckDetailView`,
+not to the Cards page: a cover on a page of the paged `TabView` stopped
+presenting once a sheet had been shown while another page was selected
+(the Stats row opening the add sheet), and only re-selecting the page
+brought it back — reproduced six times in a row, gone with the move. The
+page marks its rows as the zoom transition's source with the screen's
+namespace and hands the session up (`onOpenViewer`).
 
 **Build wizard** (`DeckBuildSheet`): choose source collections, review the
 plan (what moves from where, what's missing) before anything changes,
@@ -516,9 +755,119 @@ rest, cached through `CardMetaWriter` → `DeckEditController.importLines`).
 The parser reads the shapes deck sites export — `// COMMANDER` headers, a
 blank line ending the commander section, `1 Name (SET) 123 *F*`, `4x
 Name`, Arena's About/Name block; the fixture
-`KingUnderTheMountain.txt` is the contract. Import comes from a file or
-the clipboard (deck sites copy lists there). Export is a ShareLink of the
-same text.
+`KingUnderTheMountain.txt` is the contract; any other `//` or `#` line
+is a comment (an export's type groups, a note), never a card. Import
+comes from a file or the clipboard (deck sites copy lists there).
+**Export** (`DeckExportView`, from the "…" menu and Details) is an
+options sheet with a live preview: Default (`// HEADER`, what every site
+reads and this app re-imports) or Arena (Commander / Deck / Sideboard,
+no groups, no maybeboard), grouped by board or card type, sorted by
+name / price / mana value, with or without printings, only missing
+copies (a shopping list), which boards; then Share Text, Share File
+(`DeckExportFile`, a `.txt` written on demand) or Copy in the bottom bar.
+Language and tokens are not offered: the list holds English names and no
+token rows. `DeckExportOptions` + `DeckListParser.export(_:options:)`.
+
+## Deck analysis, recommendations, synergies
+
+Ported from magicians-united's `deckcheck.php` (rules of thumb over
+oracle text, no model) and kept pure so it runs off-main and under test:
+
+- `Models/DeckAnalysis.swift` — `CardReading` reads one card once (roles:
+  lands / ramp / draw / removal / wipes / tutors by regex, overridden by
+  Scryfall's `otag:` lists when they are in; the colours it adds; fast
+  mana, free interaction, extra turns, mass land denial by name list and
+  text; the mechanics its text touches, from `DeckMechanic.all`).
+  `DeckAnalysis.compute` turns a snapshot plus `DeckAnalysisSignals`
+  (game changers, tag lists, Spellbook combos, Recommander scores — all
+  optional) into composition against the floors (34·8·8·8·1·2), colour
+  sources against Karsten (22 for one pip, 29 for two), the commander's
+  engine, the Bracket (2–4 with every signal listed; 1 is a table
+  agreement, 5 is declared), and three 1–10 scores — power (base 2, parts
+  add), impact (base 1), playability (base 10, shortfalls subtract) —
+  each with its parts, so the screen shows what moved it. Scores and the
+  Bracket are for Commander formats; composition, sources and rules are
+  read for any list.
+- `Models/DeckPlan.swift` — keep score per row (roles ×1.5, overlap ×2,
+  meta ×3, EDHREC-rank popularity, +12 for a combo piece), add score per
+  candidate (gaps filled, sources short, overlap, meta ×6, +6 per combo
+  completed, +1 owned, price penalties), then the table: identity
+  problems and extra copies out first, fills while short, trims while
+  over, swaps while the add beats the keep by 2 and no floor opens. Each
+  row carries an effect: the deck re-scored with the swap applied, combos
+  broken and gained by arithmetic on what Spellbook already returned. The
+  `recommendations` list is every candidate scored against the deck as it
+  stands. Candidates: the collection's spare cards (one per oracle id),
+  Recommander's picks, the missing pieces of one-card-away combos
+  (looked up on Scryfall once when the catalog lacks them).
+- `Controllers/Decks/DeckAnalysisController` — one per deck
+  (`shared(for:)`), keyed by the list hash. Publishes the local reading
+  first (a detached task; nothing waits on the network), then each
+  outside signal as it lands, then the plan. Combos are cached 30 days
+  and meta scores 7 per list hash under `Caches/DeckAnalysis`;
+  `AnalysisSignalSource` keeps the game-changer list (daily) and the
+  seven `otag:` lists (weekly, six search pages per sitting, resumed
+  across sittings, so a list never queues ahead of the user's own search
+  in the 2/sec limit). `allowsNetwork` is false under `-uitest-seed`, and
+  every screen says "needs a connection" rather than showing nothing.
+- `Controllers/Cards/CardSynergyController` — the viewer's Synergies
+  action (`CardSynergiesView`, pushed inside the viewer's stack like
+  Details): three sections that say what kind of claim they are —
+  Combos (Spellbook variants using the card), Played With It (EDHREC
+  synergy for a commander page, lift > 1 for a card page, with the share
+  of decks), Shares a Theme (`SynergyQuery`: the card's first three
+  specific mechanics as an OR of their Scryfall terms, `-name:`, `id<=`
+  the deck's identity when opened from a deck, `order:edhrec`). Names and
+  ids resolve to `CardItem`s through `DeckStore.items(scryfallIDs:/
+  oracleIDs:/names:)` off-main; unresolved names show as text. Cached a
+  week per card under `Caches/Synergies`.
+- `Models/CardReason.swift` — the one vocabulary every explaining row
+  speaks (`ReasonLabel`: icon + short phrase, tinted by kind): "Combo
+  with X", "Ramp, 7 of 8", "White source", "Tokens" (on plan), "Meta 82%",
+  "+82% synergy" (a commander page, a share) / "79× as often" (a card page, EDHREC's lift, a ratio), "Lifegain", and for the cut side
+  "No role" / "Off plan" / "Weakest of the list" / "Outside identity".
+  The planner produces `tags` beside its sentences (the sentences stay
+  for the tests and the keep-score text); the synergy controller maps
+  Spellbook's feature names and EDHREC's numbers into it. A row shows one
+  reason on its second line (`ReasonDetailLine`: reason · price · a check
+  when owned — no mana pips and no "Not owned": with a four-pip cost and
+  a price the reason was what got squeezed to "Infini…"), never the
+  source's own sentence. Synergy sections show six rows and a "Show All
+  N" row.
+- UI: the add sheet has two scopes, All Cards and Recommended, and an
+  **"In collection" chip** beside "Within identity" (not a scope): on
+  All Cards it turns the Scryfall search into an in-memory search of
+  what is owned (a browse of it with nothing typed — "+" opens there,
+  chip on); on Recommended it narrows to what is owned (opens with the
+  chip off, since the point is what the collection lacks). Recommended
+  leads with **Commander Synergies** — EDHREC's whole list for the
+  commander (`EDHRECSynergyLoader`, shared with the Synergies screen;
+  `DeckAnalysisController.commanderPicks`, kept per commander), best
+  first, cards already in the deck left out — then "For This Deck", the
+  planner's list, each row with its reason, a loader while the plan is
+  read, and a card just added kept in place as a stepper. The Stats row,
+  the Analysis screen and the "…" menu open the sheet on Recommended.
+  A viewer opened from a deck's Cards tab carries the deck's
+  `DeckAddSession` (mainboard), so its bar steps the card's copies and
+  the Synergies screen pushed from it can add to the deck. The swap table is
+  `DeckSwapsView`, pushed from a banner row on the Cards tab whenever
+  there is something to suggest (next to the issues row), from Stats,
+  from the Analysis screen and from the menu. Stats leads with an
+  Analysis section (three `Gauge`s, the bracket, floors met) after the
+  Check section, and pairs the Mana Cost pie with Mana Production and a
+  Colour Balance chart (each colour's share of pips against its share of
+  sources, over the colours the deck casts). The controller caches the
+  collection's candidates per collection revision and their readings
+  across replans, so a signal landing re-plans without re-reading a
+  thousand cards; `DeckPlan.id` lets views key rebuilds on one UUID.
+  Measured by `DeckPlanTimingTests` on the real export (3,100 spare
+  cards, debug build, simulator): the spare-card fetch 1.0s, the readings
+  0.8s, the plan 0.3s — about two seconds behind the loader the first
+  time, then a third of a second per replan. All of it off the main actor.
+- Tests: `DeckAnalysisTests`, `DeckPlanTests` (pure), `AnalysisClientTests`
+  (decoders over trimmed real responses in `Fixtures/`, the slug, the
+  theme query), `DeckFlowTests.testAnalysisRecommendationsAndSynergiesOffline`
+  (seeded, no network), and the tour's `05c`–`05h` and `04b` shots; `RealAnalysisTour` (opt-in by env) drives the same screens on the real collection with the network on.
 
 ## Set symbols and foil
 
@@ -558,6 +907,13 @@ confirms (`confirmationDialog`), and owned rows also support swipe actions.
 The sheet stays open after Add so several printings can go in; a success
 haptic marks each. `EditEntryView` reuses `EntryFormSections`.
 
+The viewer's info panel never changes shape between cards: four rows of
+fixed height, every one always present — the name line ("In collection"
+trailing), the set line (language and condition chips trailing when
+owned), the mana cost row (empty for a land), the price line (the added
+date trailing). A row that came and went, or a chip row only owned cards
+had, shifted everything below it as the pager moved.
+
 The viewer's bottom toolbar: Details (absent when the viewer was opened
 from the detail screen), Edit, Add, then a flexible spacer and Remove on
 its own. Edit and Remove are enabled only for a `CardItem.isEntry` — one
@@ -590,6 +946,10 @@ work — deck and mark actions will join the toolbar when they exist.
   `refreshStalePrices`, which re-fetches only cards older than
   `CardHydrationController.priceTTL` (6h) through the same batched endpoint.
 - Images live on disk (Caches/), not in SwiftData, to keep the store small.
+  Two tiers: the bytes on disk, decoded tiles in memory by URL and size.
+  `CardGridView` warms the next 30 tiles' images as tiles appear
+  (`ImageLoader.warm`, sequential, cancelled when the user moves on), so
+  a first scroll meets images already in memory.
 - The grid rebuilds its `[CardItem]` on a **debounced** schedule: a full sync
   emits one SwiftData save per 75-card batch, and remapping thousands of items
   on each would thrash the main thread.
@@ -651,18 +1011,62 @@ clause. `DeckListParserTests` (the real export), `DeckBuilderTests` (plan,
 build, disassemble, conservation, audit pairs, list edits),
 `DeckResolveTests` (the deck list against the bulk slice), `DeckStatsTests`.
 `DeckFlowTests` (UI) creates a deck, adds from the collection search,
-builds, disassembles, locks, and imports from the clipboard. `SearchFlowTests` (UI) drives the landing filters, keyboard
+swipes between the pages, opens the export sheet (preview, only-missing),
+builds, disassembles, locks, and imports from the clipboard — where the
+issues row shows and the row right after the commander opens the viewer
+on itself (the pager's initial position needs `anchor: .center`: without
+it the second card, already peeking in, counted as visible and the
+viewer stayed on the first). `SearchFlowTests` (UI) drives the landing filters, keyboard
 dismissal and saving a search; `testCollectionSearchAndColorFilterNarrowGrid`
 the collection's field and filter sheet. None needs the network.
 
 UI tests launch the app with `-uitest-seed`: `UITestSeed` fills an in-memory
 store with 900 image-less cards and marks the catalog ready, so nothing
-touches the network. `testGridScrollDoesNotHitch` uses
+touches the network. `ScreenshotTour` is not a test of behaviour: it
+drives the seeded app through the screens and writes a PNG of each to
+`TEST_RUNNER_UITEST_SHOT_DIR` for vetting a change by eye, and is
+skipped when that isn't set. `testGridScrollDoesNotHitch` uses
 `XCTOSSignpostMetric.scrollDecelerationMetric` — Apple's hitch counter; the
 first run sets a baseline in the scheme and later runs fail on regression.
 `testEnteringCollectionIsFast` clocks the push.
 
+**The real collection, for real.** `RealCollectionTests` launches the app
+with `-uitest-real`: an on-disk store kept between launches
+(`UITEST_RESET=1` wipes it), the network on, and the real ManaBox export
+(`UITEST_IMPORT_CSV`) imported on the first launch the way the wizard
+does it — so metadata hydrates, prices refresh and images stream exactly
+as they do for a user, only the 79MB catalog download is skipped. It
+drives the flows that felt slow (entering the collection mid-sync, every
+sort, scrolling real images, the first tap on Search, the first field
+tap and typing, a real deck's rows and viewer, the add sheet over the
+whole collection) with the hang threshold at 100ms, and fails any step
+that stalled the main thread, with the sampled stack in the message. Run
+it alone — another simulator job on the same Mac starves the app and
+every wait in system code shows up as a stall:
+
+```
+cp ~/Downloads/ManaBox_Collection.csv /tmp/perf/   # TCC guards ~/Downloads
+TEST_RUNNER_UITEST_CSV=/tmp/perf/ManaBox_Collection.csv \
+TEST_RUNNER_UITEST_PERF_DIR=/tmp/perf \
+  xcodebuild test … -only-testing:magic-hatUITests/RealCollectionTests
+```
+
+Two launch-time records are the environment, not the app: UIKit loading
+its accessibility bundle for XCUITest, and the keyboard prewarm's dlopen.
+
 A behaviour change to anything above lands with its test in the same commit.
+
+Two things the UI tests keep tripping on: a List or Form is lazy, so a row
+below the fold is not in the accessibility tree until scrolled to — loop
+`swipeUp` until `element.exists` rather than asserting on it cold (the
+Stats page's Analysis rows, the Details page's Export row); and a
+button-style `Toggle` is a `Switch` to accessibility, labelled with its
+content ("Within identity, Red"). And an `accessibilityIdentifier` on a
+`Section` is stamped on every element inside it, replacing the rows' own
+ids (the synergy rows lost `deck-search-row-…` that way) — identify the
+header text instead. When a run fails, the reason is in the
+xcresult, not xcodebuild's output: `xcrun xcresulttool get test-results
+tests --path <bundle>` and read the `Failure Message` nodes.
 
 ## Sorting
 

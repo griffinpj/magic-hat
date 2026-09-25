@@ -2,9 +2,16 @@
 //  CollectionsView.swift
 //  magic-hat
 //
-//  Collection tab root: lists the named collections and hosts the "…" import
-//  menu. Import picks a ManaBox CSV, parses it off-main, then opens the
-//  wizard to choose a destination collection and which binders to import.
+//  Collection tab root: an overview of everything owned (cards, value, how
+//  much sits in built decks), the synthetic "All Collection", then the
+//  named collections; and the "…" import menu. Import picks a ManaBox CSV,
+//  parses it off-main, then opens the wizard to choose a destination
+//  collection and which binders to import.
+//
+//  The rows are glass cards that push through a navigation path, not
+//  NavigationLinks: a link in a List draws a disclosure chevron beside the
+//  card, and the card is the whole affordance. All Collection is its name
+//  alone — its count and value are the overview card right above it.
 //
 
 import SwiftUI
@@ -26,34 +33,46 @@ struct CollectionsView: View {
     @State private var showingWizard = false
     @State private var importError: String?
     @State private var isParsing = false
-    @State private var summaries: [CollectionSummary] = []
+    @State private var overview: CollectionOverview?
     @State private var summaryTask: Task<Void, Never>?
     @State private var pendingDelete: String?
     @State private var isDeleting = false
+    /// Collection names (or `CollectionScope.allKey`) pushed onto the stack.
+    @State private var path: [String] = []
+    /// The grid's sort, so the overview pass can leave each collection's
+    /// snapshot ready in that order.
+    @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
     }
 
     /// Totals + top cards, computed off-main by the store. Debounced because
-    /// hydration bumps its revision on every 75-card batch.
+    /// hydration bumps its revision on every 75-card batch. The totals come
+    /// first and land on the tab; the per-collection snapshots (every
+    /// collection sorted, the slow part) are prewarmed right after, so the
+    /// tab fills in one pass rather than waiting for all of them.
     private func scheduleSummaries(delay: Duration) {
         summaryTask?.cancel()
         summaryTask = Task {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            if let fresh = try? await store.summaries(), !Task.isCancelled {
-                summaries = fresh
+            let sort = CardSort(rawValue: sortRaw) ?? .name
+            let stamp = StoreStamp.current
+            if let fresh = try? await store.overview(stamp: stamp), !Task.isCancelled {
+                overview = fresh
             }
+            guard !Task.isCancelled else { return }
+            try? await store.prewarmSnapshots(sort: sort, stamp: stamp)
         }
     }
 
     private func summary(for name: String) -> CollectionSummary? {
-        summaries.first { $0.name == name }
+        overview?.collections.first { $0.name == name }
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if collections.isEmpty {
                     ContentUnavailableView {
@@ -66,6 +85,7 @@ struct CollectionsView: View {
                 }
             }
             .navigationTitle("Collections")
+            .navigationDestination(for: String.self) { CollectionCardsView(collectionName: $0) }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -133,20 +153,51 @@ struct CollectionsView: View {
     }
 
     private var collectionList: some View {
-        List(collections) { collection in
-            NavigationLink {
-                CollectionCardsView(collectionName: collection.name)
-            } label: {
-                CollectionCard(summary: summary(for: collection.name), name: collection.name)
+        List {
+            if let overview {
+                if overview.all.totalCopies > 0 {
+                    LibraryOverviewCard(overview: overview)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 10, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+            } else {
+                // The totals are one pass over every owned row, off the main
+                // actor; on a big collection that is a moment. Say so where
+                // the numbers will land, rather than showing an empty card.
+                LibraryLoadingCard()
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 10, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
+            // Everything in one grid: collections and built decks alike.
+            Button {
+                path.append(CollectionScope.allKey)
+            } label: {
+                CollectionCard(summary: nil, name: CollectionScope.allName, showsValue: false)
+            }
+            .buttonStyle(.plain)
             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
-            .swipeActions(edge: .trailing) {
-                Button(role: .destructive) {
-                    pendingDelete = collection.name
+            .accessibilityIdentifier("collection-all")
+            ForEach(collections) { collection in
+                Button {
+                    path.append(collection.name)
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    CollectionCard(summary: summary(for: collection.name), name: collection.name)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("collection-\(collection.name)")
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) {
+                        pendingDelete = collection.name
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
                 }
             }
         }
@@ -227,6 +278,85 @@ struct CollectionsView: View {
                 return .failure(error.localizedDescription)
             }
         }.value
+    }
+}
+
+/// Cards, value, and the share built into decks — two numbers and a bar.
+/// Glass like the collection cards; the same shape at the top of the list.
+/// The overview card's place while the store adds the collection up.
+struct LibraryLoadingCard: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+            Text("Adding up your collection…")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .accessibilityIdentifier("library-loading")
+    }
+}
+
+struct LibraryOverviewCard: View {
+    let overview: CollectionOverview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                stat(overview.all.totalCopies.formatted(), "cards", id: "library-cards")
+                Spacer(minLength: 12)
+                stat(Self.money(overview.all.totalValue), "market value", id: "library-value", alignment: .trailing)
+            }
+            if overview.deckCopies > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    GeometryReader { geo in
+                        HStack(spacing: 2) {
+                            Capsule().fill(.tint)
+                                .frame(width: max(4, geo.size.width * overview.deckFraction))
+                            Capsule().fill(.quaternary)
+                        }
+                    }
+                    .frame(height: 6)
+                    HStack {
+                        legend(.tint, "\(overview.deckCopies.formatted()) in decks")
+                        Spacer()
+                        legend(.quaternary, "\(overview.collectionCopies.formatted()) in collections")
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(overview.deckCopies) cards in decks, \(overview.collectionCopies) in collections")
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    private func stat(_ value: String, _ label: String, id: String, alignment: HorizontalAlignment = .leading) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text(value)
+                .font(.title.weight(.bold))
+                .monospacedDigit()
+                .accessibilityIdentifier(id)
+            Text(label.uppercased())
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func legend(_ fill: some ShapeStyle, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(fill).frame(width: 7, height: 7)
+            Text(text)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    private static func money(_ value: Double) -> String {
+        PriceFormat.whole(value)
     }
 }
 

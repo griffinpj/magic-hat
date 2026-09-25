@@ -34,7 +34,12 @@ final class SearchController {
     var query = CardSearchQuery()
 
     private(set) var phase: Phase = .idle
-    private(set) var results: [CardItem] = []
+    private(set) var results: [CardItem] = [] {
+        didSet { resultList = CardItemList(results) }
+    }
+    /// `results` for the grid: stamped, so the grid's input compare is one
+    /// integer rather than every card (see CardItemList).
+    private(set) var resultList = CardItemList()
     private(set) var totalCards: Int?
     private(set) var isLoadingMore = false
     /// A new first page is loading while the previous results stay on

@@ -3,9 +3,9 @@ import Foundation
 import SwiftData
 @testable import magic_hat
 
-/// Feeds SearchController canned pages; no network.
-@MainActor
-final class FakeSearchClient: CardSearching {
+/// Feeds SearchController canned pages; no network. Nonisolated like the
+/// real client (the protocol is), and the tests drive it one at a time.
+nonisolated final class FakeSearchClient: CardSearching, @unchecked Sendable {
     var pages: [ScryfallSearchPage] = []
     var error: Error?
     private(set) var queries: [String] = []

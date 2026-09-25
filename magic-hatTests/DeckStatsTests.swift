@@ -54,6 +54,47 @@ struct DeckStatsTests {
         #expect(none.issues.contains { $0.kind == .noCommander })
     }
 
+    /// The singleton rule has exceptions, and they are printed on the
+    /// cards: basic lands (snow included), "any number of", "up to nine".
+    @Test func copyLimitsReadTheCardsOwnExceptions() throws {
+        let nazgul = try Self.item(["name": "Nazgûl", "type_line": "Creature — Wraith", "colors": ["B"], "color_identity": ["B"],
+                                    "oracle_text": "Deathtouch\nWhenever Nazgûl enters, the Ring tempts you.\nA deck can have up to nine cards named Nazgûl."], qty: 9)
+        let tenNazgul = try Self.item(["name": "Nazgûl", "type_line": "Creature — Wraith", "colors": ["B"], "color_identity": ["B"],
+                                       "oracle_text": "A deck can have up to nine cards named Nazgûl."], qty: 10)
+        let rats = try Self.item(["name": "Relentless Rats", "type_line": "Creature — Rat", "colors": ["B"], "color_identity": ["B"],
+                                  "oracle_text": "A deck can have any number of cards named Relentless Rats."], qty: 30)
+        let snow = try Self.item(["name": "Snow-Covered Swamp", "type_line": "Basic Snow Land — Swamp", "colors": []], qty: 12)
+        let twin = try Self.item(["name": "Twin", "type_line": "Creature", "colors": ["B"], "color_identity": ["B"]], qty: 2)
+
+        #expect(DeckStats.copyLimit(for: nazgul.card, format: .commander) == 9)
+        #expect(DeckStats.copyLimit(for: rats.card, format: .commander) == nil)
+        #expect(DeckStats.copyLimit(for: snow.card, format: .commander) == nil)
+        #expect(DeckStats.copyLimit(for: twin.card, format: .commander) == 1)
+        #expect(DeckStats.copyLimit(for: twin.card, format: .modern) == 4)
+
+        let ok = DeckStats.compute(played: [nazgul, rats, snow], format: .commander, identity: [.black], allItems: [nazgul, rats, snow])
+        #expect(!ok.issues.contains { $0.kind == .overMaxCopies }, "\(ok.issues.map(\.message))")
+        let bad = DeckStats.compute(played: [tenNazgul, twin], format: .commander, identity: [.black], allItems: [tenNazgul, twin])
+        #expect(bad.issues.filter { $0.kind == .overMaxCopies }.count == 2)
+        #expect(bad.issues.contains { $0.kind == .overMaxCopies && $0.message.contains("max 9") })
+    }
+
+    /// The banner names rules broken, not what a deck under construction
+    /// still lacks.
+    @Test func violationsLeaveOutWhatIsMerelyUnfinished() throws {
+        let items = try [
+            Self.item(["name": "Commander", "type_line": "Legendary Creature", "colors": ["G"], "color_identity": ["G"]], board: .commander),
+            Self.item(["name": "Off", "type_line": "Instant", "colors": ["U"], "color_identity": ["U"]]),
+            Self.item(["name": "Off Too", "type_line": "Instant", "colors": ["R"], "color_identity": ["R"]]),
+        ]
+        let stats = DeckStats.compute(played: items, format: .commander, identity: [.green], allItems: items)
+        #expect(stats.issues.contains { $0.kind == .tooFew })
+        #expect(stats.violations.allSatisfy { $0.kind == .offIdentity })
+        #expect(stats.violationSummary == "2 outside colour identity")
+        let empty = DeckStats.compute(played: [], format: .commander, identity: [], allItems: [])
+        #expect(empty.violations.isEmpty, "no commander and no cards is unfinished, not broken")
+    }
+
     @Test func primaryTypeGroupsLandsFirst() {
         #expect(DeckStats.primaryType(of: "Artifact Land") == "Land")
         #expect(DeckStats.primaryType(of: "Land Creature — Forest Dryad") == "Land")

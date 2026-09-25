@@ -75,7 +75,7 @@ struct PrintingPickerView: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    SetSymbolView(setCode: card.set, size: 14, tint: .primary)
+                    SetSymbolView(setCode: card.set, size: 14, tint: .primary, rarity: card.rarity)
                     Text("\(card.set.uppercased()) #\(card.collectorNumber)")
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)

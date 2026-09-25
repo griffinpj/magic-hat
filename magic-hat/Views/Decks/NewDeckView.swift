@@ -41,9 +41,7 @@ struct NewDeckView: View {
                         } label: {
                             HStack(spacing: 12) {
                                 if let commander {
-                                    CardImageView(urlString: commander.imageURL, aspectRatio: commander.aspectRatio,
-                                                  cornerRadius: 6, targetWidth: 80)
-                                        .frame(width: 44)
+                                    CardArtThumb(artURL: commander.artCropURL, fallbackURL: commander.imageURL)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(commander.name).foregroundStyle(.primary)
                                         Text("\(commander.setName) #\(commander.collectorNumber)")
@@ -114,14 +112,13 @@ struct CommanderPickerView: View {
             case .failed(let message):
                 ContentUnavailableView("Search Failed", systemImage: "wifi.exclamationmark", description: Text(message))
             case .results:
+                // The row's own button is the pick: a Button wrapped around
+                // the row would sit *behind* it and never get the tap.
                 List(controller.results) { item in
-                    Button {
+                    DeckSearchRow(item: item, ownedCopies: nil, inDeck: 0, showsAdd: false, onOpen: {
                         onPick(PrintingSelection(item: item))
                         dismiss()
-                    } label: {
-                        DeckSearchRow(item: item, ownedCopies: nil, inDeck: 0, showsAdd: false)
-                    }
-                    .buttonStyle(.plain)
+                    })
                 }
                 .listStyle(.plain)
             }
