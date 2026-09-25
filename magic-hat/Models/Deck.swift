@@ -157,3 +157,69 @@ nonisolated enum DeckSearchScope: String, CaseIterable, Hashable, Sendable {
         }
     }
 }
+
+/// How a deck's add sheet orders what it lists, per scope. Relevance is
+/// each list's own order: the plan's ranking and EDHREC's (Recommended),
+/// names starting with what was typed first (In collection), and
+/// popularity on Scryfall — most-played first, which is what someone
+/// adding to a deck is usually after. The rest sort in memory with a total
+/// order (ties keep the list's own order), or map onto Scryfall's `order`.
+nonisolated enum DeckAddSort: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case relevance = "Relevance"
+    case name = "Name"
+    case manaValue = "Mana Value"
+    case priceHigh = "Price (High)"
+    case priceLow = "Price (Low)"
+    case rarity = "Rarity"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .relevance: return "wand.and.stars"
+        case .name: return "textformat"
+        case .manaValue: return "circle.hexagonpath"
+        case .priceHigh: return "dollarsign.circle"
+        case .priceLow: return "dollarsign"
+        case .rarity: return "star"
+        }
+    }
+
+    /// The Scryfall order this sort asks for.
+    var scryfall: (sort: SearchSort, direction: SortDirection) {
+        switch self {
+        case .relevance: return (.edhrec, .ascending)
+        case .name: return (.name, .ascending)
+        case .manaValue: return (.manaValue, .ascending)
+        case .priceHigh: return (.price, .descending)
+        case .priceLow: return (.price, .ascending)
+        case .rarity: return (.rarity, .descending)
+        }
+    }
+
+    /// `rows` in this order, by the card each carries. Relevance leaves
+    /// them as they are; unpriced cards sort last either way by price.
+    func apply<Row>(_ rows: [Row], card: (Row) -> CardItem) -> [Row] {
+        guard self != .relevance else { return rows }
+        return rows.enumerated().sorted { a, b in
+            let l = card(a.element), r = card(b.element)
+            switch self {
+            case .relevance, .name:
+                break
+            case .manaValue:
+                let lv = ManaSymbol.manaValue(of: l.manaCost ?? ""), rv = ManaSymbol.manaValue(of: r.manaCost ?? "")
+                if lv != rv { return lv < rv }
+            case .priceHigh:
+                let lp = l.marketPrice ?? -1, rp = r.marketPrice ?? -1
+                if lp != rp { return lp > rp }
+            case .priceLow:
+                let lp = l.marketPrice ?? .infinity, rp = r.marketPrice ?? .infinity
+                if lp != rp { return lp < rp }
+            case .rarity:
+                if l.rarityRankValue != r.rarityRankValue { return l.rarityRankValue > r.rarityRankValue }
+            }
+            if l.sortKey != r.sortKey { return l.sortKey < r.sortKey }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+}
