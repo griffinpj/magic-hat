@@ -53,6 +53,7 @@ enum LaunchPrewarm {
     nonisolated static func fonts() {
         Task.detached(priority: .utility) {
             _ = KeyruneFont.glyph(for: "lea")
+            _ = SetIcons.icon(for: "plst")
             _ = ManaFont.glyph(named: "w")
             for name in [ManaFont.register() ? ManaFont.fontName : nil,
                          KeyruneFont.register() ? KeyruneFont.fontName : nil].compactMap({ $0 }) {

@@ -117,6 +117,7 @@ final class CardSynergyController {
 
     // MARK: Combos
 
+    @concurrent
     nonisolated private static func combos(for item: CardItem, store: DeckStore, writer: CardMetaWriter) async -> Loaded {
         let key = "variants-" + DiskJSONCache.hash(CardReading.frontName(item.name))
         var variants = await cache.value([SpellbookVariant].self, key: key, ttl: ttl)
@@ -171,6 +172,7 @@ final class CardSynergyController {
 
     // MARK: EDHREC
 
+    @concurrent
     nonisolated private static func edhrec(for item: CardItem, store: DeckStore, writer: CardMetaWriter) async -> (Loaded, EDHRECCardInfo?, Bool) {
         let result = await EDHRECSynergyLoader.picks(for: item, limit: 40, store: store, writer: writer)
         guard result.available else { return (Loaded(state: .unavailable), nil, false) }
@@ -185,6 +187,7 @@ final class CardSynergyController {
 
     // MARK: Theme
 
+    @concurrent
     nonisolated private static func theme(for item: CardItem, identity: [ManaColor]?, store: DeckStore) async -> Loaded {
         guard let query = SynergyQuery.scryfall(for: item, identity: identity) else { return Loaded(state: .empty) }
         let key = "theme-" + DiskJSONCache.hash(query)

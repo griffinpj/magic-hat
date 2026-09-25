@@ -312,6 +312,16 @@ struct SetSymbolView: View {
                 .foregroundStyle(color)
                 .frame(width: size, height: size)
                 .accessibilityLabel(setCode.uppercased())
+        } else if let asset = SetIcons.assetName(for: setCode) {
+            // Compiled into the app from Scryfall's SVG (see SetIcons).
+            Image(asset)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .padding(size * 0.06)
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
+                .accessibilityLabel(setCode.uppercased())
         } else {
             rasterized
         }

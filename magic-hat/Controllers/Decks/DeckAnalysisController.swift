@@ -322,7 +322,10 @@ final class DeckAnalysisController {
     /// Spare cards in the collection (one per card, copies summed), the
     /// meta's picks and the missing pieces of one-card-away combos, as
     /// CardItems from the catalog. A name the catalog lacks is looked up
-    /// on Scryfall once and kept.
+    /// on Scryfall once and kept. `@concurrent`: a nonisolated async
+    /// function runs on its caller's actor, and the caller is the main
+    /// actor — this loop over every spare card in the collection ran there.
+    @concurrent
     nonisolated private static func candidates(snapshot: DeckSnapshot, analysis: DeckAnalysis, signals: DeckAnalysisSignals,
                                                owned: [DeckSearchResult], store: DeckStore, writer: CardMetaWriter,
                                                allowNetwork: Bool) async -> [DeckCandidate] {
@@ -372,6 +375,7 @@ final class DeckAnalysisController {
         await AnalysisSignalSource.shared.gameChangers(allowNetwork: false)
     }
 
+    @concurrent
     nonisolated private static func fetchCombos(snapshot: DeckSnapshot) async -> DeckComboSet? {
         let commanders = snapshot.commanders.map(\.card.name)
         let main = snapshot.sections.flatMap(\.items).map { (name: $0.card.name, quantity: $0.quantity) }
@@ -386,6 +390,7 @@ final class DeckAnalysisController {
         let names: [String: String]
     }
 
+    @concurrent
     nonisolated private static func fetchMeta(snapshot: DeckSnapshot) async -> MetaCache? {
         guard let commander = snapshot.commanders.first?.card.name else { return nil }
         let partner = snapshot.commanders.dropFirst().first?.card.name

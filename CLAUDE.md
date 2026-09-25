@@ -335,6 +335,11 @@ bulk data writes — belongs off the main thread.
   (e.g. `ManaBoxRow`, `CardFinish`, `CSVParser`, `HTTPClient`).
 - Networking runs off-main via `nonisolated` clients + `RateLimiter` (an
   actor); never block on the main thread waiting for a request.
+- The same holds for a controller's `nonisolated static … async` helpers
+  called from a main-actor task: without `@concurrent` they run on the
+  main actor. `DeckAnalysisController.candidates` (a loop over every
+  spare card), `fetchCombos`/`fetchMeta`, `EDHRECSynergyLoader.picks` and
+  `CardSynergyController`'s loaders are `@concurrent`.
 - **Approachable concurrency is on** (`SWIFT_APPROACHABLE_CONCURRENCY`), so
   a `nonisolated async` function runs on the *caller's* actor, and the
   clients are called from the main actor. CPU work inside them must opt out
@@ -985,7 +990,27 @@ oracle text, no model) and kept pure so it runs off-main and under test:
 Set symbols are **text**, from the bundled Keyrune font (`Resources/keyrune.ttf`,
 SIL OFL; `keyrune-map.json` generated from Keyrune's CSS). Registered at
 runtime with CoreText, so no Info.plist entry. Promo/token codes (`p…`, `t…`)
-fall back to the parent set's glyph, as Keyrune itself does. `KeyruneFontTests`
+fall back to the parent set's glyph, as Keyrune itself does.
+
+What Keyrune lacks is **worked out at build time**, not at first sight:
+`scripts/make-set-icons.py` reads Scryfall's `/sets` (~1,050 sets, ~365
+icons) and writes `Resources/set-icons.json` — each set Keyrune lacks mapped
+to the icon Scryfall draws for it (`abro` → `bro`, `plst` →
+`planeswalker`), 174 of which are Keyrune glyphs under another code — and
+puts the 20 icons Keyrune has no glyph for into
+`Assets.xcassets/SetIcons` as SVGs with preserved vector data and template
+rendering, which Xcode compiles into the asset catalog. `SetSymbolView`
+tries Keyrune by code, Keyrune by icon (`SetIcons.icon`), the bundled
+vector (`SetIcons.assetName`), and only then the WebKit rasterizer — now
+for sets released after the script last ran. Before, every set outside
+the font went through WebKit on the main thread when first shown: a deck's
+Recommended list and the viewer opened from it (EDHREC picks come from
+all over Magic) paid WebKit's start-up. Re-run the script when a set
+releases; the output is committed rather than fetched per build (a
+network step in every build ties builds to Scryfall and breaks offline
+and sandboxed script phases). `KeyruneFontTests` checks an alias, a
+bundled icon drawing ink, and that every set in the real export resolves
+without WebKit. `KeyruneFontTests`
 draws a glyph and counts opaque pixels — the WebKit rasterizer could only ever
 be checked by eye, and failed that repeatedly. WebKit remains as a fallback for
 sets newer than the font: one persistent web view, SVG + PNG cached on disk
@@ -1153,8 +1178,9 @@ as they do for a user, only the 79MB catalog download is skipped. It
 drives the flows that felt slow (entering the collection mid-sync, every
 sort, scrolling real images, the first tap on Search, the first field
 tap and typing, a real deck's rows and viewer, the add sheet over the
-whole collection, and `testTransitionsTour`: every push, sheet and tab
-once) with the hang threshold at 100ms (`TEST_RUNNER_UITEST_HANG_THRESHOLD`
+whole collection, `testTransitionsTour`: every push, sheet and tab once,
+and `testRecommendedCardsOpenTheViewer`: a deck's Recommended scope and
+two of its cards in the viewer) with the hang threshold at 100ms (`TEST_RUNNER_UITEST_HANG_THRESHOLD`
 lowers it for an audit), and fails any step that stalled the main
 thread, with the sampled stack in the message. For where the time goes
 rather than whether it stalled, attach Time Profiler to the test's app

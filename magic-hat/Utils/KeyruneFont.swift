@@ -62,15 +62,57 @@ nonisolated enum KeyruneFont {
 
     /// Glyph for a Scryfall set code, if Keyrune has it. Promo ("p…") and
     /// token ("t…") sets use their parent set's symbol, which is also what
-    /// Keyrune does, so those fall back to the parent code.
+    /// Keyrune does, so those fall back to the parent code; so does any
+    /// set whose Scryfall icon is another set's (`abro`, `wmom` — see
+    /// `SetIcons`).
     static func glyph(for setCode: String) -> String? {
         guard register() else { return nil }
         let code = setCode.lowercased()
+        if let g = directGlyph(code) { return g }
+        if let icon = SetIcons.icon(for: code), icon != code { return directGlyph(icon) }
+        return nil
+    }
+
+    private static func directGlyph(_ code: String) -> String? {
         if let g = glyphs[code] { return g }
         if code.count > 3, code.hasPrefix("p") || code.hasPrefix("t"),
            let g = glyphs[String(code.dropFirst())] {
             return g
         }
         return nil
+    }
+}
+
+/// The set symbols the Keyrune font doesn't draw, worked out when the app
+/// is built rather than when a card is shown (`scripts/make-set-icons.py`,
+/// from Scryfall's `/sets`). About 1,050 sets share ~365 icons: each set
+/// Keyrune lacks is mapped to the icon Scryfall draws for it — most are a
+/// Keyrune glyph under another code — and the twenty icons Keyrune has no
+/// glyph for are SVGs in the asset catalog (`SetIcons/seticon-<icon>`),
+/// compiled at build time into template images. The WebKit rasterizer is
+/// left for sets released after the map was made. It used to draw all of
+/// these, at first sight, on the main thread: WebKit's load when a card
+/// from The List or a promo set was first opened.
+nonisolated enum SetIcons {
+    private struct Map: Decodable {
+        let aliases: [String: String]
+        let bundled: [String]
+    }
+
+    private static let map: (aliases: [String: String], bundled: Set<String>) = {
+        guard let url = Bundle.main.url(forResource: "set-icons", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let map = try? JSONDecoder().decode(Map.self, from: data)
+        else { return ([:], []) }
+        return (map.aliases, Set(map.bundled))
+    }()
+
+    /// The icon Scryfall draws for a set the font lacks, by name.
+    static func icon(for setCode: String) -> String? { map.aliases[setCode.lowercased()] }
+
+    /// The asset-catalog image for a set, when its icon is bundled.
+    static func assetName(for setCode: String) -> String? {
+        guard let icon = icon(for: setCode), map.bundled.contains(icon) else { return nil }
+        return "seticon-\(icon)"
     }
 }

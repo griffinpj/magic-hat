@@ -350,6 +350,64 @@ final class RealCollectionTests: XCTestCase {
         assertNoHangs(since: mark, "back to the Collection tab")
     }
 
+    /// A deck's add sheet on Recommended — EDHREC's picks and the plan, cards
+    /// from all over Magic, many sets the collection never showed — then a
+    /// card opened from it, closed, and another opened.
+    @MainActor
+    func testRecommendedCardsOpenTheViewer() {
+        let app = launch()
+        _ = collectionCard(app)
+        app.tabBars.buttons["Decks"].tap()
+        let deck = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deck-tile-'")).firstMatch
+        if deck.waitForExistence(timeout: 5) {
+            deck.tap()
+        } else {
+            // A reset store has no deck: import the real list, which opens it.
+            let fixture = URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("magic-hatTests/Fixtures/KingUnderTheMountain.txt")
+            UIPasteboard.general.string = (try? String(contentsOf: fixture, encoding: .utf8)) ?? ""
+            app.buttons["decks-add"].tap()
+            app.buttons["decks-menu-clipboard"].tap()
+            let paste = app.buttons["import-paste"]
+            XCTAssertTrue(paste.waitForExistence(timeout: 5))
+            paste.tap()
+            let nameField = app.textFields["import-name"]
+            XCTAssertTrue(nameField.waitForExistence(timeout: 5))
+            nameField.tap()
+            nameField.typeText("King")
+            app.buttons["import-run"].tap()
+            if app.buttons["OK"].waitForExistence(timeout: 20) { app.buttons["OK"].tap() }
+        }
+        XCTAssertTrue(app.segmentedControls["deck-tabs"].waitForExistence(timeout: 30))
+        settle(2)
+        var mark = hangs().count
+
+        app.buttons["deck-add-cards"].tap()
+        XCTAssertTrue(app.buttons["deck-add-done"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "open the add sheet")
+        app.segmentedControls["deck-search-scope"].buttons["Recommended"].tap()
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deck-search-row-'"))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 60), "recommendations land")
+        settle(3)
+        mark = assertNoHangs(since: mark, "switch to Recommended")
+
+        for index in [0, 2] {
+            let row = rows.element(boundBy: index)
+            guard row.waitForExistence(timeout: 5) else { continue }
+            row.tap()
+            XCTAssertTrue(app.buttons["viewer-close"].waitForExistence(timeout: 10), "viewer opens")
+            settle(2)
+            mark = assertNoHangs(since: mark, "open recommended card \(index) in the viewer")
+            app.buttons["viewer-close"].tap()
+            XCTAssertTrue(app.buttons["deck-add-done"].waitForExistence(timeout: 5))
+            settle(1)
+            mark = assertNoHangs(since: mark, "close the viewer \(index)")
+        }
+        app.buttons["deck-add-done"].tap()
+    }
+
     /// A real deck from the real collection: the row right after the
     /// commander — the first creature — opens the viewer on itself, with
     /// real art loading in the rows and the pager.
