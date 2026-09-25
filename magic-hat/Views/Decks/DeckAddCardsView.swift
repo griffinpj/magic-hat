@@ -571,8 +571,10 @@ struct DeckAddCardsView: View {
     }
 
     private func loadOwned() async {
-        let store = DeckStore.shared(for: modelContext.container)
-        if let cards = try? await store.ownedCards(), !Task.isCancelled {
+        // CollectionStore's rows for this stamp — usually already built by
+        // the Collections tab — rather than a fresh read of the collection.
+        let store = CollectionStore.shared(for: modelContext.container)
+        if let cards = try? await store.ownedCards(stamp: .current), !Task.isCancelled {
             let (list, byKey, ids) = await Task.detached(priority: .userInitiated) { () -> (CardItemList, [String: Int], Set<String>) in
                 var byKey: [String: Int] = [:]
                 for card in cards { byKey[card.oracleID ?? card.scryfallID, default: 0] += card.quantity }

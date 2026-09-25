@@ -82,14 +82,21 @@ struct CollectionCardsView: View {
                     scrollToTop: scrollToTop,
                     accessory: {
                         VStack(alignment: .trailing, spacing: 10) {
-                            if hydrator.isSyncing { syncPill }
+                            SyncPill()
                             sortButton
                         }
                     }
                 )
             }
         }
-        .background { SearchDismisser(isEmpty: query.text.isEmpty) }
+        .background {
+            SearchDismisser(isEmpty: query.text.isEmpty)
+            // Metadata arriving: refresh fields in place, keep the order.
+            // Observed down here rather than with onChange on this view:
+            // reading `revision` in this body re-rendered the screen, and
+            // with it the grid, on every hydration batch.
+            HydrationObserver { scheduleRefresh() }
+        }
         .navigationTitle(CollectionScope.displayName(collectionName))
         .navigationBarTitleDisplayMode(.inline)
         // Always shown: a pushed screen with an inline title otherwise hides
@@ -124,8 +131,6 @@ struct CollectionCardsView: View {
         .task(id: "\(collectionName)|\(tracker.revision)") {
             await load(thenSync: true)
         }
-        // Metadata arriving: refresh fields in place, keep the order.
-        .onChange(of: hydrator.revision) { _, _ in scheduleRefresh() }
         .onChange(of: sortRaw) { _, _ in applySort() }
     }
 
@@ -243,18 +248,6 @@ struct CollectionCardsView: View {
 
     // MARK: Accessories
 
-    private var syncPill: some View {
-        HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("Syncing \(hydrator.syncedCount)/\(hydrator.syncTotal)")
-                .font(.caption.weight(.medium))
-                .monospacedDigit()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .glassEffect(.regular, in: Capsule())
-        .padding(.trailing, 20)
-    }
 
     private var sortButton: some View {
         Menu {
@@ -278,5 +271,27 @@ struct CollectionCardsView: View {
         .glassEffect(.regular.interactive(), in: Circle())
         .padding(.trailing, 20)
         .padding(.bottom, 20)
+    }
+}
+
+/// "Syncing n/N" while hydration runs. Its own view so the count, which
+/// moves every batch, is read in this body alone — read in the grid's
+/// accessory closure it made the whole grid a dependent of the counter.
+private struct SyncPill: View {
+    private var hydrator: CardHydrationController { .shared }
+
+    var body: some View {
+        if hydrator.isSyncing {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Syncing \(hydrator.syncedCount)/\(hydrator.syncTotal)")
+                    .font(.caption.weight(.medium))
+                    .monospacedDigit()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: Capsule())
+            .padding(.trailing, 20)
+        }
     }
 }

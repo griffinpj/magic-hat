@@ -61,14 +61,20 @@ enum HangDetector {
         log.notice("HangDetector armed (threshold \(threshold, format: .fixed(precision: 2))s)")
     }
 
+    /// The ping cadence scales with the threshold. A fixed quarter-second
+    /// gap between pings meant a stall shorter than that was only seen if
+    /// it happened to overlap a ping — at a 100ms bar, most 100–200ms
+    /// stalls went unreported.
     private static func watchdog(threshold: TimeInterval) {
+        let gap = min(0.25, threshold / 2)
+        let step = min(0.05, threshold / 5)
         while true {
             let answered = DispatchSemaphore(value: 0)
             let start = Date()
             DispatchQueue.main.async { answered.signal() }
 
             var sampled = false
-            while answered.wait(timeout: .now() + 0.05) == .timedOut {
+            while answered.wait(timeout: .now() + step) == .timedOut {
                 if !sampled, Date().timeIntervalSince(start) > threshold {
                     sample()
                     sampled = true
@@ -83,7 +89,7 @@ enum HangDetector {
                 print(line)
                 append(duration: elapsed, stack: stack)
             }
-            Thread.sleep(forTimeInterval: 0.25)
+            Thread.sleep(forTimeInterval: gap)
         }
     }
 

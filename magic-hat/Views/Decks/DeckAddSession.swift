@@ -68,20 +68,33 @@ final class DeckAddSession {
 
     func quantity(of item: CardItem) -> Int { rows[Self.key(of: item)]?.quantity ?? 0 }
 
+    // Writes update `rows` as well as the store, so a row's stepper and
+    // the viewer's count move on the tap. Otherwise they waited for the
+    // deck to be re-read off the main actor — a round trip that queues
+    // behind the deck screen's and the Decks tab's own re-reads of the same
+    // write. The next snapshot (`update(from:)`) replaces these counts.
+
     /// Adds one copy to `board` (or another board), merging with the same
     /// card already there.
     func add(_ item: CardItem, to board: DeckBoard? = nil) throws {
-        try DeckEditController.add(PrintingSelection(item: item), to: deckID, board: board ?? self.board, context: context)
-        touched.insert(Self.key(of: item))
+        let target = board ?? self.board
+        let id = try DeckEditController.add(PrintingSelection(item: item), to: deckID, board: target, context: context)
+        let key = Self.key(of: item)
+        touched.insert(key)
+        if target == self.board, let id { rows[key] = Row(id: id, quantity: (rows[key]?.quantity ?? 0) + 1) }
     }
 
     /// Sets the copies of `item` on `board`; zero removes the row.
     func setQuantity(_ item: CardItem, _ quantity: Int) throws {
-        if let row = rows[Self.key(of: item)] {
+        let key = Self.key(of: item)
+        if let row = rows[key] {
             try DeckEditController.setQuantity(deckCardID: row.id, max(0, quantity), context: context)
-        } else if quantity > 0 {
-            try DeckEditController.add(PrintingSelection(item: item), to: deckID, board: board, quantity: quantity, context: context)
+            rows[key] = quantity > 0 ? Row(id: row.id, quantity: quantity) : nil
+        } else if quantity > 0,
+                  let id = try DeckEditController.add(PrintingSelection(item: item), to: deckID, board: board,
+                                                      quantity: quantity, context: context) {
+            rows[key] = Row(id: id, quantity: quantity)
         }
-        touched.insert(Self.key(of: item))
+        touched.insert(key)
     }
 }

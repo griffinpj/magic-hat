@@ -432,11 +432,13 @@ private struct TermChip: View {
 
     var body: some View {
         Menu {
+            // No image rather than an empty symbol name: "" is looked up
+            // in the symbol catalog like any other name, fails, and logs.
             Button { term.negated = false } label: {
-                Label("Is", systemImage: term.negated ? "" : "checkmark")
+                if term.negated { Text("Is") } else { Label("Is", systemImage: "checkmark") }
             }
             Button { term.negated = true } label: {
-                Label("Is not", systemImage: term.negated ? "checkmark" : "")
+                if term.negated { Label("Is not", systemImage: "checkmark") } else { Text("Is not") }
             }
             Divider()
             Button("Remove", systemImage: "trash", role: .destructive, action: onRemove)

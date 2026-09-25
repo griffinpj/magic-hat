@@ -86,7 +86,7 @@ struct CollectionPickerView: View {
             Text(createError ?? "")
         }
         .task(id: CollectionChangeTracker.shared.revision) {
-            if let fresh = try? await store.summaries() { summaries = fresh }
+            if let fresh = try? await store.summaries(stamp: .current) { summaries = fresh }
         }
     }
 

@@ -26,31 +26,40 @@ struct CatalogSyncBar: View {
     }
 
     var body: some View {
-        if controller.phase.showsProgressBar {
-            HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text(label)
-                    .font(.subheadline.weight(.medium))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                if let fraction = controller.fraction {
-                    // Determinate while downloading; the ingest's line count
-                    // isn't known until the file is read.
-                    Gauge(value: fraction) { EmptyView() }
-                        .gaugeStyle(.accessoryLinearCapacity)
-                        .frame(width: 72)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .glassEffect(.regular, in: Capsule())
-            .padding(.horizontal, 16)
-            .padding(.bottom, 4)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("catalog-sync-bar")
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+        // The animation is attached here, where `phase` is read in this
+        // view's own body. On the `safeAreaBar` in `catalogSyncBar()` it was
+        // evaluated in MainTabView's body — the bar's content closure runs
+        // there — so every progress report re-rendered the tab root.
+        VStack(spacing: 0) {
+            if controller.phase.showsProgressBar { pill }
         }
+        .animation(.easeInOut(duration: 0.25), value: controller.phase.showsProgressBar)
+    }
+
+    private var pill: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(label)
+                .font(.subheadline.weight(.medium))
+                .monospacedDigit()
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            if let fraction = controller.fraction {
+                // Determinate while downloading; the ingest's line count
+                // isn't known until the file is read.
+                Gauge(value: fraction) { EmptyView() }
+                    .gaugeStyle(.accessoryLinearCapacity)
+                    .frame(width: 72)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.horizontal, 16)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("catalog-sync-bar")
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
 
@@ -59,9 +68,6 @@ extension View {
     /// bottom safe-area bar so it never overlaps the tab bar, and takes
     /// no space when there is nothing to say.
     func catalogSyncBar() -> some View {
-        safeAreaBar(edge: .bottom) {
-            CatalogSyncBar()
-                .animation(.easeInOut(duration: 0.25), value: CatalogSyncController.shared.phase.showsProgressBar)
-        }
+        safeAreaBar(edge: .bottom) { CatalogSyncBar() }
     }
 }

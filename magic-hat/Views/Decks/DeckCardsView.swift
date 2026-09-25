@@ -52,6 +52,11 @@ struct DeckCardsView: View {
 
     @Environment(\.modelContext) private var modelContext
     @State private var error: String?
+    /// Counts this list's steppers have written, shown until the snapshot
+    /// that includes them arrives. A tap used to show nothing until the
+    /// deck was re-read off the main actor — behind the Decks tab's and
+    /// the add sheet's re-reads of the same write.
+    @State private var pending: [UUID: (quantity: Int, at: Date)] = [:]
 
     private var locked: Bool { snapshot.isLocked }
     private var trimmedFilter: String { filterText.trimmingCharacters(in: .whitespaces) }
@@ -73,6 +78,10 @@ struct DeckCardsView: View {
                     var t = Transaction(); t.disablesAnimations = true
                     withTransaction(t) { proxy.scrollTo(id) }
                 }
+                // Every list write touches the deck's date, so a snapshot
+                // dated at or after a write carries it; one read before a
+                // later tap doesn't clear that tap's count.
+                .onChange(of: snapshot.updatedDate) { _, date in pending = pending.filter { $0.value.at > date } }
         }
             .alert("Couldn't Update Deck", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
@@ -226,8 +235,12 @@ struct DeckCardsView: View {
     }
 
     private func row(_ item: DeckCardItem) -> some View {
-        DeckCardRow(item: item, locked: locked, zoom: zoom, onSetQuantity: { setQuantity(item, $0) },
-                    onOpen: { open(item) })
+        let shown = pending[item.id].map {
+            DeckCardItem(id: item.id, board: item.board, quantity: $0.quantity, card: item.card,
+                         builtQuantity: item.builtQuantity, availableQuantity: item.availableQuantity)
+        } ?? item
+        return DeckCardRow(item: shown, locked: locked, zoom: zoom, onSetQuantity: { setQuantity(item, $0) },
+                           onOpen: { open(item) })
             .id(item.card.id)
             .contextMenu {
                 if !locked {
@@ -246,8 +259,11 @@ struct DeckCardsView: View {
     // MARK: Actions
 
     private func setQuantity(_ item: DeckCardItem, _ quantity: Int) {
-        do { try DeckEditController.setQuantity(deckCardID: item.id, quantity, context: modelContext) }
-        catch { self.error = error.localizedDescription }
+        do {
+            let at = Date()
+            try DeckEditController.setQuantity(deckCardID: item.id, quantity, context: modelContext)
+            pending[item.id] = (max(0, quantity), at)
+        } catch { self.error = error.localizedDescription }
     }
 
     private func move(_ item: DeckCardItem, to board: DeckBoard) {

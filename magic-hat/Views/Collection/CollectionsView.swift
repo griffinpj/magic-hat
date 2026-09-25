@@ -30,11 +30,17 @@ struct CollectionsView: View {
 
     @State private var showingFileImporter = false
     @State private var parsedRows: [ManaBoxRow] = []
+    @State private var parsedBinders: [ImportWizardView.BinderCount] = []
     @State private var showingWizard = false
     @State private var importError: String?
     @State private var isParsing = false
     @State private var overview: CollectionOverview?
     @State private var summaryTask: Task<Void, Never>?
+    /// A refresh came due while a collection was pushed on top.
+    @State private var summariesStale = false
+    /// Names already backfilled this session, so a query that hasn't
+    /// caught up yet can't make the backfill (and the recount) repeat.
+    @State private var backfilled: Set<String> = []
     @State private var pendingDelete: String?
     @State private var isDeleting = false
     /// Collection names (or `CollectionScope.allKey`) pushed onto the stack.
@@ -50,9 +56,15 @@ struct CollectionsView: View {
     /// Totals + top cards, computed off-main by the store. Debounced because
     /// hydration bumps its revision on every 75-card batch. The totals come
     /// first and land on the tab; the per-collection snapshots (every
-    /// collection sorted, the slow part) are prewarmed right after, so the
-    /// tab fills in one pass rather than waiting for all of them.
+    /// collection sorted) are prewarmed right after from the same rows, so
+    /// the tab fills in one pass rather than waiting for all of them.
+    ///
+    /// Skipped while a collection is pushed on top: the tab isn't showing,
+    /// and during a sync each pass re-read every row on the store's queue —
+    /// the queue the pushed grid's own refreshes wait on. It runs once on
+    /// the way back instead.
     private func scheduleSummaries(delay: Duration) {
+        guard path.isEmpty else { summariesStale = true; return }
         summaryTask?.cancel()
         summaryTask = Task {
             try? await Task.sleep(for: delay)
@@ -61,10 +73,35 @@ struct CollectionsView: View {
             let stamp = StoreStamp.current
             if let fresh = try? await store.overview(stamp: stamp), !Task.isCancelled {
                 overview = fresh
+                // A collection only rows knew about: now that it has its
+                // MTGCollection, count it too (same stamp, rows cached).
+                if backfillCollections(fresh.entryCollectionNames) {
+                    scheduleSummaries(delay: .zero)
+                    return
+                }
+                let key = overviewKey
+                Task { await Self.lastOverview.store(fresh, key: key) }
             }
             guard !Task.isCancelled else { return }
             try? await store.prewarmSnapshots(sort: sort, stamp: stamp)
         }
+    }
+
+    /// The last overview, on disk, so the tab shows its numbers the moment
+    /// it appears after a launch rather than a loading card while every
+    /// row is read (0.6s on the real collection in a debug build). The
+    /// fresh one replaces it as soon as it lands. Keyed by store file, and
+    /// never for the in-memory stores of UI tests.
+    private static let lastOverview = DiskJSONCache(folder: "Overview")
+    private var overviewKey: String {
+        "collections-" + (modelContext.container.configurations.first?.url.lastPathComponent ?? "store")
+    }
+
+    private func showLastOverview() async {
+        guard overview == nil, !UITestSeed.isSeededRun,
+              let last = await Self.lastOverview.stale(CollectionOverview.self, key: overviewKey)?.value,
+              overview == nil else { return }
+        overview = last
     }
 
     private func summary(for name: String) -> CollectionSummary? {
@@ -110,6 +147,7 @@ struct CollectionsView: View {
             .sheet(isPresented: $showingWizard) {
                 ImportWizardView(
                     rows: parsedRows,
+                    binderCounts: parsedBinders,
                     existingCollectionNames: collections.map(\.name)
                 )
             }
@@ -118,24 +156,36 @@ struct CollectionsView: View {
             } message: {
                 Text(importError ?? "")
             }
-            .task(id: tracker.revision) {
-                await backfillCollections()
-                scheduleSummaries(delay: .zero)
+            .task { await showLastOverview() }
+            .task(id: tracker.revision) { scheduleSummaries(delay: .zero) }
+            // Observed in a child, not with onChange here: reading the
+            // revision in this body re-rendered the tab — and re-created the
+            // import sheet's content — on every hydration batch.
+            .background {
+                HydrationObserver {
+                    scheduleSummaries(delay: hydrator.isSyncing ? .seconds(2) : .milliseconds(300))
+                }
             }
-            .onChange(of: hydrator.revision) { _, _ in
-                scheduleSummaries(delay: hydrator.isSyncing ? .seconds(2) : .milliseconds(300))
+            .onChange(of: path.isEmpty) { _, isEmpty in
+                if isEmpty, summariesStale {
+                    summariesStale = false
+                    scheduleSummaries(delay: .zero)
+                }
             }
         }
     }
 
     /// Ensures an MTGCollection row exists for every collection name present on
-    /// entries. Covers data imported before collections were modeled.
-    private func backfillCollections() async {
-        guard let names = try? await store.entryCollectionNames() else { return }
-        let missing = names.subtracting(collections.map(\.name))
-        guard !missing.isEmpty else { return }
+    /// entries. Covers data imported before collections were modeled. The
+    /// names come with the overview — a separate pass over every row used
+    /// to run ahead of it on each launch and each write.
+    private func backfillCollections(_ names: Set<String>) -> Bool {
+        let missing = names.subtracting(collections.map(\.name)).subtracting(backfilled)
+        guard !missing.isEmpty else { return false }
+        backfilled.formUnion(missing)
         for name in missing { modelContext.insert(MTGCollection(name: name)) }
         try? modelContext.save()
+        return true
     }
 
     private var deleteBinding: Binding<Bool> {
@@ -242,8 +292,9 @@ struct CollectionsView: View {
                 let outcome = await Self.parse(url: url)
                 isParsing = false
                 switch outcome {
-                case .rows(let rows):
+                case .rows(let rows, let binders):
                     parsedRows = rows
+                    parsedBinders = binders
                     showingWizard = true
                 case .failure(let message):
                     importError = message
@@ -253,7 +304,7 @@ struct CollectionsView: View {
     }
 
     private enum ParseOutcome: Sendable {
-        case rows([ManaBoxRow])
+        case rows([ManaBoxRow], binders: [ImportWizardView.BinderCount])
         case failure(String)
     }
 
@@ -273,7 +324,7 @@ struct CollectionsView: View {
                 guard !rows.isEmpty else {
                     return .failure("No card rows found in the file.")
                 }
-                return .rows(rows)
+                return .rows(rows, binders: ImportWizardView.binderCounts(of: rows))
             } catch {
                 return .failure(error.localizedDescription)
             }

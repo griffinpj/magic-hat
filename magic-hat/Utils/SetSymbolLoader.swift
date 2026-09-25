@@ -95,14 +95,12 @@ final class SetSymbolLoader {
         let pngURL = directory.appendingPathComponent("\(key).png")
         let task = Task { () -> UIImage? in
             // 1. Rasterized before (any launch).
-            if let data = try? Data(contentsOf: pngURL), let image = UIImage(data: data, scale: scale) {
-                return image
-            }
+            if let image = await Self.readPNG(pngURL, scale: scale) { return image }
             // 2. SVG bytes, from disk or Scryfall.
             guard let svg = await svgData(for: code) else { return nil }
             // 3. Rasterize on the shared web view, one at a time.
             guard let image = await rasterizer.rasterize(svg: svg, size: size) else { return nil }
-            if let data = image.pngData() { try? data.write(to: pngURL, options: .atomic) }
+            await Self.writePNG(image, to: pngURL)
             return image
         }
         inFlight[key] = task
@@ -112,9 +110,36 @@ final class SetSymbolLoader {
         return result
     }
 
+    // The file work runs on the global executor: this class is on the main
+    // actor, and a Task made here inherits it, so the PNG cache was read
+    // and decoded (and written) on the main thread as the viewer appeared.
+
+    @concurrent
+    private nonisolated static func readPNG(_ url: URL, scale: CGFloat) async -> UIImage? {
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data, scale: scale) else { return nil }
+        // Decode now, here, rather than lazily at first draw on the main thread.
+        return image.preparingForDisplay() ?? image
+    }
+
+    @concurrent
+    private nonisolated static func writePNG(_ image: UIImage, to url: URL) async {
+        if let data = image.pngData() { try? data.write(to: url, options: .atomic) }
+    }
+
+    @concurrent
+    private nonisolated static func readFile(_ url: URL) async -> Data? {
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        return data
+    }
+
+    @concurrent
+    private nonisolated static func writeFile(_ data: Data, to url: URL) async {
+        try? data.write(to: url, options: .atomic)
+    }
+
     private func svgData(for code: String) async -> Data? {
         let svgURL = directory.appendingPathComponent("\(code).svg")
-        if let data = try? Data(contentsOf: svgURL), !data.isEmpty { return data }
+        if let data = await Self.readFile(svgURL) { return data }
 
         let uriString: String
         if let known = svgURLByCode[code] {
@@ -126,11 +151,11 @@ final class SetSymbolLoader {
             return nil
         }
         guard let url = URL(string: uriString) else { return nil }
-        var request = URLRequest(url: url)
-        request.setValue("MagicHat/1.0", forHTTPHeaderField: "User-Agent")
-        request.setValue("image/svg+xml,*/*", forHTTPHeaderField: "Accept")
-        guard let (data, _) = try? await URLSession.shared.data(for: request), !data.isEmpty else { return nil }
-        try? data.write(to: svgURL, options: .atomic)
+        // Through HTTPClient, whose request runs off the main actor: a
+        // `URLSession.shared` touched here was touched on the main thread.
+        let http = HTTPClient(accept: "image/svg+xml,*/*")
+        guard let data = try? await http.requestData(url: url, rateLimit: .other), !data.isEmpty else { return nil }
+        await Self.writeFile(data, to: svgURL)
         return data
     }
 }
