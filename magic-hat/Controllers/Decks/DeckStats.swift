@@ -30,7 +30,19 @@ nonisolated enum ColorClass: String, CaseIterable, Hashable, Sendable, Codable {
 }
 
 nonisolated struct DeckIssue: Identifiable, Hashable, Sendable {
-    enum Kind: Hashable, Sendable { case tooFew, tooMany, overMaxCopies, notLegal, offIdentity, noCommander }
+    enum Kind: Hashable, Sendable {
+        case tooFew, tooMany, overMaxCopies, notLegal, offIdentity, noCommander
+
+        /// A rule the deck breaks as it stands, as opposed to something it
+        /// still lacks: a deck being built is short of cards and may have
+        /// no commander yet, and neither is worth a warning on every add.
+        var isViolation: Bool {
+            switch self {
+            case .tooFew, .noCommander: return false
+            case .tooMany, .overMaxCopies, .notLegal, .offIdentity: return true
+            }
+        }
+    }
     let kind: Kind
     let message: String
     var id: String { message }
@@ -73,6 +85,20 @@ nonisolated struct DeckStats: Hashable, Sendable {
     let availableCopies: Int
     let missingCopies: Int
     let issues: [DeckIssue]
+
+    /// The issues that are rules broken (see `DeckIssue.Kind.isViolation`).
+    var violations: [DeckIssue] { issues.filter { $0.kind.isViolation } }
+
+    /// One line for a banner: "3 cards over 100 · 2 outside colour identity".
+    var violationSummary: String {
+        let by = Dictionary(grouping: violations, by: \.kind)
+        var parts: [String] = []
+        if let over = by[.tooMany]?.first { parts.append(over.message) }
+        if let n = by[.offIdentity]?.count, n > 0 { parts.append("\(n) outside colour identity") }
+        if let n = by[.overMaxCopies]?.count, n > 0 { parts.append(n == 1 ? "1 over its copy limit" : "\(n) over their copy limit") }
+        if let n = by[.notLegal]?.count, n > 0 { parts.append("\(n) not legal") }
+        return parts.joined(separator: " · ")
+    }
 
     static let empty = DeckStats(curve: [], pips: [:], genericPips: 0, production: [:], colorlessProduction: 0,
                                  types: [], rarities: [], averageManaValue: 0, medianManaValue: 0, totalManaValue: 0,
@@ -158,9 +184,8 @@ nonisolated struct DeckStats: Hashable, Sendable {
             if produced.colorless { colorlessProduction += qty }
 
             // Legality and identity issues.
-            let isBasicLand = (card.typeLine ?? "").hasPrefix("Basic Land")
-            if !isBasicLand, qty > format.maxCopies {
-                issues.append(DeckIssue(kind: .overMaxCopies, message: "\(card.name): \(qty) copies (max \(format.maxCopies))"))
+            if let limit = copyLimit(for: card, format: format), qty > limit {
+                issues.append(DeckIssue(kind: .overMaxCopies, message: "\(card.name): \(qty) copies (max \(limit))"))
             }
             if let key = format.legalityKey, let legal = card.legalities?[key], legal != "legal" {
                 issues.append(DeckIssue(kind: .notLegal, message: "\(card.name) is not legal in \(format.label)"))
@@ -209,6 +234,31 @@ nonisolated struct DeckStats: Hashable, Sendable {
             issues: issues
         )
     }
+
+    /// How many copies a deck may run of a card, or nil for no limit: the
+    /// format's number, unless the card says otherwise. Basic lands (snow
+    /// ones too) are unlimited, and so are the cards that print their own
+    /// exception — "A deck can have any number of cards named Shadowborn
+    /// Apostle", "A deck can have up to nine cards named Nazgûl". The rule
+    /// is on the card, so it is read from the card rather than kept as a
+    /// list here that goes stale with every set.
+    static func copyLimit(for card: CardItem, format: DeckFormat) -> Int? {
+        if let type = card.typeLine, type.hasPrefix("Basic ") { return nil }
+        if let text = card.oracleText, let range = text.range(of: "A deck can have ") {
+            let rest = text[range.upperBound...]
+            if rest.hasPrefix("any number of") { return nil }
+            if rest.hasPrefix("up to ") {
+                let word = rest.dropFirst("up to ".count).prefix { $0.isLetter || $0.isNumber }
+                if let n = Int(word) ?? numberWords[word.lowercased()] { return n }
+            }
+        }
+        return format.maxCopies
+    }
+
+    private static let numberWords: [String: Int] = [
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+        "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "twenty": 20,
+    ]
 
     /// Colours a permanent can add: basic land types, and "Add {X}" /
     /// "Add one mana of any color" in its rules text.

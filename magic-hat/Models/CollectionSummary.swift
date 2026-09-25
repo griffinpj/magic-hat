@@ -24,3 +24,28 @@ nonisolated struct CollectionSummary: Identifiable, Hashable, Sendable {
         let aspectRatio: Double
     }
 }
+
+/// The synthetic "All Collection": every owned row across every
+/// collection and every built deck, so the user can see everything they
+/// hold in one grid. It is a scope the store understands, not an
+/// MTGCollection row — nothing can be imported into it or deleted from it.
+nonisolated enum CollectionScope {
+    static let allKey = "*all*"
+    static let allName = "All Collection"
+
+    static func isAll(_ name: String) -> Bool { name == allKey }
+    static func displayName(_ name: String) -> String { isAll(name) ? allName : name }
+}
+
+/// The Collections tab in one value: each collection, the whole library,
+/// and how much of it sits in built decks.
+nonisolated struct CollectionOverview: Hashable, Sendable {
+    let collections: [CollectionSummary]
+    let all: CollectionSummary
+    let deckCopies: Int
+    let deckValue: Double
+
+    var collectionCopies: Int { all.totalCopies - deckCopies }
+    var collectionValue: Double { all.totalValue - deckValue }
+    var deckFraction: Double { all.totalCopies > 0 ? Double(deckCopies) / Double(all.totalCopies) : 0 }
+}

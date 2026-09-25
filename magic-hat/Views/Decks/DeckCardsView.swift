@@ -2,19 +2,25 @@
 //  DeckCardsView.swift
 //  magic-hat
 //
-//  The Cards tab of a deck. Two modes behind one search field:
+//  The Cards tab of a deck: the list itself — commander, then the
+//  mainboard grouped by type with counts and value, then sideboard and
+//  maybeboard — with each row saying what the collection can do about it
+//  (built, available, missing). The screen's search field narrows the
+//  list — the text arrives from the parent, which owns the field. Adding
+//  cards is the "+" in the bar: DeckAddCardsView, a sheet, so the field
+//  has one meaning.
 //
-//  - Unlocked: the field *adds* cards. Results come from the collection
-//    (in memory, one row per card with the copies owned) or from Scryfall
-//    (All Cards), narrowed by the same filter sheet as everywhere else and,
-//    for commander decks, by the commander's colour identity. A board
-//    picker says where "+" puts the card; tapping a row opens the viewer,
-//    whose Add goes to the same board.
-//  - Locked: the field *filters* the deck; nothing can be added or counted.
+//  A plain list, so the type headers pin as the list scrolls (Contacts,
+//  Music's Songs): a hundred rows in eight groups, and mid-scroll the
+//  header says which group this is. The inset-grouped style never pins.
+//  Rows have no swipe actions — the stepper takes a card out in one tap,
+//  and a trailing swipe on a paged screen fought the page swipe.
 //
-//  With no search, the list itself: commander, then the mainboard grouped
-//  by type with counts and value, then sideboard and maybeboard. Each row
-//  shows what the collection can do about it — built, available, missing.
+//  When the deck breaks a rule of its format (over the size, outside the
+//  commander's colour identity, over a copy limit, not legal) the first
+//  row says so and leads to the Stats tab's full check. A banner row, not
+//  an alert: the state is allowed and common mid-build, and it clears
+//  itself as the list is fixed.
 //
 
 import SwiftUI
@@ -22,218 +28,87 @@ import SwiftData
 
 struct DeckCardsView: View {
     let snapshot: DeckSnapshot
-    /// True while the field is active or something is typed or filtered;
-    /// the parent hides its section picker to give the search the room.
-    @Binding var searchActive: Bool
+    /// The screen's search text, applied in memory.
+    let filterText: String
+    let onAddCards: () -> Void
+    /// Tapping the issues row: the Stats tab lists every issue.
+    var onShowIssues: (() -> Void)? = nil
+    /// The deck's analysis, for the swaps row; nil when the list is not
+    /// analysed (previews).
+    var analysis: DeckAnalysisController? = nil
+    /// Tapping the swaps row: the swap table.
+    var onShowSwaps: (() -> Void)? = nil
+    /// The zoom namespace and the viewer belong to the deck screen, which
+    /// presents the viewer (see DeckDetailView): a `fullScreenCover` on
+    /// this page stopped presenting after a sheet had been shown while
+    /// another page was selected, until the page was re-selected.
+    let zoom: Namespace.ID
+    /// The viewer the screen is showing, so the list can follow it.
+    var viewer: CardViewerSession? = nil
+    /// The deck as the viewer's target: −/+ on the mainboard in its bar,
+    /// and "+" on the Synergies screen it pushes. Nil while loading.
+    var session: DeckAddSession? = nil
+    var onOpenViewer: ((CardViewerSession) -> Void)? = nil
 
     @Environment(\.modelContext) private var modelContext
-    @State private var fieldActive = false
-
-    @State private var searchText = ""
-    @State private var query = CardSearchQuery()
-    @State private var scope: DeckSearchScope = .collection
-    @State private var board: DeckBoard = .main
-    @State private var identityFilter = true
-    @State private var showFilters = false
-    @State private var controller = SearchController()
-    @State private var owned: [CardItem] = []
-    @State private var ownedLoaded = false
-    @State private var collectionResults: [DeckSearchResult] = []
-    @State private var collectionTask: Task<Void, Never>?
-    @State private var viewerItems: [CardItem] = []
-    @State private var viewing: CardItem?
-    @State private var viewingID: String?
-    @State private var addCount = 0
     @State private var error: String?
-    @State private var dismissTrigger = 0
 
-    private var collectionTracker: CollectionChangeTracker { .shared }
-
-    private var hasCriteria: Bool { !searchText.trimmingCharacters(in: .whitespaces).isEmpty || query.hasFilters }
-    /// The search UI (scope, board, filters, results) shows as soon as the
-    /// field is active, so filters can be set before typing anything.
-    private var isSearching: Bool { fieldActive || hasCriteria }
     private var locked: Bool { snapshot.isLocked }
-    private var usesIdentity: Bool { snapshot.format.hasCommander && !snapshot.commanders.isEmpty }
+    private var trimmedFilter: String { filterText.trimmingCharacters(in: .whitespaces) }
 
-    /// Copies already on each board, by card, for the "in deck" badges.
-    private var inDeckByKey: [DeckBoard: [String: Int]] {
-        var out: [DeckBoard: [String: Int]] = [:]
-        for item in snapshot.allItems {
-            out[item.board, default: [:]][item.card.oracleID ?? item.card.scryfallID, default: 0] += item.quantity
-        }
-        return out
+    /// The rows matching the field, or nil when nothing is typed.
+    private var filtered: [DeckCardItem]? {
+        guard !trimmedFilter.isEmpty else { return nil }
+        var q = CardSearchQuery()
+        q.text = trimmedFilter
+        return snapshot.allItems.filter { q.matches($0.card) }
     }
 
     var body: some View {
-        content
-            .background {
-                SearchDismisser(trigger: dismissTrigger, isEmpty: searchText.isEmpty)
-                SearchActivityReporter(isActive: $fieldActive)
-            }
-            .onChange(of: isSearching, initial: true) { _, active in
-                withAnimation(.snappy) { searchActive = active }
-            }
-            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: locked ? "Search this deck" : "Add cards")
-            .searchPresentationToolbarBehavior(.avoidHidingContent)
-            .onSubmit(of: .search) { runSearch(immediately: true) }
-            .onChange(of: searchText) { _, _ in runSearch(immediately: false) }
-            .onChange(of: query) { _, _ in runSearch(immediately: true) }
-            .onChange(of: scope) { _, _ in runSearch(immediately: true) }
-            .onChange(of: identityFilter) { _, _ in runSearch(immediately: true) }
-            .sheet(isPresented: $showFilters) {
-                SearchFiltersView(query: $query, context: scope == .collection ? .collection : .scryfall)
-            }
-            .fullScreenCover(item: $viewing, onDismiss: { viewingID = nil }) { item in
-                CardViewerView(items: viewerItems, currentID: $viewingID,
-                               deckTarget: locked ? nil : DeckAddTarget(deckID: snapshot.id, deckName: snapshot.name, board: board))
-            }
-            .sensoryFeedback(.success, trigger: addCount)
+        ScrollViewReader { proxy in
+            content
+                // Keep the viewer's row in view so the zoom-out lands on it.
+                .onChange(of: viewer?.currentID) { old, id in
+                    guard old != nil, let id else { return }
+                    var t = Transaction(); t.disablesAnimations = true
+                    withTransaction(t) { proxy.scrollTo(id) }
+                }
+        }
             .alert("Couldn't Update Deck", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
-            .task(id: collectionTracker.revision) { await loadOwned() }
     }
-
-    // MARK: Content
 
     @ViewBuilder private var content: some View {
-        if isSearching, !locked {
-            VStack(spacing: 0) {
-                searchHeader
-                searchResults
-            }
-        } else {
-            deckList
-        }
-    }
-
-    /// Scope, board and identity live above the results, not in the
-    /// filter sheet: they change what "+" means, and they change often.
-    private var searchHeader: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 10) {
-                Picker("Source", selection: $scope) {
-                    ForEach(DeckSearchScope.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("deck-search-scope")
-                Menu {
-                    ForEach(DeckBoard.addable) { b in
-                        Button { board = b } label: {
-                            Label(b.label, systemImage: b == board ? "checkmark" : "")
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(board.label)
-                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                    }
-                    .font(.subheadline.weight(.medium))
-                }
-                .menuOrder(.fixed)
-                .accessibilityIdentifier("deck-search-board")
-                Button {
-                    showFilters = true
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .symbolVariant(query.hasFilters ? .circle.fill : .circle)
-                        .foregroundStyle(query.hasFilters ? Color.accentColor : Color.primary)
-                }
-                .accessibilityLabel("Filters")
-                .accessibilityIdentifier("deck-search-filters")
-            }
-            if usesIdentity {
-                Toggle(isOn: $identityFilter) {
-                    HStack(spacing: 4) {
-                        Text("Within identity")
-                        ForEach(snapshot.identity, id: \.self) { color in
-                            ManaSymbolView(symbol: ManaSymbol(color.rawValue), size: 14)
-                        }
-                    }
-                    .font(.footnote)
-                }
-                .toggleStyle(.button)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder private var searchResults: some View {
-        switch scope {
-        case .collection:
-            if !hasCriteria {
-                ContentUnavailableView("Search Your Collection", systemImage: "tray.full",
-                                       description: Text("Type a name, or set filters."))
-            } else if !ownedLoaded {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if collectionResults.isEmpty {
-                ContentUnavailableView("Nothing in Your Collection", systemImage: "tray",
-                                       description: Text("Try All Cards to search everything."))
-            } else {
-                List(collectionResults) { result in
-                    resultRow(result.card, ownedCopies: result.ownedCopies)
-                }
-                .listStyle(.plain)
-                .scrollDismissesKeyboard(.immediately)
-            }
-        case .all:
-            switch controller.phase {
-            case .idle:
-                ContentUnavailableView("Search All Cards", systemImage: "magnifyingglass",
-                                       description: Text("Type a name, or set filters."))
-                    .id(hasCriteria)
-            case .searching:
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .empty:
-                ContentUnavailableView.search(text: searchText)
-            case .failed(let message):
-                ContentUnavailableView("Search Failed", systemImage: "wifi.exclamationmark", description: Text(message))
-            case .results:
-                List(Array(controller.results.enumerated()), id: \.element.id) { index, item in
-                    resultRow(item, ownedCopies: ownedCopies(for: item))
-                        .onAppear { controller.loadMore(near: index) }
-                }
-                .listStyle(.plain)
-                .scrollDismissesKeyboard(.immediately)
-            }
-        }
-    }
-
-    private func resultRow(_ item: CardItem, ownedCopies: Int?) -> some View {
-        let key = item.oracleID ?? item.scryfallID
-        let legalKey = snapshot.format.legalityKey
-        let notLegal = legalKey.flatMap { item.legalities?[$0] }.map { $0 != "legal" } ?? false
-        return DeckSearchRow(
-            item: item, ownedCopies: ownedCopies, inDeck: inDeckByKey[board]?[key] ?? 0,
-            notLegal: notLegal, onAdd: { add(item) }, onOpen: { open(item) }
-        )
-    }
-
-    // MARK: Deck list
-
-    @ViewBuilder private var deckList: some View {
-        let filtered = locked && hasCriteria ? filteredSnapshotItems : nil
         if snapshot.allItems.isEmpty {
             ContentUnavailableView {
-                Label("Empty Deck", systemImage: "rectangle.stack")
+                Label("No Cards", systemImage: "rectangle.stack")
             } description: {
-                Text(locked ? "Unlock the deck to add cards." : "Search above to add cards from your collection or all of Magic.")
+                Text(locked ? "Unlock the deck to add cards." : "Add cards from your collection or from all of Magic.")
+            } actions: {
+                if !locked {
+                    Button("Add Cards", systemImage: "plus", action: onAddCards)
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("deck-empty-add")
+                }
             }
         } else if let filtered, filtered.isEmpty {
-            ContentUnavailableView.search(text: searchText)
+            ContentUnavailableView.search(text: trimmedFilter)
         } else {
             List {
                 if let filtered {
-                    Section("\(filtered.count) matching") {
+                    Section {
                         ForEach(filtered) { row($0) }
+                    } header: {
+                        header { Text("\(filtered.count) matching") }
                     }
                 } else {
+                    if !snapshot.stats.violations.isEmpty {
+                        issuesRow
+                    }
+                    if let plan = analysis?.plan, plan.changeCount > 0 {
+                        swapsRow(plan)
+                    }
                     if snapshot.format.hasCommander || !snapshot.commanders.isEmpty {
                         Section {
                             ForEach(snapshot.commanders) { row($0) }
@@ -241,14 +116,14 @@ struct DeckCardsView: View {
                                 Text("No commander chosen").foregroundStyle(.secondary)
                             }
                         } header: {
-                            Label("Commander", systemImage: "crown")
+                            header { Label("Commander", systemImage: "crown") }
                         }
                     }
                     ForEach(snapshot.sections) { section in
                         Section {
                             ForEach(section.items) { row($0) }
                         } header: {
-                            HStack {
+                            header {
                                 if let glyph = section.glyph {
                                     ManaGlyphView(name: glyph, size: 14)
                                 }
@@ -256,32 +131,107 @@ struct DeckCardsView: View {
                                 Spacer()
                                 Text("\(section.copies) · \(PriceFormat.compact(section.value))")
                                     .monospacedDigit()
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
                     if !snapshot.sideboard.isEmpty {
-                        Section("Sideboard · \(snapshot.sideboard.reduce(0) { $0 + $1.quantity })") {
+                        Section {
                             ForEach(snapshot.sideboard) { row($0) }
+                        } header: {
+                            header { Text("Sideboard · \(snapshot.sideboard.reduce(0) { $0 + $1.quantity })") }
                         }
                     }
                     if !snapshot.maybeboard.isEmpty {
-                        Section("Maybeboard · \(snapshot.maybeboard.reduce(0) { $0 + $1.quantity })") {
+                        Section {
                             ForEach(snapshot.maybeboard) { row($0) }
+                        } header: {
+                            header { Text("Maybeboard · \(snapshot.maybeboard.reduce(0) { $0 + $1.quantity })") }
                         }
                     }
                 }
             }
-            .listStyle(.insetGrouped)
+            .listStyle(.plain)
             .scrollDismissesKeyboard(.immediately)
         }
     }
 
+    /// A pinned header: sentence case and primary, as in Music, rather than
+    /// the small caps of a grouped list.
+    private func header<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 6) { content() }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.primary)
+            .textCase(nil)
+    }
+
+    private var issuesRow: some View {
+        Section {
+            Button {
+                onShowIssues?()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(snapshot.stats.violationSummary)
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Deck issues: \(snapshot.stats.violationSummary)")
+            .accessibilityIdentifier("deck-issues")
+        }
+    }
+
+    /// The swap table has something to say: a row, like the issues row,
+    /// so it is never buried. Absent when there is nothing to suggest.
+    private func swapsRow(_ plan: DeckPlan) -> some View {
+        Section {
+            Button {
+                onShowSwaps?()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .foregroundStyle(Color.accentColor)
+                    Text(Self.swapsLine(plan))
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Suggested swaps: \(Self.swapsLine(plan))")
+            .accessibilityIdentifier("deck-swaps-row")
+        }
+    }
+
+    nonisolated static func swapsLine(_ plan: DeckPlan) -> String {
+        var bits: [String] = []
+        if !plan.swaps.isEmpty { bits.append(plan.swaps.count == 1 ? "1 swap" : "\(plan.swaps.count) swaps") }
+        if !plan.fills.isEmpty { bits.append(plan.fills.count == 1 ? "1 add" : "\(plan.fills.count) adds") }
+        if !plan.trims.isEmpty { bits.append(plan.trims.count == 1 ? "1 cut" : "\(plan.trims.count) cuts") }
+        return "Suggested: " + bits.joined(separator: " · ")
+    }
+
     private func row(_ item: DeckCardItem) -> some View {
-        DeckCardRow(item: item, locked: locked, onSetQuantity: { setQuantity(item, $0) },
-                    onOpen: { openDeckItem(item) })
+        DeckCardRow(item: item, locked: locked, zoom: zoom, onSetQuantity: { setQuantity(item, $0) },
+                    onOpen: { open(item) })
+            .id(item.card.id)
             .contextMenu {
                 if !locked {
-                    ForEach(DeckBoard.addable.filter { $0 != item.board }) { b in
+                    ForEach(DeckBoard.addable.filter { $0 != item.board }, id: \.rawValue) { b in
                         Button("Move to \(b.label)", systemImage: "arrow.right") { move(item, to: b) }
                     }
                     if snapshot.format.hasCommander, item.board != .commander {
@@ -291,107 +241,9 @@ struct DeckCardsView: View {
                     Button("Remove", systemImage: "trash", role: .destructive) { setQuantity(item, 0) }
                 }
             }
-            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                if !locked {
-                    Button("Remove", systemImage: "trash", role: .destructive) { setQuantity(item, 0) }
-                }
-            }
-    }
-
-    /// Locked: the field and filters narrow the deck itself.
-    private var filteredSnapshotItems: [DeckCardItem] {
-        var q = query
-        q.text = searchText
-        return snapshot.allItems.filter { q.matches($0.card) }
-    }
-
-    // MARK: Search
-
-    /// The query actually run: the user's filters plus the commander's
-    /// colour identity. Format legality is *shown* on each result ("Not
-    /// legal"), not enforced: a card whose legality isn't cached yet would
-    /// otherwise vanish, and the user may want it anyway.
-    private func effectiveQuery() -> CardSearchQuery {
-        var q = query
-        q.text = searchText
-        if usesIdentity, identityFilter {
-            q.useColorIdentity = true
-            if snapshot.identity.isEmpty {
-                q.colors = []
-                q.colorless = true
-            } else {
-                q.colors = Set(snapshot.identity)
-                q.colorMode = .atMost
-            }
-        }
-        return q
-    }
-
-    private func runSearch(immediately: Bool) {
-        guard !locked else { return }
-        guard hasCriteria else {
-            controller.clear()
-            collectionResults = []
-            return
-        }
-        switch scope {
-        case .all:
-            let q = effectiveQuery()
-            controller.query = q
-            if immediately { controller.run() } else { controller.scheduleRun() }
-        case .collection:
-            collectionTask?.cancel()
-            let q = effectiveQuery()
-            let all = owned
-            collectionTask = Task.detached(priority: .userInitiated) {
-                if !immediately { try? await Task.sleep(for: .milliseconds(150)) }
-                guard !Task.isCancelled else { return }
-                let results = Self.groupOwned(all.filter { q.matches($0) })
-                guard !Task.isCancelled else { return }
-                await MainActor.run { collectionResults = results }
-            }
-        }
-    }
-
-    /// One row per card across every printing owned, copies summed.
-    nonisolated private static func groupOwned(_ items: [CardItem]) -> [DeckSearchResult] {
-        var byKey: [String: DeckSearchResult] = [:]
-        for item in items {
-            let key = item.oracleID ?? item.scryfallID
-            if var existing = byKey[key] {
-                existing = DeckSearchResult(card: existing.card, ownedCopies: existing.ownedCopies + item.quantity)
-                byKey[key] = existing
-            } else {
-                byKey[key] = DeckSearchResult(card: item, ownedCopies: item.quantity)
-            }
-        }
-        return byKey.values.sorted { $0.card.sortKey < $1.card.sortKey }
-    }
-
-    private func ownedCopies(for item: CardItem) -> Int {
-        let key = item.oracleID ?? item.scryfallID
-        return owned.filter { ($0.oracleID ?? $0.scryfallID) == key }.reduce(0) { $0 + $1.quantity }
-    }
-
-    private func loadOwned() async {
-        let store = DeckStore.shared(for: modelContext.container)
-        if let cards = try? await store.ownedCards(), !Task.isCancelled {
-            owned = cards
-        }
-        ownedLoaded = true
-        if hasCriteria, scope == .collection { runSearch(immediately: true) }
     }
 
     // MARK: Actions
-
-    private func add(_ item: CardItem) {
-        do {
-            try DeckEditController.add(PrintingSelection(item: item), to: snapshot.id, board: board, context: modelContext)
-            addCount += 1
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
 
     private func setQuantity(_ item: DeckCardItem, _ quantity: Int) {
         do { try DeckEditController.setQuantity(deckCardID: item.id, quantity, context: modelContext) }
@@ -410,36 +262,10 @@ struct DeckCardsView: View {
         } catch { self.error = error.localizedDescription }
     }
 
-    private func open(_ item: CardItem) {
-        viewerItems = scope == .collection ? collectionResults.map(\.card) : controller.results
-        viewingID = item.id
-        viewing = item
-    }
-
-    private func openDeckItem(_ item: DeckCardItem) {
-        viewerItems = snapshot.allItems.map(\.card)
-        viewingID = item.card.id
-        viewing = item.card
-    }
-}
-
-/// A card found in the collection by a deck's search.
-nonisolated struct DeckSearchResult: Identifiable, Hashable, Sendable {
-    let card: CardItem
-    let ownedCopies: Int
-    var id: String { card.oracleID ?? card.scryfallID }
-}
-
-/// Relays the searchable field's activity (which only exists in the
-/// environment inside the searchable content) to a binding.
-private struct SearchActivityReporter: View {
-    @Binding var isActive: Bool
-    @Environment(\.isSearching) private var isSearching
-
-    var body: some View {
-        Color.clear
-            .onChange(of: isSearching, initial: true) { _, value in
-                if isActive != value { isActive = value }
-            }
+    /// The viewer pages through the whole list (or the filtered rows).
+    private func open(_ item: DeckCardItem) {
+        let items = (filtered ?? snapshot.allItems).map(\.card)
+        session?.board = .main
+        onOpenViewer?(CardViewerSession(items: items, currentID: item.card.id, deck: locked ? nil : session))
     }
 }

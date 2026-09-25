@@ -29,7 +29,7 @@ struct RealCollectionImportTests {
             selectedBinders: Set(rows.map(\.binderName)),
             collectionName: "Library",
             mode: .add,
-            context: ctx
+            container: container
         ) { _ in }
 
         // Expected shape, recomputed from the rows.
@@ -69,7 +69,7 @@ struct RealCollectionImportTests {
 
         _ = try await ImportController.apply(
             rows: rows, selectedBinders: ["dragons"],
-            collectionName: "Dragons", mode: .add, context: ctx
+            collectionName: "Dragons", mode: .add, container: container
         ) { _ in }
 
         let wanted = rows.filter { $0.binderName == "dragons" }
@@ -83,7 +83,7 @@ struct RealCollectionImportTests {
         let container = try TestSupport.makeContainer()
         _ = try await ImportController.apply(
             rows: rows, selectedBinders: Set(rows.map(\.binderName)),
-            collectionName: "Library", mode: .add, context: container.mainContext
+            collectionName: "Library", mode: .add, container: container
         ) { _ in }
 
         let snapshot = try await CollectionStore.shared(for: container)

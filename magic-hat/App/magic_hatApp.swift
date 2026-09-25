@@ -10,8 +10,16 @@ import SwiftData
 
 @main
 struct magic_hatApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var sharedModelContainer: ModelContainer = {
-        let isUITest = ProcessInfo.processInfo.arguments.contains("-uitest-seed")
+        let arguments = ProcessInfo.processInfo.arguments
+        let isUITest = arguments.contains("-uitest-seed")
+        // `-uitest-real`: a real user's store — on disk, kept between
+        // launches (UITEST_RESET=1 wipes it), the network on, and the real
+        // ManaBox export imported on first launch (UITestSeed). The catalog
+        // download alone is skipped: 79MB is not a test.
+        let isRealRun = arguments.contains("-uitest-real")
         let schema = Schema([
             MTGCollection.self,
             CollectionEntry.self,
@@ -22,11 +30,36 @@ struct magic_hatApp: App {
             Deck.self,
             DeckCard.self,
         ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isUITest)
+        // Tests run in memory, except when a test wants the real thing:
+        // `UITEST_DISK_STORE=1` uses a fresh SQLite file in tmp, so disk
+        // contention between readers and the catalog writer is measurable.
+        let modelConfiguration: ModelConfiguration
+        if isRealRun {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("uitest-real.sqlite")
+            if ProcessInfo.processInfo.environment["UITEST_RESET"] != nil {
+                for suffix in ["", "-wal", "-shm"] {
+                    try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + suffix))
+                }
+            }
+            modelConfiguration = ModelConfiguration(schema: schema, url: url)
+        } else if isUITest, ProcessInfo.processInfo.environment["UITEST_DISK_STORE"] != nil {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("uitest-store.sqlite")
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: url.path + suffix))
+            }
+            modelConfiguration = ModelConfiguration(schema: schema, url: url)
+        } else {
+            modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: isUITest)
+        }
 
         do {
             let container = try ModelContainer(for: schema, configurations: [modelConfiguration])
-            if isUITest { UITestSeed.populate(container) }
+            if isUITest {
+                UITestSeed.populate(container)
+                UITestSeed.startIngestLoopIfRequested(container)
+            } else if isRealRun {
+                UITestSeed.prepareRealRun()
+            }
             return container
         } catch {
             fatalError("Could not create ModelContainer: \(error)")
@@ -34,6 +67,10 @@ struct magic_hatApp: App {
     }()
 
     init() {
+        // The catalog sync needs the container without a scene: a background
+        // refresh or a finished background download can relaunch the app
+        // with no window at all.
+        CatalogSyncController.shared.attach(container: sharedModelContainer)
         #if DEBUG
         HangDetector.start()
         #endif

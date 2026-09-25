@@ -94,7 +94,7 @@ struct ManaSymbolView: View {
 }
 
 /// Mana's cost palette (css/mana.css `.ms-cost`).
-enum ManaPalette {
+nonisolated enum ManaPalette {
     static let generic = Color(red: 0xbe / 255, green: 0xb9 / 255, blue: 0xb2 / 255)
     static let ink = Color(red: 0x11 / 255, green: 0x11 / 255, blue: 0x11 / 255)
 
@@ -155,6 +155,7 @@ struct OracleTextView: View {
     var symbolSize: CGFloat = 15
 
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -172,32 +173,105 @@ struct OracleTextView: View {
         ManaSymbol.segments(in: line).reduce(Text("")) { acc, segment in
             switch segment {
             case .text(let s):
-                return acc + Text(s)
+                return Text("\(acc)\(s)")
             case .symbol(let symbol):
-                if let image = ManaSymbolRenderer.image(for: symbol, size: symbolSize, scale: displayScale) {
-                    return acc + Text(" ") + Text(Image(uiImage: image)) + Text(" ")
+                if let image = ManaSymbolRenderer.image(for: symbol, size: symbolSize, scale: displayScale, colorScheme: colorScheme) {
+                    return Text("\(acc) \(Image(uiImage: image)) ")
                 }
-                return acc + Text("{\(symbol.raw)}")
+                return Text("\(acc){\(symbol.raw)}")
             }
         }
     }
 }
 
-/// Renders symbols to bitmaps for inline use, cached per symbol/size/scale.
-/// A card mentions a handful of distinct symbols, so this is a few renders
-/// per screen, once.
+/// Renders symbols to bitmaps for inline use, cached per symbol/size/scale
+/// (and scheme, for the bare glyphs drawn in the text colour). A card
+/// mentions a handful of distinct symbols, so this is a few renders per
+/// screen, once.
+///
+/// Drawn with Core Graphics and Core Text — the same composition as
+/// ManaSymbolView — not with `ImageRenderer`: an ImageRenderer image is
+/// backed by a RenderBox provider that renders lazily, and the text layer
+/// that finally drew the pip waited on it — 0.51s on the main thread
+/// opening a detail screen (HangDetector: CABackingStoreUpdate → RB
+/// ImageProvider wait_phase). A CG bitmap is pixels the moment it exists.
 @MainActor
 enum ManaSymbolRenderer {
     private static var cache: [String: UIImage] = [:]
 
-    static func image(for symbol: ManaSymbol, size: CGFloat, scale: CGFloat) -> UIImage? {
-        let key = "\(symbol.raw)|\(size)|\(scale)"
+    static func image(for symbol: ManaSymbol, size: CGFloat, scale: CGFloat, colorScheme: ColorScheme = .light) -> UIImage? {
+        let key = "\(symbol.raw)|\(size)|\(scale)|\(colorScheme == .dark ? "d" : "l")"
         if let cached = cache[key] { return cached }
-        let renderer = ImageRenderer(content: ManaSymbolView(symbol: symbol, size: size))
-        renderer.scale = scale
-        guard let image = renderer.uiImage else { return nil }
+        guard let image = ManaSymbolBitmap.render(symbol, size: size, scale: scale, dark: colorScheme == .dark) else { return nil }
         cache[key] = image
         return image
+    }
+}
+
+/// The pip as a bitmap: Mana's composition in Core Graphics.
+nonisolated enum ManaSymbolBitmap {
+    static func render(_ symbol: ManaSymbol, size: CGFloat, scale: CGFloat, dark: Bool) -> UIImage? {
+        guard size > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = false
+        let bounds = CGRect(x: 0, y: 0, width: size, height: size)
+        return UIGraphicsImageRenderer(bounds: bounds, format: format).image { context in
+            let cg = context.cgContext
+            if !symbol.drawsBare { drawPip(symbol, in: bounds, cg) }
+            let tl = CGPoint(x: -size * 0.19, y: -size * 0.19)
+            let br = CGPoint(x: size * 0.19, y: size * 0.19)
+            let ink: UIColor = symbol.drawsBare ? (dark ? .white : .black) : UIColor(ManaPalette.ink)
+            if symbol.parts.count == 3 {
+                drawGlyph("P", scale: 0.5, offset: tl, size: size, ink: ink, in: bounds)
+                drawGlyph("P", scale: 0.5, offset: br, size: size, ink: ink, in: bounds)
+            } else if symbol.isHybrid, !symbol.isPhyrexian {
+                drawGlyph(symbol.parts[0], scale: 0.5, offset: tl, size: size, ink: ink, in: bounds)
+                drawGlyph(symbol.parts[1], scale: 0.5, offset: br, size: size, ink: ink, in: bounds)
+            } else if symbol.isPhyrexian {
+                drawGlyph("P", scale: 0.68, offset: .zero, size: size, ink: ink, in: bounds)
+            } else if let part = symbol.parts.first {
+                drawGlyph(part, scale: symbol.drawsBare ? 0.95 : 0.68, offset: .zero, size: size, ink: ink, in: bounds)
+            }
+        }
+    }
+
+    private static func drawPip(_ symbol: ManaSymbol, in bounds: CGRect, _ cg: CGContext) {
+        cg.saveGState()
+        cg.addEllipse(in: bounds)
+        cg.clip()
+        if symbol.parts.count == 3 || (symbol.isHybrid && !symbol.isPhyrexian) {
+            // Split along the anti-diagonal, first colour top-left.
+            cg.setFillColor(UIColor(ManaPalette.pip(for: symbol.parts[1])).cgColor)
+            cg.fill(bounds)
+            cg.setFillColor(UIColor(ManaPalette.pip(for: symbol.parts[0])).cgColor)
+            cg.move(to: CGPoint(x: bounds.minX, y: bounds.minY))
+            cg.addLine(to: CGPoint(x: bounds.maxX, y: bounds.minY))
+            cg.addLine(to: CGPoint(x: bounds.minX, y: bounds.maxY))
+            cg.closePath()
+            cg.fillPath()
+        } else {
+            let color = symbol.colors.first.map { ManaPalette.color($0) } ?? ManaPalette.generic
+            cg.setFillColor(UIColor(color).cgColor)
+            cg.fill(bounds)
+        }
+        cg.restoreGState()
+    }
+
+    private static func drawGlyph(_ part: String, scale: CGFloat, offset: CGPoint, size: CGFloat, ink: UIColor, in bounds: CGRect) {
+        let text: NSAttributedString
+        if let g = ManaFont.glyph(forPart: part), let name = ManaFont.fontName, let font = UIFont(name: name, size: size * scale) {
+            text = NSAttributedString(string: g, attributes: [.font: font, .foregroundColor: ink])
+        } else {
+            // Unknown symbol (newer than the font): the text.
+            text = NSAttributedString(string: part, attributes: [
+                .font: UIFont.systemFont(ofSize: size * 0.5, weight: .bold), .foregroundColor: ink,
+            ])
+        }
+        let measured = text.size()
+        let origin = CGPoint(x: bounds.midX - measured.width / 2 + offset.x,
+                             y: bounds.midY - measured.height / 2 + offset.y)
+        text.draw(at: origin)
     }
 }
 

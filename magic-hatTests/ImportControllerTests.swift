@@ -23,7 +23,7 @@ struct ImportControllerTests {
         ]
         let summary = try await ImportController.apply(
             rows: rows, selectedBinders: ["Library", "dragons"],
-            collectionName: "Main", mode: .add, context: ctx
+            collectionName: "Main", mode: .add, container: container
         ) { _ in }
 
         let result = try entries(ctx, in: "Main")
@@ -46,7 +46,7 @@ struct ImportControllerTests {
         ]
         _ = try await ImportController.apply(
             rows: rows, selectedBinders: ["Library"],
-            collectionName: "Main", mode: .add, context: ctx
+            collectionName: "Main", mode: .add, container: container
         ) { _ in }
         #expect(try entries(ctx, in: "Main").map(\.scryfallID) == ["a"])
     }
@@ -61,7 +61,7 @@ struct ImportControllerTests {
         ]
         _ = try await ImportController.apply(
             rows: rows, selectedBinders: ["L"],
-            collectionName: "Main", mode: .add, context: ctx
+            collectionName: "Main", mode: .add, container: container
         ) { _ in }
         #expect(try entries(ctx, in: "Main").count == 3)
     }
@@ -71,11 +71,11 @@ struct ImportControllerTests {
         let ctx = container.mainContext
         _ = try await ImportController.apply(
             rows: [TestSupport.row(binder: "A", id: "x", quantity: 1)],
-            selectedBinders: ["A"], collectionName: "Main", mode: .add, context: ctx
+            selectedBinders: ["A"], collectionName: "Main", mode: .add, container: container
         ) { _ in }
         _ = try await ImportController.apply(
             rows: [TestSupport.row(binder: "B", id: "x", quantity: 2)],
-            selectedBinders: ["B"], collectionName: "Main", mode: .add, context: ctx
+            selectedBinders: ["B"], collectionName: "Main", mode: .add, container: container
         ) { _ in }
         let result = try entries(ctx, in: "Main")
         #expect(result.count == 1)
@@ -88,11 +88,11 @@ struct ImportControllerTests {
         _ = try await ImportController.apply(
             rows: [TestSupport.row(binder: "A", id: "old1", quantity: 1),
                    TestSupport.row(binder: "A", id: "old2", quantity: 5)],
-            selectedBinders: ["A"], collectionName: "Main", mode: .add, context: ctx
+            selectedBinders: ["A"], collectionName: "Main", mode: .add, container: container
         ) { _ in }
         let summary = try await ImportController.apply(
             rows: [TestSupport.row(binder: "Z", id: "new", quantity: 1)],
-            selectedBinders: ["Z"], collectionName: "Main", mode: .replace, context: ctx
+            selectedBinders: ["Z"], collectionName: "Main", mode: .replace, container: container
         ) { _ in }
         let result = try entries(ctx, in: "Main")
         #expect(result.map(\.scryfallID) == ["new"])
@@ -107,7 +107,7 @@ struct ImportControllerTests {
         _ = try await ImportController.apply(
             rows: [TestSupport.row(binder: "A", id: "x", quantity: 1, price: 1),
                    TestSupport.row(binder: "A", id: "x", finish: "foil", quantity: 1, price: 1)],
-            selectedBinders: ["A"], collectionName: "Main", mode: .add, context: ctx
+            selectedBinders: ["A"], collectionName: "Main", mode: .add, container: container
         ) { _ in }
         let result = try entries(ctx, in: "Main")
         #expect(result.count == 2)

@@ -14,8 +14,18 @@
 import Foundation
 import SwiftData
 
-@ModelActor
-actor CardMetaWriter {
+/// Own serial queue as executor — see CollectionStore for why.
+actor CardMetaWriter: ModelActor {
+    nonisolated let modelExecutor: any ModelExecutor
+    nonisolated let modelContainer: ModelContainer
+    private nonisolated let queue = DispatchSerialQueue(label: "magic-hat.card-meta-writer", qos: .utility)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+        self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+    }
+
     @MainActor private static var instances: [ObjectIdentifier: CardMetaWriter] = [:]
 
     @MainActor
@@ -77,6 +87,17 @@ actor CardMetaWriter {
             }
         }
         try modelContext.save()
+    }
+
+    /// A ManaBox import, on this context (see ImportController).
+    func runImport(
+        rows: [ManaBoxRow], selectedBinders: Set<String>, collectionName: String, mode: ImportMode,
+        progress: @escaping @MainActor @Sendable (Double) -> Void
+    ) async throws -> ImportController.Summary {
+        try await ImportController.apply(
+            rows: rows, selectedBinders: selectedBinders, collectionName: collectionName,
+            mode: mode, in: modelContext, progress: progress
+        )
     }
 
     func markFailed(_ ids: Set<String>) throws {

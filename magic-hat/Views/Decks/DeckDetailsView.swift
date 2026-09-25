@@ -15,6 +15,7 @@ struct DeckDetailsView: View {
     let snapshot: DeckSnapshot
     let onBuild: () -> Void
     let onDisassemble: () -> Void
+    let onExport: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.modelContext) private var modelContext
@@ -23,10 +24,12 @@ struct DeckDetailsView: View {
     @State private var notesTask: Task<Void, Never>?
     @State private var error: String?
 
-    init(snapshot: DeckSnapshot, onBuild: @escaping () -> Void, onDisassemble: @escaping () -> Void, onDelete: @escaping () -> Void) {
+    init(snapshot: DeckSnapshot, onBuild: @escaping () -> Void, onDisassemble: @escaping () -> Void,
+         onExport: @escaping () -> Void, onDelete: @escaping () -> Void) {
         self.snapshot = snapshot
         self.onBuild = onBuild
         self.onDisassemble = onDisassemble
+        self.onExport = onExport
         self.onDelete = onDelete
         _name = State(initialValue: snapshot.name)
         _notes = State(initialValue: snapshot.notes)
@@ -57,9 +60,7 @@ struct DeckDetailsView: View {
                 Section("Commander") {
                     ForEach(snapshot.commanders) { commander in
                         HStack(spacing: 12) {
-                            CardImageView(urlString: commander.card.imageURL, aspectRatio: commander.card.aspectRatio,
-                                          cornerRadius: 6, targetWidth: 80)
-                                .frame(width: 44)
+                            CardArtThumb(artURL: commander.card.artCropURL, fallbackURL: commander.card.imageURL)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(commander.card.name)
                                 HStack(spacing: 2) {
@@ -99,10 +100,8 @@ struct DeckDetailsView: View {
                     .accessibilityIdentifier("deck-build")
                 Button("Disassemble…", systemImage: "arrow.uturn.backward", action: onDisassemble)
                     .disabled(!snapshot.isBuilt)
-                ShareLink(item: DeckListParser.export(snapshot), subject: Text(snapshot.name),
-                          preview: SharePreview(snapshot.name)) {
-                    Label("Export List", systemImage: "square.and.arrow.up")
-                }
+                Button("Export List…", systemImage: "square.and.arrow.up", action: onExport)
+                    .accessibilityIdentifier("deck-export")
             } footer: {
                 Text("Building moves cards out of your collection into this deck; disassembling moves them back. Nothing is ever duplicated, and every move is in History.")
             }

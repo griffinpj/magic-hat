@@ -65,6 +65,9 @@ nonisolated enum DeckListParser {
                 board = header
                 continue
             }
+            // Any other "//" or "#" line is a comment — a type grouping
+            // ("// Creatures (12)") or a note — not a card named "// …".
+            if line.hasPrefix("//") || line.hasPrefix("#") { continue }
             let lower = line.lowercased()
             if lower == "about" { pendingTitle = true; continue }
             if pendingTitle, lower.hasPrefix("name ") {
@@ -132,22 +135,116 @@ nonisolated enum DeckListParser {
         )
     }
 
-    /// The text form the app exports (and re-imports).
+    /// The text form the app exports (and re-imports), with the defaults.
     static func export(_ snapshot: DeckSnapshot) -> String {
+        export(snapshot, options: DeckExportOptions())
+    }
+
+    /// The list as text, shaped by the options: the header style, which
+    /// boards, grouped by type or not, sorted, with or without printings,
+    /// every card or only what the collection can't supply.
+    static func export(_ snapshot: DeckSnapshot, options: DeckExportOptions) -> String {
         var out: [String] = []
-        func section(_ title: String, _ items: [DeckCardItem]) {
-            guard !items.isEmpty else { return }
-            if !out.isEmpty { out.append("") }
-            out.append("// \(title)")
-            for item in items {
-                let printing = item.card.setCode.isEmpty ? "" : " (\(item.card.setCode.uppercased())) \(item.card.collectorNumber)"
-                out.append("\(item.quantity) \(item.card.name)\(printing)")
+
+        func line(_ item: DeckCardItem, quantity: Int) -> String {
+            let card = item.card
+            let printing = options.includesPrintings && !card.setCode.isEmpty
+                ? " (\(card.setCode.uppercased())) \(card.collectorNumber)" : ""
+            return "\(quantity) \(card.name)\(printing)"
+        }
+
+        func quantity(_ item: DeckCardItem) -> Int {
+            options.onlyMissing ? item.missingQuantity : item.quantity
+        }
+
+        func sorted(_ items: [DeckCardItem]) -> [DeckCardItem] {
+            items.sorted { a, b in
+                switch options.ordering {
+                case .name:
+                    break
+                case .price:
+                    let pa = a.card.priceUSD ?? 0, pb = b.card.priceUSD ?? 0
+                    if pa != pb { return pa > pb }
+                case .manaValue:
+                    let ma = ManaSymbol.manaValue(of: a.card.manaCost ?? ""), mb = ManaSymbol.manaValue(of: b.card.manaCost ?? "")
+                    if ma != mb { return ma < mb }
+                }
+                if a.card.sortKey != b.card.sortKey { return a.card.sortKey < b.card.sortKey }
+                return a.card.id < b.card.id
             }
         }
-        section("COMMANDER", snapshot.commanders)
-        section("MAINBOARD", snapshot.sections.flatMap(\.items))
-        section("SIDEBOARD", snapshot.sideboard)
-        section("MAYBEBOARD", snapshot.maybeboard)
+
+        /// One board: header, then its rows — in type groups with a comment
+        /// line each, or flat.
+        func board(_ header: String, _ items: [DeckCardItem], grouped: [DeckSection]? = nil) {
+            let kept = items.filter { quantity($0) > 0 }
+            guard !kept.isEmpty else { return }
+            if !out.isEmpty { out.append("") }
+            out.append(header)
+            if let grouped, options.grouping == .type, options.format == .standard {
+                var first = true
+                for section in grouped {
+                    let rows = sorted(section.items.filter { quantity($0) > 0 })
+                    guard !rows.isEmpty else { continue }
+                    if !first { out.append("") }
+                    first = false
+                    out.append("// \(section.title) (\(rows.reduce(0) { $0 + quantity($1) }))")
+                    for item in rows { out.append(line(item, quantity: quantity(item))) }
+                }
+            } else {
+                for item in sorted(kept) { out.append(line(item, quantity: quantity(item))) }
+            }
+        }
+
+        let arena = options.format == .arena
+        if options.boards.contains(.main) {
+            board(arena ? "Commander" : "// COMMANDER", snapshot.commanders)
+            board(arena ? "Deck" : "// MAINBOARD", snapshot.sections.flatMap(\.items), grouped: snapshot.sections)
+        }
+        if options.boards.contains(.side) {
+            board(arena ? "Sideboard" : "// SIDEBOARD", snapshot.sideboard)
+        }
+        if options.boards.contains(.maybe), !arena {
+            board("// MAYBEBOARD", snapshot.maybeboard)
+        }
         return out.joined(separator: "\n")
     }
+}
+
+/// How a deck list is written out. `standard` is the "// HEADER" shape every
+/// deck site reads and this app re-imports; `arena` is what MTG Arena's
+/// importer expects (Commander / Deck / Sideboard, nothing else — so no
+/// type groups and no maybeboard in that format).
+nonisolated struct DeckExportOptions: Hashable, Sendable {
+    enum Format: String, CaseIterable, Identifiable, Sendable {
+        case standard, arena
+        var id: String { rawValue }
+        var label: String { self == .standard ? "Default" : "Arena" }
+    }
+    enum Grouping: String, CaseIterable, Identifiable, Sendable {
+        case board, type
+        var id: String { rawValue }
+        var label: String { self == .board ? "Board" : "Card type" }
+    }
+    enum Ordering: String, CaseIterable, Identifiable, Sendable {
+        case name, price, manaValue
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .name: return "Name"
+            case .price: return "Price"
+            case .manaValue: return "Mana value"
+            }
+        }
+    }
+
+    var format: Format = .standard
+    var grouping: Grouping = .board
+    var ordering: Ordering = .name
+    /// "(SET) 123" after each name.
+    var includesPrintings = true
+    /// Only the copies the collection can't supply — a shopping list.
+    var onlyMissing = false
+    /// The commander goes with the mainboard.
+    var boards: Set<DeckBoard> = [.main, .side]
 }

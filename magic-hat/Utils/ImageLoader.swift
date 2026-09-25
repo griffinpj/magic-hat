@@ -102,6 +102,18 @@ actor ImageLoader {
         }
     }
 
+    /// Loads each image in turn, skipping what is already decoded, and
+    /// stops at cancellation. Sequential on purpose: the grid's own tile
+    /// loads interleave between these and keep their place in the rate
+    /// limiter, rather than queueing behind thirty prefetches.
+    func warm(_ urls: [String], maxPixel: CGFloat) async {
+        for url in urls {
+            if Task.isCancelled { return }
+            if ImageMemoryCache.shared.image(ImageMemoryCache.key(url, maxPixel)) != nil { continue }
+            _ = try? await image(for: url, maxPixel: maxPixel)
+        }
+    }
+
     /// Decodes and downsamples image data to `maxPixel` (longest edge) using
     /// ImageIO, forcing an immediate decode so the returned UIImage is ready
     /// to render without further main-thread work.

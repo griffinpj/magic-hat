@@ -166,9 +166,50 @@ final class CollectionFlowTests: XCTestCase {
         }
     }
 
+    /// The synthetic All Collection lists every owned row, and the overview
+    /// above it counts every copy.
+    @MainActor
+    func testAllCollectionShowsEverything() {
+        let app = launch()
+        let cards = app.staticTexts["library-cards"]
+        XCTAssertTrue(cards.waitForExistence(timeout: 10), "overview card")
+        // The seed: 900 rows with 1 + i % 4 copies each.
+        XCTAssertEqual(cards.label, 2250.formatted())
+        let all = app.buttons["collection-all"]
+        XCTAssertTrue(all.waitForExistence(timeout: 5))
+        all.tap()
+        XCTAssertTrue(app.navigationBars["All Collection"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Card 0"].firstMatch.waitForExistence(timeout: 10))
+    }
+
     @MainActor
     func testEnteringCollectionIsFast() {
         let app = launch()
+        measureEnteringCollection(app)
+    }
+
+    /// The same push while the catalog writer is landing rows the whole
+    /// time — a first-launch sync, or the weekly refresh, with the user
+    /// tapping into a collection under it. The bulk slice fixture is
+    /// ingested on a loop by the app (UITestSeed), no network.
+    @MainActor
+    func testEnteringCollectionIsFastDuringCatalogIngest() {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("magic-hatTests/Fixtures/default_cards.slice.jsonl.gz")
+        let app = XCUIApplication()
+        app.launchArguments = ["-uitest-seed"]
+        app.launchEnvironment["UITEST_INGEST_FILE"] = fixture.path
+        app.launchEnvironment["UITEST_INGEST_PASSES"] = "40"
+        // A real SQLite file and a collection the size of a real export,
+        // otherwise there is nothing for the writer to contend with.
+        app.launchEnvironment["UITEST_DISK_STORE"] = "1"
+        app.launchEnvironment["UITEST_SEED_COUNT"] = "4000"
+        app.launch()
+        measureEnteringCollection(app)
+    }
+
+    private func measureEnteringCollection(_ app: XCUIApplication) {
         let card = app.staticTexts["Test Collection"]
         XCTAssertTrue(card.waitForExistence(timeout: 10))
 

@@ -59,7 +59,7 @@ final class ScryfallCatalogCache {
 
     static let ttl: TimeInterval = 7 * 24 * 3600
 
-    private struct Entry<T: Codable & Sendable>: Codable, Sendable {
+    nonisolated private struct Entry<T: Codable & Sendable>: Codable, Sendable {
         let value: T
         let fetchedAt: Date
     }

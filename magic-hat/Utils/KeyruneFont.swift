@@ -17,7 +17,7 @@ import Foundation
 import CoreText
 import UIKit
 
-enum KeyruneFont {
+nonisolated enum KeyruneFont {
     /// PostScript name of the registered font, or nil if registration failed.
     nonisolated(unsafe) private(set) static var fontName: String? = nil
 

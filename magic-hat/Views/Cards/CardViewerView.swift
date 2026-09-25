@@ -21,7 +21,9 @@
 import SwiftUI
 
 struct CardViewerView: View {
-    let items: [CardItem]
+    /// Stamped, not compared card by card — see CardItemList. The viewer
+    /// stays open while hydration batches land behind it.
+    let items: CardItemList
     /// The card in the middle. The presenter owns it so it can keep its grid
     /// scrolled to the current card — that is the tile the zoom-out lands on.
     @Binding var currentID: String?
@@ -29,9 +31,9 @@ struct CardViewerView: View {
     /// every printing shares oracle text and rulings, so there is nothing
     /// further to push to.
     var showsDetail: Bool = true
-    /// Set when opened from a deck's search: Add puts the card on that
-    /// deck's board instead of into a collection.
-    var deckTarget: DeckAddTarget? = nil
+    /// Set when opened from a deck's add sheet: −/+ count and change the
+    /// card's copies on that deck's board, instead of Edit/Add/Remove.
+    var deck: DeckAddSession? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
@@ -39,11 +41,16 @@ struct CardViewerView: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     @State private var detail: CardItem?
+    @State private var synergies: CardItem?
     @State private var adding: CardItem?
     @State private var editing: CardItem?
     @State private var pendingDelete: CardItem?
     @State private var deleteError: String?
     @State private var deckAdds = 0
+    /// What the pager reports as centred. Separate from `currentID`, which
+    /// is the truth until the user swipes: see `pager`.
+    @State private var visibleID: String?
+    @State private var userScrolled = false
 
     /// Portrait card proportions. Every page is sized the same so the pager
     /// doesn't re-lay out when a landscape (split/battle) card is current.
@@ -51,7 +58,7 @@ struct CardViewerView: View {
 
     private var currentItem: CardItem? {
         guard let currentID else { return items.first }
-        return items.first { $0.id == currentID }
+        return items.item(for: currentID)
     }
 
     /// Edit and remove act on one owned row. Printings and search hits carry
@@ -63,6 +70,7 @@ struct CardViewerView: View {
         NavigationStack {
             viewer
                 .navigationDestination(item: $detail) { CardDetailView(item: $0) }
+                .navigationDestination(item: $synergies) { CardSynergiesView(item: $0, deck: deck) }
         }
     }
 
@@ -142,10 +150,13 @@ struct CardViewerView: View {
                 }
                 .accessibilityIdentifier("viewer-details")
             }
-            if let deckTarget {
-                Button("Add to \(deckTarget.board.label)", systemImage: "plus") { addToDeck(deckTarget) }
-                    .accessibilityIdentifier("viewer-add-deck")
-            } else {
+            // The cards that work with this one: combos, what is played
+            // with it, what shares its theme. Pushed like Details.
+            Button("Synergies", systemImage: "link") {
+                if let item = currentItem { synergies = item }
+            }
+            .accessibilityIdentifier("viewer-synergies")
+            if deck == nil {
                 Button("Edit", systemImage: "pencil") { editing = currentItem }
                     .disabled(!canEditCurrent)
                     .accessibilityIdentifier("viewer-edit")
@@ -154,28 +165,67 @@ struct CardViewerView: View {
             }
         }
         ToolbarSpacer(.flexible, placement: .bottomBar)
-        ToolbarItem(placement: .bottomBar) {
-            Button("Remove", systemImage: "trash") { pendingDelete = currentItem }
-                .disabled(!canEditCurrent || deckTarget != nil)
-                .accessibilityIdentifier("viewer-remove")
-                // On the button, not the screen: iOS 26 presents this as a
-                // popover anchored to its source, so it points at the trash.
-                .confirmationDialog(
-                    "Remove \(pendingDelete?.name ?? "")?",
-                    isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                    titleVisibility: .visible,
-                    presenting: pendingDelete
-                ) { item in
-                    Button("Remove \(item.quantity) from \(item.collectionName)", role: .destructive) { remove(item) }
-                    Button("Cancel", role: .cancel) {}
-                } message: { item in
-                    Text("\(item.setName) #\(item.collectorNumber) · \(item.finish.displayName). Recorded in History.")
+        if let deck {
+            // Copies on the deck's board, as a stepper once there are any:
+            // adding is one tap, and so is taking it back.
+            let count = currentItem.map(deck.quantity(of:)) ?? 0
+            if count == 0 {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("Add to \(deck.board.label)", systemImage: "plus") { setDeckQuantity(1) }
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityIdentifier("viewer-add-deck")
                 }
+            } else {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Button("Fewer", systemImage: "minus") { setDeckQuantity(count - 1) }
+                        .accessibilityIdentifier("viewer-deck-minus")
+                    Text("\(count)")
+                        .font(.headline)
+                        .monospacedDigit()
+                        .frame(minWidth: 22)
+                        .accessibilityIdentifier("viewer-deck-count")
+                        .accessibilityLabel("\(count) in \(deck.board.label)")
+                    Button("More", systemImage: "plus") { setDeckQuantity(count + 1) }
+                        .accessibilityIdentifier("viewer-deck-plus")
+                }
+            }
+        } else {
+            // Remove acts on an owned row; a deck's add sheet shows none, so
+            // it isn't offered there rather than shown disabled.
+            ToolbarItem(placement: .bottomBar) { removeItem }
         }
+    }
+
+    private var removeItem: some View {
+        Button("Remove", systemImage: "trash") { pendingDelete = currentItem }
+            .disabled(!canEditCurrent)
+            .accessibilityIdentifier("viewer-remove")
+            // On the button, not the screen: iOS 26 presents this as a
+            // popover anchored to its source, so it points at the trash.
+            .confirmationDialog(
+                "Remove \(pendingDelete?.name ?? "")?",
+                isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible,
+                presenting: pendingDelete
+            ) { item in
+                Button("Remove \(item.quantity) from \(item.collectionName)", role: .destructive) { remove(item) }
+                Button("Cancel", role: .cancel) {}
+            } message: { item in
+                Text("\(item.setName) #\(item.collectorNumber) · \(item.finish.displayName). Recorded in History.")
+            }
     }
 
     // MARK: Pager
 
+    /// The scroll view's position binding is not `currentID` itself. The
+    /// pager is laid out while the zoom transition is still growing it out
+    /// of the tapped tile, so the card width and the offsets are moving
+    /// targets; in that window the scroll view reports whatever ends up
+    /// under the anchor — the first card, when the card asked for was the
+    /// one right after it, which already peeked in at the edge — and a
+    /// direct binding took that as the new current card. So: until the
+    /// user swipes, `currentID` is the truth and every size change re-pins
+    /// the pager to it; once the user has swiped, the pager is the truth.
     private var pager: some View {
         GeometryReader { geo in
             // Fit by both axes: 80% of the width alone is far taller than the
@@ -183,9 +233,44 @@ struct CardViewerView: View {
             let cardWidth = min(geo.size.width * 0.80, geo.size.height * Self.cardAspect)
             let sideInset = (geo.size.width - cardWidth) / 2
 
+            ScrollViewReader { proxy in
+                pagerContent(cardWidth: cardWidth, height: geo.size.height, sideInset: sideInset)
+                    .onAppear { pin(proxy) }
+                    .onChange(of: geo.size) { _, _ in
+                        if !userScrolled { pin(proxy) }
+                    }
+                    .onScrollPhaseChange { _, phase in
+                        if phase == .interacting { userScrolled = true }
+                    }
+                    .onChange(of: visibleID) { _, id in
+                        guard userScrolled, let id, id != currentID else { return }
+                        currentID = id
+                    }
+                    .onChange(of: currentID) { _, id in
+                        // Programmatic moves: a tapped neighbour, the step
+                        // after a removal.
+                        guard let id, id != visibleID else { return }
+                        withAnimation(.snappy) { visibleID = id }
+                    }
+            }
+        }
+    }
+
+    private func pin(_ proxy: ScrollViewProxy) {
+        guard let currentID else { return }
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            visibleID = currentID
+            proxy.scrollTo(currentID, anchor: .center)
+        }
+    }
+
+    private func pagerContent(cardWidth: CGFloat, height: CGFloat, sideInset: CGFloat) -> some View {
             ScrollView(.horizontal) {
                 LazyHStack(spacing: 14) {
-                    ForEach(items) { item in
+                    ForEach(items.ids, id: \.self) { id in
+                        if let item = items.item(for: id) {
                         let isCurrent = item.id == currentID
                         CardImageView(
                             urlString: item.imageURL,
@@ -209,28 +294,28 @@ struct CardViewerView: View {
                             } else {
                                 // A peeking neighbour: bring it to the middle
                                 // rather than acting on the wrong card.
-                                withAnimation(.snappy) { currentID = item.id }
+                                currentID = item.id
                             }
                         }
                         .id(item.id)
+                        }
                     }
                 }
                 .scrollTargetLayout()
-                .frame(height: geo.size.height)
+                .frame(height: height)
             }
             .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $currentID)
+            .scrollPosition(id: $visibleID, anchor: .center)
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollIndicators(.hidden)
-        }
     }
 
     // MARK: Actions
 
-    private func addToDeck(_ target: DeckAddTarget) {
-        guard let item = currentItem else { return }
+    private func setDeckQuantity(_ quantity: Int) {
+        guard let deck, let item = currentItem else { return }
         do {
-            try DeckEditController.add(PrintingSelection(item: item), to: target.deckID, board: target.board, context: modelContext)
+            try deck.setQuantity(item, quantity)
             deckAdds += 1
         } catch {
             deleteError = error.localizedDescription
@@ -251,11 +336,11 @@ struct CardViewerView: View {
     /// The current card left the list — removed here, or from the Add
     /// sheet's owned rows. Step to the card that took its place, as Photos
     /// does after a delete, and close if nothing is left.
-    private func reconcile(old: [CardItem], new: [CardItem]) {
-        guard let currentID, !new.contains(where: { $0.id == currentID }) else { return }
+    private func reconcile(old: CardItemList, new: CardItemList) {
+        guard let currentID, new.item(for: currentID) == nil else { return }
         guard !new.isEmpty else { dismiss(); return }
-        let oldIndex = old.firstIndex { $0.id == currentID } ?? 0
-        self.currentID = new[min(oldIndex, new.count - 1)].id
+        let oldIndex = old.index(of: currentID) ?? 0
+        self.currentID = new.items[min(oldIndex, new.count - 1)].id
     }
 
     private static func prefetchPrintings(for item: CardItem) async {
@@ -272,14 +357,23 @@ struct CardViewerView: View {
 
 // MARK: - Info panel
 
+/// Every row has a fixed height and is always present, so the panel is
+/// the same size for every card and nothing below it moves as the pager
+/// goes from an owned foil with a purchase price to a search hit with
+/// none: name (with the owned marker trailing), set line (with the
+/// language and condition chips trailing when owned), the cost row (empty
+/// for a land), the price line (the added date trailing).
 private struct InfoPanel: View {
     let item: CardItem
 
+    private static let rowHeight: CGFloat = 22
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 6) {
                 Text(item.isEntry ? "\(item.quantity)× \(item.name)" : item.name)
                     .font(.headline)
+                    .lineLimit(1)
                 if item.isEntry, item.finish != .normal {
                     Text(item.finish.displayName.uppercased())
                         .font(.caption2.weight(.bold))
@@ -288,37 +382,41 @@ private struct InfoPanel: View {
                         .foregroundStyle(.black)
                 }
                 Spacer(minLength: 0)
+                if !item.isEntry, item.owned {
+                    Label("In collection", systemImage: "checkmark.seal.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .fixedSize()
+                        .accessibilityIdentifier("viewer-owned")
+                }
             }
+            .frame(height: Self.rowHeight)
 
             HStack(spacing: 6) {
-                SetSymbolView(setCode: item.setCode, size: 18, tint: .primary)
+                SetSymbolView(setCode: item.setCode, size: 18, tint: .primary, rarity: item.rarity)
                 Text("\(item.setName)  #\(item.collectorNumber)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-            }
-
-            if item.isEntry {
-                HStack(spacing: 6) {
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if item.isEntry {
                     chip(item.language.uppercased())
                     chip(item.condition.replacingOccurrences(of: "_", with: " ").capitalized)
                 }
-            } else if item.owned {
-                Label("In collection", systemImage: "checkmark.seal.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.green)
             }
+            .frame(height: Self.rowHeight)
 
-            if let cost = item.manaCost, !cost.isEmpty {
-                ManaCostView(cost: cost, size: 16)
+            // The cost row is always there — lands have no cost.
+            HStack(spacing: 0) {
+                if let cost = item.manaCost, !cost.isEmpty {
+                    ManaCostView(cost: cost, size: 16)
+                }
+                Spacer(minLength: 0)
             }
-
-            if let added = item.addedDate {
-                Text("Added \(added.formatted(date: .abbreviated, time: .shortened))")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
+            .frame(height: 16)
 
             priceLine
+                .frame(height: Self.rowHeight)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
@@ -335,8 +433,14 @@ private struct InfoPanel: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(delta.up ? .green : .red)
             }
+            Spacer(minLength: 0)
+            if let added = item.addedDate {
+                Text("Added \(added.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
-        .padding(.top, 2)
     }
 
     /// Market vs. price paid at import.

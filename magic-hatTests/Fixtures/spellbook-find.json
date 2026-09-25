@@ -1,0 +1,274 @@
+{
+ "count": null,
+ "next": null,
+ "previous": null,
+ "results": {
+  "identity": "GWUB",
+  "included": [
+   {
+    "id": "742-1295",
+    "uses": [
+     {
+      "card": {
+       "id": 742,
+       "name": "Demonic Consultation",
+       "oracleId": "9a1412db-45ad-46ea-8f12-a85d203113d8",
+       "typeLine": "Instant",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/1/d/1d779f19-3068-4976-b96b-8f93d156900b.jpg?1783942624",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/1/d/1d779f19-3068-4976-b96b-8f93d156900b.jpg?1783942624"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     },
+     {
+      "card": {
+       "id": 1295,
+       "name": "Thassa's Oracle",
+       "oracleId": "1de1b591-a73f-4974-b507-8c63e07a0868",
+       "typeLine": "Creature \u2014 Merfolk Wizard",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/7/2/726e8b29-13e9-4138-b6a9-d2a0d8188d1c.jpg?1783931575",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/7/2/726e8b29-13e9-4138-b6a9-d2a0d8188d1c.jpg?1783931575"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     }
+    ],
+    "produces": [
+     {
+      "feature": {
+       "name": "Exile your library"
+      }
+     },
+     {
+      "feature": {
+       "name": "Win the game"
+      }
+     }
+    ],
+    "identity": "UB",
+    "popularity": 149912,
+    "bracketTag": "R",
+    "manaNeeded": "{U}{U}{B}",
+    "manaValueNeeded": 3,
+    "status": "OK",
+    "legalities": {
+     "commander": true,
+     "brawl": false
+    }
+   }
+  ],
+  "almostIncluded": [
+   {
+    "id": "513-5034--46",
+    "uses": [
+     {
+      "card": {
+       "id": 513,
+       "name": "Hullbreaker Horror",
+       "oracleId": "d4a84e78-d9b9-4c67-8a4b-4329e65f0f15",
+       "typeLine": "Creature \u2014 Kraken Horror",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/1/3/137acb70-a1fd-4ea9-a5d9-f4b438eb5e82.jpg?1783908162",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/1/3/137acb70-a1fd-4ea9-a5d9-f4b438eb5e82.jpg?1783908162"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     },
+     {
+      "card": {
+       "id": 5034,
+       "name": "Sol Ring",
+       "oracleId": "6ad8011d-3471-4369-9d68-b264cc027487",
+       "typeLine": "Artifact",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/8/e/8ee443cc-e17a-493b-9c93-1f9e141a30e4.jpg?1789644446",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/8/e/8ee443cc-e17a-493b-9c93-1f9e141a30e4.jpg?1789644446"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     }
+    ],
+    "produces": [
+     {
+      "feature": {
+       "name": "Infinite colorless mana"
+      }
+     },
+     {
+      "feature": {
+       "name": "Infinite storm count"
+      }
+     }
+    ],
+    "identity": "U",
+    "popularity": 352860,
+    "bracketTag": "E",
+    "manaNeeded": "",
+    "manaValueNeeded": 0,
+    "status": "OK",
+    "legalities": {
+     "commander": true,
+     "brawl": false
+    }
+   },
+   {
+    "id": "1295-3093",
+    "uses": [
+     {
+      "card": {
+       "id": 3093,
+       "name": "Tainted Pact",
+       "oracleId": "1a85ba2b-ae10-4917-954a-7709b75a9740",
+       "typeLine": "Instant",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/c/5/c513f51b-a0db-4c08-8acc-1e91060b93b7.jpg?1783945239",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/c/5/c513f51b-a0db-4c08-8acc-1e91060b93b7.jpg?1783945239"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     },
+     {
+      "card": {
+       "id": 1295,
+       "name": "Thassa's Oracle",
+       "oracleId": "1de1b591-a73f-4974-b507-8c63e07a0868",
+       "typeLine": "Creature \u2014 Merfolk Wizard",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/7/2/726e8b29-13e9-4138-b6a9-d2a0d8188d1c.jpg?1783931575",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/7/2/726e8b29-13e9-4138-b6a9-d2a0d8188d1c.jpg?1783931575"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     }
+    ],
+    "produces": [
+     {
+      "feature": {
+       "name": "Win the game"
+      }
+     }
+    ],
+    "identity": "UB",
+    "popularity": 132499,
+    "bracketTag": "R",
+    "manaNeeded": "{1}{U}{U}{B}",
+    "manaValueNeeded": 4,
+    "status": "OK",
+    "legalities": {
+     "commander": true,
+     "brawl": false
+    }
+   },
+   {
+    "id": "4821-5261",
+    "uses": [
+     {
+      "card": {
+       "id": 4821,
+       "name": "Dramatic Reversal",
+       "oracleId": "da46904c-8fb8-44c2-b2ab-775a1cc12ec3",
+       "typeLine": "Instant",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/2/a/2ad14406-4504-4951-83f0-82c298964d6c.jpg?1783904806",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/2/a/2ad14406-4504-4951-83f0-82c298964d6c.jpg?1783904806"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     },
+     {
+      "card": {
+       "id": 5261,
+       "name": "Isochron Scepter",
+       "oracleId": "ddd649f4-dbaf-48ec-8ff7-95581257772d",
+       "typeLine": "Artifact",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/2/a/2aa24fe0-e275-4307-b26c-2a656068a451.jpg?1783930107",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/2/a/2aa24fe0-e275-4307-b26c-2a656068a451.jpg?1783930107"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     }
+    ],
+    "produces": [
+     {
+      "feature": {
+       "name": "Infinite magecraft triggers"
+      }
+     },
+     {
+      "feature": {
+       "name": "Infinite mana nonland permanents you control can produce"
+      }
+     },
+     {
+      "feature": {
+       "name": "Infinite storm count"
+      }
+     },
+     {
+      "feature": {
+       "name": "Infinite untap of nonland permanents you control"
+      }
+     }
+    ],
+    "identity": "U",
+    "popularity": 106120,
+    "bracketTag": "S",
+    "manaNeeded": "",
+    "manaValueNeeded": 0,
+    "status": "OK",
+    "legalities": {
+     "commander": true,
+     "brawl": false
+    }
+   },
+   {
+    "id": "542-5034",
+    "uses": [
+     {
+      "card": {
+       "id": 542,
+       "name": "Tidespout Tyrant",
+       "oracleId": "331b44e4-cf08-44f4-8afd-a7374e5dc5ed",
+       "typeLine": "Creature \u2014 Djinn",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/d/b/db68f47b-f49a-4978-acdd-453ecfb948da.jpg?1783913330",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/d/b/db68f47b-f49a-4978-acdd-453ecfb948da.jpg?1783913330"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     },
+     {
+      "card": {
+       "id": 5034,
+       "name": "Sol Ring",
+       "oracleId": "6ad8011d-3471-4369-9d68-b264cc027487",
+       "typeLine": "Artifact",
+       "imageUriFrontNormal": "https://cards.scryfall.io/normal/front/8/e/8ee443cc-e17a-493b-9c93-1f9e141a30e4.jpg?1789644446",
+       "imageUriFrontArtCrop": "https://cards.scryfall.io/art_crop/front/8/e/8ee443cc-e17a-493b-9c93-1f9e141a30e4.jpg?1789644446"
+      },
+      "quantity": 1,
+      "mustBeCommander": false
+     }
+    ],
+    "produces": [
+     {
+      "feature": {
+       "name": "Infinite colorless mana"
+      }
+     },
+     {
+      "feature": {
+       "name": "Infinite storm count"
+      }
+     }
+    ],
+    "identity": "U",
+    "popularity": 37243,
+    "bracketTag": "S",
+    "manaNeeded": "{1}",
+    "manaValueNeeded": 1,
+    "status": "OK",
+    "legalities": {
+     "commander": true,
+     "brawl": false
+    }
+   }
+  ],
+  "almostIncludedByAddingColors": [],
+  "includedByChangingCommanders": []
+ }
+}

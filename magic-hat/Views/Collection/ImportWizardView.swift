@@ -266,7 +266,7 @@ struct ImportWizardView: View {
                     selectedBinders: selected,
                     collectionName: collectionName,
                     mode: effectiveMode,
-                    context: modelContext
+                    container: modelContext.container
                 ) { fraction in
                     progress.fraction = fraction
                 }

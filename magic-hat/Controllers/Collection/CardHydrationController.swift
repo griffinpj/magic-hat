@@ -136,9 +136,11 @@ final class CardHydrationController {
     /// Safe to call on every tile's onAppear; already-known and in-flight IDs
     /// are skipped with pure set math (no DB query).
     func hydrate(scryfallIDs: [String], context: ModelContext) {
-        var candidates = Set(scryfallIDs)
-        candidates.subtract(hydrated)
-        candidates.subtract(inFlight)
+        // Membership tests over the window, not `subtract`, which walks
+        // the *other* set: with 3,900 ids hydrated that was 0.12s per
+        // tile appearing (HangDetector, real collection).
+        var candidates = Set<String>()
+        for id in scryfallIDs where !hydrated.contains(id) && !inFlight.contains(id) { candidates.insert(id) }
         guard !candidates.isEmpty else { return }
 
         // Claim them now so a scroll that fires again before the store

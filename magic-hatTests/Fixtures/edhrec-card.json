@@ -1,0 +1,122 @@
+{
+ "container": {
+  "json_dict": {
+   "card": {
+    "id": "8ee443cc-e17a-493b-9c93-1f9e141a30e4",
+    "name": "Sol Ring",
+    "num_decks": 8415641,
+    "potential_decks": 10103587,
+    "salt": 1.46268656716418,
+    "rank": null,
+    "sanitized": "sol-ring"
+   },
+   "cardlists": [
+    {
+     "header": "Top Commanders",
+     "tag": "topcommanders",
+     "cardviews": [
+      {
+       "id": "c7f2c2d5-e052-49e8-b5de-712858c2ea78",
+       "name": "Y'shtola, Night's Blessed",
+       "sanitized": "yshtola-nights-blessed",
+       "slug": "yshtola-nights-blessed",
+       "url": "/commanders/yshtola-nights-blessed",
+       "num_decks": 51533,
+       "potential_decks": 54880
+      },
+      {
+       "id": "a577ba08-0aa8-45be-aa83-d5078770127c",
+       "name": "Edgar Markov",
+       "sanitized": "edgar-markov",
+       "slug": "edgar-markov",
+       "url": "/commanders/edgar-markov",
+       "num_decks": 46897,
+       "potential_decks": 51097
+      },
+      {
+       "id": "10d42b35-844f-4a64-9981-c6118d45e826",
+       "name": "The Ur-Dragon",
+       "sanitized": "the-ur-dragon",
+       "slug": "the-ur-dragon",
+       "url": "/commanders/the-ur-dragon",
+       "num_decks": 45518,
+       "potential_decks": 51018
+      }
+     ]
+    },
+    {
+     "header": "Top Cards",
+     "tag": "topcards",
+     "cardviews": [
+      {
+       "id": "f7e12477-d59f-442b-a678-1be746d0b7be",
+       "name": "Swords to Plowshares",
+       "sanitized": "swords-to-plowshares",
+       "slug": "swords-to-plowshares",
+       "url": "/cards/swords-to-plowshares",
+       "lift": 1.0703317601695002,
+       "num_decks": 2555472,
+       "potential_decks": 3924202
+      },
+      {
+       "id": "22e08a78-55b7-46b0-bd1a-a51548fc1861",
+       "name": "Path to Exile",
+       "sanitized": "path-to-exile",
+       "slug": "path-to-exile",
+       "url": "/cards/path-to-exile",
+       "lift": 1.0688941079780072,
+       "num_decks": 1998619,
+       "potential_decks": 3924202
+      },
+      {
+       "id": "e60deb92-f7dd-4f4e-9036-e47dd586f985",
+       "name": "Cultivate",
+       "sanitized": "cultivate",
+       "slug": "cultivate",
+       "url": "/cards/cultivate",
+       "lift": 1.0729419244011131,
+       "num_decks": 1649390,
+       "potential_decks": 3692013
+      }
+     ]
+    },
+    {
+     "header": "Creatures",
+     "tag": "creatures",
+     "cardviews": [
+      {
+       "id": "492c2f9a-51e7-4e0f-9899-23bf43ea988b",
+       "name": "Birds of Paradise",
+       "sanitized": "birds-of-paradise",
+       "slug": "birds-of-paradise",
+       "url": "/cards/birds-of-paradise",
+       "lift": 1.0893390098704532,
+       "num_decks": 1134433,
+       "potential_decks": 3692013
+      },
+      {
+       "id": "e802cfe1-45e0-47cd-8745-363ccc0f2af8",
+       "name": "Ignoble Hierarch",
+       "sanitized": "ignoble-hierarch",
+       "slug": "ignoble-hierarch",
+       "url": "/cards/ignoble-hierarch",
+       "lift": 1.080882553357707,
+       "num_decks": 215870,
+       "potential_decks": 799609
+      },
+      {
+       "id": "6a0b230b-d391-4998-a3f7-7b158a0ec2cd",
+       "name": "Llanowar Elves",
+       "sanitized": "llanowar-elves",
+       "slug": "llanowar-elves",
+       "url": "/cards/llanowar-elves",
+       "lift": 1.0144963664819662,
+       "num_decks": 803762,
+       "potential_decks": 3692013
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -25,8 +25,37 @@ nonisolated struct CollectionSnapshot: Sendable {
     static let empty = CollectionSnapshot(items: [], pendingIDs: [], stalePriceIDs: [])
 }
 
-@ModelActor
-actor CollectionStore {
+/// Backed by its own serial queue, not `@ModelActor`'s default executor:
+/// `DefaultSerialModelExecutor` runs each job on whatever thread awaited
+/// it, so a store called from a view fetched and sorted *on the main
+/// thread* (measured: 0.47s hangs in `snapshot` while pushing into a
+/// 4k-card collection during a catalog ingest — the "off-main" reads were
+/// only off-main when a detached task happened to call them). With the
+/// queue as the actor's executor every job lands there, whoever calls.
+actor CollectionStore: ModelActor {
+    nonisolated let modelExecutor: any ModelExecutor
+    nonisolated let modelContainer: ModelContainer
+    private nonisolated let queue = DispatchSerialQueue(label: "magic-hat.collection-store", qos: .userInitiated)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+        self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+    }
+
+    /// Snapshots by "collection|sort", built alongside the overview at
+    /// launch so the first tap into a collection is a lookup, not a second
+    /// full fetch queued behind the first. Each carries the StoreStamp it
+    /// was built under; a caller whose stamp moved on (a write, a hydration
+    /// batch) gets a fresh fetch, deterministically — no invalidation
+    /// message to race against.
+    private var snapshots: [String: (stamp: StoreStamp, snapshot: CollectionSnapshot)] = [:]
+
+    private func cached(_ key: String, _ stamp: StoreStamp?) -> CollectionSnapshot? {
+        guard let stamp, let entry = snapshots[key], entry.stamp == stamp else { return nil }
+        return entry.snapshot
+    }
+
     // One store per container so repeated reads share a row cache.
     @MainActor private static var instances: [ObjectIdentifier: CollectionStore] = [:]
 
@@ -46,13 +75,26 @@ actor CollectionStore {
     }
 
     /// Every card in a collection, sorted, plus what still needs fetching.
-    func snapshot(collectionName: String, sort: CardSort) throws -> CollectionSnapshot {
-        var descriptor = FetchDescriptor<CollectionEntry>(
-            predicate: #Predicate { $0.collectionName == collectionName }
-        )
+    /// `CollectionScope.allKey` means every row in the store, decks
+    /// included, each labelled with where it lives.
+    /// Pass the caller's `stamp` to use (and fill) the cache; without one
+    /// the fetch is always fresh, which is what tests want.
+    func snapshot(collectionName: String, sort: CardSort, stamp: StoreStamp? = nil) throws -> CollectionSnapshot {
+        let key = "\(collectionName)|\(sort.rawValue)"
+        if let hit = cached(key, stamp) { return hit }
+        let all = CollectionScope.isAll(collectionName)
+        var descriptor = all
+            ? FetchDescriptor<CollectionEntry>()
+            : FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
         let entries = try modelContext.fetch(descriptor)
+        let labels = all ? try deckLabels() : [:]
+        let snapshot = Self.snapshot(of: entries, labels: labels, sort: sort)
+        if let stamp { snapshots[key] = (stamp, snapshot) }
+        return snapshot
+    }
 
+    private static func snapshot(of entries: [CollectionEntry], labels: [String: String], sort: CardSort) -> CollectionSnapshot {
         let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
         var items: [CardItem] = []
         items.reserveCapacity(entries.count)
@@ -61,7 +103,9 @@ actor CollectionStore {
 
         for entry in entries {
             let meta = entry.card
-            items.append(CardItem(entry: entry, meta: meta))
+            var item = CardItem(entry: entry, meta: meta)
+            if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
+            items.append(item)
             // A row stored before colours were kept counts as pending so the
             // collection filters get their data on the next hydration.
             if let meta, meta.fetchState == .fetched, meta.colorsRaw != nil {
@@ -103,8 +147,38 @@ actor CollectionStore {
         .sorted { $0.timestamp > $1.timestamp }
     }
 
-    /// Per-collection totals and top cards for the Collections tab.
+    /// Per-collection totals and top cards (the Add sheet's picker).
     func summaries() throws -> [CollectionSummary] {
+        try overview().collections
+    }
+
+    /// Builds and caches every collection's snapshot (and All Collection's)
+    /// in `sort`, so the tap that follows the tab is a lookup. Its own call
+    /// rather than part of `overview`: the totals are cheap and the tab
+    /// wants them first; the sorts are the slow part and can land after.
+    func prewarmSnapshots(sort: CardSort, stamp: StoreStamp) throws {
+        let collections = try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)]))
+        let key = "\(CollectionScope.allKey)|\(sort.rawValue)"
+        if let cached = snapshots[key], cached.stamp == stamp,
+           collections.allSatisfy({ snapshots["\($0.name)|\(sort.rawValue)"]?.stamp == stamp }) { return }
+        var descriptor = FetchDescriptor<CollectionEntry>()
+        descriptor.relationshipKeyPathsForPrefetching = [\.card]
+        let entries = try modelContext.fetch(descriptor)
+        let byCollection = Dictionary(grouping: entries, by: \.collectionName)
+        let labels = try deckLabels()
+        for collection in collections {
+            snapshots["\(collection.name)|\(sort.rawValue)"] =
+                (stamp, Self.snapshot(of: byCollection[collection.name] ?? [], labels: [:], sort: sort))
+        }
+        snapshots[key] = (stamp, Self.snapshot(of: entries, labels: labels, sort: sort))
+    }
+
+    /// The Collections tab: every collection, the whole library, and the
+    /// share of it built into decks — one pass over the entries. With a
+    /// `sort`, the same pass also builds and caches every collection's
+    /// snapshot (and All Collection's), so the tap that follows is instant
+    /// (the tab asks for the totals first and prewarms afterwards).
+    func overview(prewarming sort: CardSort? = nil, stamp: StoreStamp? = nil) throws -> CollectionOverview {
         let collections = try modelContext.fetch(
             FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)])
         )
@@ -113,33 +187,58 @@ actor CollectionStore {
         let entries = try modelContext.fetch(descriptor)
         let byCollection = Dictionary(grouping: entries, by: \.collectionName)
 
-        return collections.map { collection in
-            let rows = byCollection[collection.name] ?? []
-            var total = 0.0
-            var valued: [(value: Double, entry: CollectionEntry)] = []
+        if let sort, let stamp {
+            let labels = try deckLabels()
+            for collection in collections {
+                snapshots["\(collection.name)|\(sort.rawValue)"] =
+                    (stamp, Self.snapshot(of: byCollection[collection.name] ?? [], labels: [:], sort: sort))
+            }
+            snapshots["\(CollectionScope.allKey)|\(sort.rawValue)"] =
+                (stamp, Self.snapshot(of: entries, labels: labels, sort: sort))
+        }
+
+        let perCollection = collections.map { Self.summary(name: $0.name, rows: byCollection[$0.name] ?? []) }
+        let all = Self.summary(name: CollectionScope.allName, rows: entries)
+        var deckCopies = 0
+        var deckValue = 0.0
+        for (name, rows) in byCollection where Deck.isDeckCollection(name) {
             for row in rows {
-                let unit = row.finish == .normal
-                    ? row.card?.priceUSD
-                    : (row.card?.priceUSDFoil ?? row.card?.priceUSD)
-                let value = (unit ?? 0) * Double(row.quantity)
-                total += value
-                if value > 0 { valued.append((value, row)) }
+                deckCopies += row.quantity
+                deckValue += Self.value(of: row)
             }
-            let top = valued.sorted { $0.value > $1.value }.prefix(5).map {
-                CollectionSummary.Highlight(
-                    id: $0.entry.id.uuidString,
-                    imageURL: $0.entry.card?.imageNormalURL,
-                    aspectRatio: $0.entry.card?.aspectRatio ?? (488.0 / 680.0)
-                )
-            }
-            return CollectionSummary(
-                name: collection.name,
-                uniqueCards: rows.count,
-                totalCopies: rows.reduce(0) { $0 + $1.quantity },
-                totalValue: total,
-                highlights: Array(top)
+        }
+        return CollectionOverview(collections: perCollection, all: all, deckCopies: deckCopies, deckValue: deckValue)
+    }
+
+    private static func value(of row: CollectionEntry) -> Double {
+        let unit = row.finish == .normal
+            ? row.card?.priceUSD
+            : (row.card?.priceUSDFoil ?? row.card?.priceUSD)
+        return (unit ?? 0) * Double(row.quantity)
+    }
+
+    private static func summary(name: String, rows: [CollectionEntry]) -> CollectionSummary {
+        var total = 0.0
+        var valued: [(value: Double, entry: CollectionEntry)] = []
+        for row in rows {
+            let value = value(of: row)
+            total += value
+            if value > 0 { valued.append((value, row)) }
+        }
+        let top = valued.sorted { $0.value > $1.value }.prefix(5).map {
+            CollectionSummary.Highlight(
+                id: $0.entry.id.uuidString,
+                imageURL: $0.entry.card?.imageNormalURL,
+                aspectRatio: $0.entry.card?.aspectRatio ?? (488.0 / 680.0)
             )
         }
+        return CollectionSummary(
+            name: name,
+            uniqueCards: rows.count,
+            totalCopies: rows.reduce(0) { $0 + $1.quantity },
+            totalValue: total,
+            highlights: Array(top)
+        )
     }
 
     /// Every Scryfall id owned in any collection (for "in binder" markers).
@@ -177,10 +276,33 @@ actor CollectionStore {
         try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)])).map(\.name)
     }
 
-    /// Collection names present on entries (for backfilling MTGCollection rows).
+    /// Every set code on an owned row — what the set-symbol fallback would
+    /// have to draw.
+    func entrySetCodes() throws -> Set<String> {
+        var descriptor = FetchDescriptor<CollectionEntry>()
+        descriptor.propertiesToFetch = [\.setCode]
+        return Set(try modelContext.fetch(descriptor).map { $0.setCode.lowercased() })
+    }
+
+    /// Collection names present on entries (for backfilling MTGCollection
+    /// rows). A deck's hidden collection is not one: backfilling it would
+    /// have listed "deck:<uuid>" on the Collections tab.
     func entryCollectionNames() throws -> Set<String> {
         var descriptor = FetchDescriptor<CollectionEntry>()
         descriptor.propertiesToFetch = [\.collectionName]
-        return Set(try modelContext.fetch(descriptor).map(\.collectionName)).filter { !$0.isEmpty }
+        return Set(try modelContext.fetch(descriptor).map(\.collectionName))
+            .filter { !$0.isEmpty && !Deck.isDeckCollection($0) }
+    }
+}
+
+/// What a cached snapshot is valid for: the collection change revision and
+/// the hydration revision at the time it was built. Views read both on the
+/// main actor and hand the stamp to the store.
+nonisolated struct StoreStamp: Hashable, Sendable {
+    let change: Int
+    let hydration: Int
+
+    @MainActor static var current: StoreStamp {
+        StoreStamp(change: CollectionChangeTracker.shared.revision, hydration: CardHydrationController.shared.revision)
     }
 }

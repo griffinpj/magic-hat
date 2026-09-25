@@ -13,12 +13,12 @@ import Foundation
 
 /// The two calls a search needs. SearchController depends on this rather
 /// than on ScryfallClient so tests can feed it pages without a network.
-protocol CardSearching {
+nonisolated protocol CardSearching {
     func search(query: String, unique: String, order: String, direction: String) async throws -> ScryfallSearchPage
     func search(pageURL: URL) async throws -> ScryfallSearchPage
 }
 
-struct ScryfallClient: CardSearching {
+nonisolated struct ScryfallClient: CardSearching {
     static let shared = ScryfallClient()
 
     private let baseURL = URL(string: "https://api.scryfall.com")!
@@ -168,12 +168,57 @@ struct ScryfallClient: CardSearching {
     }
 }
 
-extension Array {
+nonisolated extension Array {
     /// Splits the array into consecutive chunks of at most `size`.
     func chunked(into size: Int) -> [[Element]] {
         guard size > 0 else { return [self] }
         return stride(from: 0, to: count, by: size).map {
             Array(self[$0..<Swift.min($0 + size, count)])
         }
+    }
+}
+
+// MARK: - Oracle lists
+
+nonisolated extension ScryfallClient {
+    /// One page of a search, keyed for the analysis: oracle id → name.
+    struct OracleIndexPage: Sendable {
+        let index: [String: String]
+        let next: URL?
+    }
+
+    /// GET /cards/search, `unique:cards`, up to `maxPages` pages from the
+    /// first page or from `resume` (a `next_page` URL kept from an earlier
+    /// call). The analysis keeps Scryfall's oracle-tag lists (`otag:ramp`,
+    /// `is:gamechanger`) this way, a few pages per sitting, so a long list
+    /// never sits in the search rate limit ahead of the user's own search.
+    func oracleIndex(query: String, maxPages: Int, resume: URL? = nil) async throws -> OracleIndexPage {
+        var index: [String: String] = [:]
+        var nextURL: URL?
+        if let resume {
+            nextURL = resume
+        } else {
+            var comps = URLComponents(url: baseURL.appendingPathComponent("cards").appendingPathComponent("search"),
+                                      resolvingAgainstBaseURL: false)!
+            comps.queryItems = [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "unique", value: "cards"),
+                URLQueryItem(name: "order", value: "name"),
+            ]
+            nextURL = comps.url
+        }
+        var pages = 0
+        while let url = nextURL, pages < maxPages {
+            let page: ScryfallListResponse
+            do {
+                page = try await http.request(ScryfallListResponse.self, url: url, rateLimit: .cardsSearch)
+            } catch HTTPError.badStatus(404, _) {
+                return OracleIndexPage(index: index, next: nil)   // no matches is an empty list
+            }
+            for card in page.data { if let oracle = card.bestOracleID { index[oracle] = card.name } }
+            pages += 1
+            nextURL = page.hasMore == true ? page.nextPage.flatMap(URL.init(string:)) : nil
+        }
+        return OracleIndexPage(index: index, next: nextURL)
     }
 }

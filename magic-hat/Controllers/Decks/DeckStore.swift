@@ -11,8 +11,18 @@
 import Foundation
 import SwiftData
 
-@ModelActor
-actor DeckStore {
+/// Own serial queue as executor — see CollectionStore for why.
+actor DeckStore: ModelActor {
+    nonisolated let modelExecutor: any ModelExecutor
+    nonisolated let modelContainer: ModelContainer
+    private nonisolated let queue = DispatchSerialQueue(label: "magic-hat.deck-store", qos: .userInitiated)
+    nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
+
+    init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+        self.modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+    }
+
     @MainActor private static var instances: [ObjectIdentifier: DeckStore] = [:]
 
     @MainActor
@@ -199,5 +209,153 @@ actor DeckStore {
         var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { !$0.collectionName.starts(with: "deck:") })
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
         return try modelContext.fetch(descriptor).map { CardItem(entry: $0, meta: $0.card) }
+    }
+
+    // MARK: Cards for the analysis and the synergy screen
+
+    /// Copies owned per card key (oracle id, else Scryfall id) across the
+    /// real collections — decks' hidden collections excluded.
+    func ownedCopiesByKey() throws -> [String: Int] {
+        var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { !$0.collectionName.starts(with: "deck:") })
+        descriptor.relationshipKeyPathsForPrefetching = [\.card]
+        var out: [String: Int] = [:]
+        for entry in try modelContext.fetch(descriptor) {
+            out[entry.card?.oracleID ?? entry.scryfallID, default: 0] += entry.quantity
+        }
+        return out
+    }
+
+    /// The collection as candidates for a deck: one per card across every
+    /// printing owned, copies summed, hydrated rows only (a row with no
+    /// text cannot be read).
+    func collectionCandidates() throws -> [DeckSearchResult] {
+        var byKey: [String: DeckSearchResult] = [:]
+        for item in try ownedCards() where item.oracleText != nil || item.typeLine != nil {
+            let key = item.oracleID ?? item.scryfallID
+            if let existing = byKey[key] {
+                byKey[key] = DeckSearchResult(card: existing.card, ownedCopies: existing.ownedCopies + item.quantity)
+            } else {
+                byKey[key] = DeckSearchResult(card: item, ownedCopies: item.quantity)
+            }
+        }
+        return Array(byKey.values)
+    }
+
+    /// Catalog cards by Scryfall id, in the order asked (ids the catalog
+    /// lacks are skipped). `owned` says whether any printing is in a
+    /// collection.
+    func items(scryfallIDs: [String]) throws -> [CardItem] {
+        let ids = scryfallIDs
+        let metas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { ids.contains($0.scryfallID) }))
+        let byID = Dictionary(metas.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
+        let owned = try ownedCopiesByKey()
+        return scryfallIDs.compactMap { id in
+            guard let meta = byID[id] else { return nil }
+            return CardItem(meta: meta, owned: (owned[meta.oracleID ?? meta.scryfallID] ?? 0) > 0)
+        }
+    }
+
+    /// One catalog card per oracle id: the printing the collection owns
+    /// when it owns one, else the first the catalog has. `oracleID` is
+    /// optional and unindexed, and neither `contains($0.oracleID ?? "")`
+    /// nor a force-unwrap survives SwiftData's SQL generation (the first
+    /// raised inside CoreData), so ids with a known name are fetched by
+    /// name and the rest one at a time — a table scan each, so callers
+    /// pass names whenever they have them.
+    func items(oracleIDs: [String], names: [String: String] = [:]) throws -> [String: CardItem] {
+        let wanted = Set(oracleIDs)
+        var metas: [CardMeta] = []
+        let named = Array(Set(oracleIDs.compactMap { names[$0] }))
+        if !named.isEmpty {
+            metas.append(contentsOf: try catalogRows(names: named))
+        }
+        var found = Set(metas.compactMap(\.oracleID))
+        for oracle in oracleIDs where !found.contains(oracle) {
+            let one = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.oracleID == oracle }))
+            if !one.isEmpty { found.insert(oracle); metas.append(contentsOf: one) }
+        }
+        return try pick(metas.filter { $0.oracleID.map(wanted.contains) ?? false }, key: { $0.oracleID ?? "" })
+    }
+
+    /// One catalog card per name, front faces included ("Bloomvine Regent"
+    /// finds "Bloomvine Regent // …"), keyed by the name asked for.
+    func items(names: [String]) throws -> [String: CardItem] {
+        let metas = try catalogRows(names: names)
+        let front = CardReading.frontName
+        let byFront = try pick(metas, key: { front($0.name) })
+        var out: [String: CardItem] = [:]
+        for name in names { if let item = byFront[front(name)] { out[name] = item } }
+        return out
+    }
+
+    /// Rows by exact name, then front faces for the names not found.
+    private func catalogRows(names: [String]) throws -> [CardMeta] {
+        let wanted = names
+        var metas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { wanted.contains($0.name) }))
+        let foundNames = Set(metas.map(\.name))
+        for name in names where !foundNames.contains(name) {
+            let prefix = name + " //"
+            metas.append(contentsOf: try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.name.starts(with: prefix) })))
+        }
+        return metas
+    }
+
+    private func pick(_ metas: [CardMeta], key: (CardMeta) -> String) throws -> [String: CardItem] {
+        let ownedIDs = try ownedScryfallIDs()
+        let owned = try ownedCopiesByKey()
+        var chosen: [String: CardMeta] = [:]
+        for meta in metas {
+            let k = key(meta)
+            guard !k.isEmpty else { continue }
+            if let current = chosen[k] {
+                if !ownedIDs.contains(current.scryfallID), ownedIDs.contains(meta.scryfallID) { chosen[k] = meta }
+            } else {
+                chosen[k] = meta
+            }
+        }
+        return chosen.mapValues { CardItem(meta: $0, owned: (owned[$0.oracleID ?? $0.scryfallID] ?? 0) > 0) }
+    }
+}
+
+nonisolated extension CardItem {
+    /// A catalog card (no owned row behind it): the same shape a search
+    /// hit has, keyed by its Scryfall id.
+    init(meta: CardMeta, owned: Bool) {
+        self.id = meta.scryfallID
+        self.scryfallID = meta.scryfallID
+        self.oracleID = meta.oracleID
+        self.name = meta.name
+        self.setCode = meta.setCode
+        self.setName = meta.setName
+        self.collectorNumber = meta.collectorNumber
+        self.rarity = meta.rarity
+        self.quantity = 1
+        self.finish = .normal
+        self.condition = "near_mint"
+        self.language = "en"
+        self.addedDate = nil
+        self.owned = owned
+        self.collectionName = ""
+        self.imageURL = meta.imageNormalURL
+        self.artCropURL = meta.artCropURL
+        self.aspectRatio = meta.aspectRatio
+        self.typeLine = meta.typeLine
+        self.manaCost = meta.manaCost
+        self.oracleText = meta.oracleText
+        self.power = meta.power
+        self.toughness = meta.toughness
+        self.loyalty = meta.loyalty
+        self.colors = Self.colors(fromLetters: meta.colorsRaw)
+        self.colorIdentity = Self.colors(fromLetters: meta.colorIdentityRaw)
+        self.artist = meta.artist
+        self.priceUSD = meta.priceUSD
+        self.priceUSDFoil = meta.priceUSDFoil
+        self.sortKey = Self.sortKey(for: meta.name)
+        self.collectorNumberValue = Self.collectorValue(meta.collectorNumber)
+        self.rarityRankValue = Self.rarityRank(meta.rarity)
+        self.purchasePrice = nil
+        self.legalities = meta.legalities
+        self.edhrecRank = meta.edhrecRank
+        self.purchaseURIs = meta.purchaseURIs
     }
 }

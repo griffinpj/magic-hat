@@ -118,7 +118,7 @@ struct AddCardView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(printing.name).font(.headline)
                     HStack(spacing: 4) {
-                        SetSymbolView(setCode: printing.setCode, size: 14, tint: .secondary)
+                        SetSymbolView(setCode: printing.setCode, size: 14, tint: .secondary, rarity: printing.rarity)
                         Text("\(printing.setName) #\(printing.collectorNumber)")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -149,7 +149,7 @@ struct AddCardView: View {
                 }
             } label: {
                 HStack(spacing: 8) {
-                    SetSymbolView(setCode: printing.setCode, size: 18, tint: .primary)
+                    SetSymbolView(setCode: printing.setCode, size: 18, tint: .primary, rarity: printing.rarity)
                     Text(printing.setName)
                     Spacer()
                     Text("#\(printing.collectorNumber)")
@@ -254,7 +254,7 @@ struct OwnedPrintingRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 4) {
-                    SetSymbolView(setCode: item.setCode, size: 14, tint: .primary)
+                    SetSymbolView(setCode: item.setCode, size: 14, tint: .primary, rarity: item.rarity)
                     Text(item.setName).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text("#\(item.collectorNumber)").font(.subheadline).foregroundStyle(.secondary)
                 }
@@ -343,7 +343,7 @@ struct EditEntryView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.name).font(.headline)
                             HStack(spacing: 4) {
-                                SetSymbolView(setCode: item.setCode, size: 14, tint: .secondary)
+                                SetSymbolView(setCode: item.setCode, size: 14, tint: .secondary, rarity: item.rarity)
                                 Text("\(item.setName) #\(item.collectorNumber)")
                                     .font(.subheadline).foregroundStyle(.secondary)
                             }

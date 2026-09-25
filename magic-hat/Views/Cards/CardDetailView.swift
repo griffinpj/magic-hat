@@ -36,7 +36,10 @@ struct CardDetailView: View {
     /// Cached, not computed: these were rebuilt on every body pass (and the
     /// owned Set once per printing row), which made the screen crawl.
     @State private var ownedIDs: Set<String> = []
-    @State private var printingItems: [CardItem] = []
+    @State private var printingItems: [CardItem] = [] {
+        didSet { printingList = CardItemList(printingItems) }
+    }
+    @State private var printingList = CardItemList()
 
     /// Which printings we own, fetched off-main *after* the push has
     /// animated. This used to be an unbounded @Query over every entry, run
@@ -86,7 +89,7 @@ struct CardDetailView: View {
         .fullScreenCover(item: $viewing, onDismiss: { viewingID = nil }) { item in
             // Already on the detail screen; every printing shares it, so the
             // viewer has no Details action here.
-            CardViewerView(items: printingItems, currentID: $viewingID, showsDetail: false)
+            CardViewerView(items: printingList, currentID: $viewingID, showsDetail: false)
                 .navigationTransition(.zoom(sourceID: viewingID ?? item.id, in: zoom))
         }
     }
@@ -301,7 +304,7 @@ struct CardDetailView: View {
 
     private func setHeader(_ group: PrintingGroup) -> some View {
         HStack(spacing: 8) {
-            SetSymbolView(setCode: group.code, size: 22, tint: .primary)
+            SetSymbolView(setCode: group.code, size: 22, tint: .primary, rarity: group.cards.first?.rarity)
             Text(group.setName).font(.headline)
             Text("(\(group.code))").font(.subheadline).foregroundStyle(.secondary)
         }

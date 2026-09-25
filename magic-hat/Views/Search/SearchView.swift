@@ -116,6 +116,7 @@ struct SearchView: View {
 
     /// Before a search: saved searches, then every filter inline.
     private var landing: some View {
+        ScrollViewReader { proxy in
         Form {
             if !savedSearches.isEmpty {
                 Section {
@@ -137,7 +138,7 @@ struct SearchView: View {
                     Text("Saved Searches")
                 }
             }
-            SearchFilterSections(query: $controller.query, focused: $focusedField)
+            SearchFilterSections(query: $controller.query, focused: $focusedField, scrollProxy: proxy)
             Section {
                 Button("Reset Filters", role: .destructive) { controller.query.clearFilters() }
                     .frame(maxWidth: .infinity)
@@ -146,10 +147,11 @@ struct SearchView: View {
             }
         }
         .scrollDismissesKeyboard(.interactively)
+        }
     }
 
     private var results: some View {
-        CardGridView(items: controller.results, onAppearIndex: { controller.loadMore(near: $0) }, header: {
+        CardGridView(items: controller.resultList, onAppearIndex: { controller.loadMore(near: $0) }, header: {
             let names = completions
             if !names.isEmpty { completionStrip(names) }
         })

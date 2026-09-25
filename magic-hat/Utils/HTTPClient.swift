@@ -35,16 +35,23 @@ nonisolated struct HTTPClient {
     /// Accurate User-Agent per Scryfall requirements.
     let userAgent: String
     let accept: String
-    let session: URLSession
+    /// Nil means `URLSession.shared`, looked up at the first request rather
+    /// than here: the first touch of the shared session initialises
+    /// CFNetwork, and dyld's lazy binding of it ran 8.8s on the main
+    /// thread at launch when this initialiser ran from `SearchView.init`
+    /// (`ScryfallClient.shared`). LaunchPrewarm.network does that touch on
+    /// a background thread instead.
+    private let customSession: URLSession?
+    var session: URLSession { customSession ?? .shared }
 
     init(
         userAgent: String = "MagicHat/1.0",
         accept: String = "application/json;q=0.9,*/*;q=0.8",
-        session: URLSession = .shared
+        session: URLSession? = nil
     ) {
         self.userAgent = userAgent
         self.accept = accept
-        self.session = session
+        self.customSession = session
     }
 
     /// Issues a request after waiting on the rate limiter, decoding the
@@ -77,7 +84,12 @@ nonisolated struct HTTPClient {
         }
     }
 
-    /// Issues a request and returns raw bytes (used for images).
+    /// Issues a request and returns raw bytes (used for images). On the
+    /// global executor: with approachable concurrency a nonisolated async
+    /// function runs on the caller's actor, and the callers are on the
+    /// main actor — so building the request and starting the transfer, and
+    /// CFNetwork's first-use setup, used to run there.
+    @concurrent
     func requestData(
         url: URL,
         method: HTTPMethod = .get,

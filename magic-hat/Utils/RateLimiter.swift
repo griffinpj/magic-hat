@@ -18,6 +18,9 @@ nonisolated enum RateLimitCategory {
     case cardsCollection // /cards/collection 2/sec
     case cardsManifest  // /cards/manifest    10/min
     case other          // everything else    10/sec
+    case spellbook      // commanderspellbook.com — unpublished; be polite
+    case recommander    // recommander.cards — unpublished; be polite
+    case edhrec         // json.edhrec.com — unpublished; be polite
 
     /// Minimum interval between consecutive requests, in seconds.
     var minInterval: TimeInterval {
@@ -28,6 +31,8 @@ nonisolated enum RateLimitCategory {
             return 6.0      // 10 per minute
         case .other:
             return 0.1      // 10 per second
+        case .spellbook, .recommander, .edhrec:
+            return 0.5      // 2 per second, well under anything they would mind
         }
     }
 }

@@ -32,9 +32,22 @@ enum HangDetector {
     nonisolated(unsafe) private static var frameCount = 0
     private static let log = Logger(subsystem: "magic-hat", category: "hang")
 
+    /// `UITEST_HANG_LOG=<path>`: every report is also appended to that
+    /// file as one JSON line, so a UI test can count the stalls its flow
+    /// caused and fail on any. `UITEST_HANG_THRESHOLD` (seconds) lowers
+    /// the bar for such a run — 0.1s is six dropped frames.
+    nonisolated(unsafe) private static var logFile: URL?
+    private static let logQueue = DispatchQueue(label: "magic-hat.hang-log")
+
     /// Call once, on the main thread, at launch.
-    static func start(threshold: TimeInterval = 0.4) {
+    static func start(threshold defaultThreshold: TimeInterval = 0.4) {
         guard mainThread == 0 else { return }
+        let env = ProcessInfo.processInfo.environment
+        let threshold = env["UITEST_HANG_THRESHOLD"].flatMap(Double.init) ?? defaultThreshold
+        if let path = env["UITEST_HANG_LOG"], !path.isEmpty {
+            logFile = URL(fileURLWithPath: path)
+            try? FileManager.default.createDirectory(at: logFile!.deletingLastPathComponent(), withIntermediateDirectories: true)
+        }
         let me = pthread_self()
         mainThread = pthread_mach_thread_np(me)
         // The stack grows down from stackaddr; keep the frame walk inside it.
@@ -64,11 +77,32 @@ enum HangDetector {
 
             let elapsed = Date().timeIntervalSince(start)
             if sampled, elapsed > threshold {
-                let line = String(format: "⚠️ MAIN THREAD HANG %.2fs\n", elapsed) + symbolicated()
+                let stack = symbolicated()
+                let line = String(format: "⚠️ MAIN THREAD HANG %.2fs\n", elapsed) + stack
                 log.error("\(line, privacy: .public)")
                 print(line)
+                append(duration: elapsed, stack: stack)
             }
             Thread.sleep(forTimeInterval: 0.25)
+        }
+    }
+
+    private static func append(duration: TimeInterval, stack: String) {
+        guard let logFile else { return }
+        let record: [String: Any] = [
+            "t": Date().timeIntervalSince1970, "duration": duration,
+            "frames": stack.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) },
+        ]
+        guard var data = try? JSONSerialization.data(withJSONObject: record) else { return }
+        data.append(0x0A)
+        logQueue.async {
+            if let handle = try? FileHandle(forWritingTo: logFile) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            } else {
+                try? data.write(to: logFile)
+            }
         }
     }
 
