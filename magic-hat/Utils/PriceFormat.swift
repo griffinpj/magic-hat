@@ -23,6 +23,14 @@ nonisolated enum PriceFormat {
         value.formatted(.currency(code: "USD").precision(.fractionLength(value >= 1000 ? 0 : 2)))
     }
 
+    /// "+87%" / "−5.7%" — the change since purchase as a percentage alone,
+    /// for the grid: one decimal under 10%, none above.
+    static func percent(_ percent: Double) -> String {
+        let sign = percent >= 0 ? "+" : "\u{2212}"
+        let magnitude = abs(percent)
+        return sign + String(format: magnitude < 10 ? "%.1f%%" : "%.0f%%", magnitude)
+    }
+
     /// "+2.03 (+5.61%)" — signed, for value change since purchase.
     static func change(_ amount: Double, _ percent: Double) -> String {
         let sign = amount >= 0 ? "+" : "-"

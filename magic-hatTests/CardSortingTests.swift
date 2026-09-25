@@ -83,6 +83,8 @@ struct CardSortingTests {
 struct PriceFormatTests {
     @Test func compactDropsCentsAtOrAboveOneHundred() {
         #expect(PriceFormat.compact(140) == "$140")
+        #expect(PriceFormat.percent(87.2) == "+87%")
+        #expect(PriceFormat.percent(-5.67) == "\u{2212}5.7%")
         #expect(PriceFormat.compact(38.22) == "$38.22")
     }
 

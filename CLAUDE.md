@@ -399,18 +399,17 @@ detail screen and actions as an owned card:
   of the presenter whose state was still at its initial values. The item
   is the one thing SwiftUI hands the closure fresh.
 - Owned vs not: `CardItem.isEntry` (an owned row with a quantity) vs
-  `CardItem.owned` (a search hit/printing we hold somewhere). The tile's
-  badges run along its bottom edge in one row, top corners left to the
-  art: on the left "2× ◆ #123" — copies for an entry (a green check for an
-  owned hit, nothing for the rest), the set symbol (rare/mythic/special in
-  their colour, common and uncommon white, since uncommon's silver is lost
-  on the dark badge; a set neither Keyrune nor the bundled icons draw
-  shows its code — no WebKit from the grid), the collector number — and
-  on the right the price, led by a gradient ✦ for foil/etched, a notch
-  smaller. Dark translucent capsules, not glass: glass is for controls
-  over content, and a blur per badge made this grid stutter before. No
-  dimming, so results look like the collection. Edit/Remove need an
-  entry; a hit's rows are edited from the Add sheet's owned list.
+  `CardItem.owned` (a search hit/printing we hold somewhere). The tile is
+  the art, clean, over a two-line caption (Photos/Music-style, readable
+  whatever the art is): "✦ $12.34 … +87%" — a gradient ✦ for foil/etched,
+  the price, the change since purchase in green/red (`PriceFormat.percent`)
+  — and "2× ◆ #123" in secondary: copies for an entry (a green check for
+  an owned hit), the set symbol in its rarity's colour (a set neither
+  Keyrune nor the bundled icons draw shows its code — no WebKit from the
+  grid), the collector number. The zoom's source is the image, not the
+  caption (`CardTile(zoom:)`). No dimming, so results look like the
+  collection. Edit/Remove need an entry; a hit's rows are edited from the
+  Add sheet's owned list.
 
 Pricing: Scryfall provides only a single market price per finish
 (`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers).
@@ -836,8 +835,17 @@ holds, in two rows, the scope picker and one line of small bordered
 capsule chips — "In collection", the commander's identity as its pips
 alone (VoiceOver: "Within identity, …"), and the board menu trailing —
 with what the deck breaks as one caption line under them. Section
-headers are a line of text with their source trailing ("EDHREC"), not
-the plain list's tall default. A floating glass sort button — the
+headers are ordinary rows with their source trailing ("EDHREC") — not
+Section headers, which a plain list pins, and each flashed its background
+taking the pinned place under the bar. The bar has the list's own
+background up under the navigation bar and a hairline, so rows don't read
+through the chips (`scrollEdgeEffectStyle(.hard)` did that too, but
+turned the bar's glass and the keyboard light in dark mode). Both scopes
+stay mounted, the hidden one out of hit-testing and accessibility, and
+Recommended's lists are matched and sorted off the main actor on every
+input change whatever scope shows (`refreshRecommended`), so switching to
+it is instant; each of its sections shows its own loading row rather than
+the scope waiting behind one spinner. A floating glass sort button — the
 collection grid's, in the bottom-leading corner here because the
 trailing edge is every row's "+" — orders each scope (`DeckAddSort`:
 Relevance, Name, Mana Value, Price high/low, Rarity; per scope while the

@@ -79,6 +79,8 @@ struct DeckAddCardsView: View {
     @State private var collectionCards = CardItemList()
     @State private var collectionOwned: [String: Int] = [:]
     @State private var collectionTask: Task<Void, Never>?
+    @State private var recommendedTask: Task<Void, Never>?
+    @State private var recommendedMounted = false
     /// The Recommended scope: the plan's list as shown (a card just put
     /// in kept in place), then the rows matching the field and filters.
     @State private var recommendedShown: [DeckRecommendation] = []
@@ -184,7 +186,7 @@ struct DeckAddCardsView: View {
             .onChange(of: session.board) { _, _ in runSearch(immediately: true) }
             .onChange(of: sorts) { _, _ in runSearch(immediately: true) }
             .onChange(of: analysis.plan?.id) { _, _ in mergeRecommendations() }
-            .onChange(of: analysis.synergyVersion) { _, _ in if scope == .recommended { runSearch(immediately: true) } }
+            .onChange(of: analysis.synergyVersion) { _, _ in refreshRecommended(immediately: true) }
             .task(id: deckTracker.revision) { await loadDeck() }
             .task(id: collectionTracker.revision) { await loadOwned() }
             .onAppear { searchFocused = true }
@@ -246,6 +248,16 @@ struct DeckAddCardsView: View {
         .padding(.horizontal, 16)
         .padding(.top, 2)
         .padding(.bottom, 8)
+        // A picker and a row of chips: rows read through the soft scroll
+        // edge under them, so the bar has the list's own background, up
+        // under the navigation bar, with a hairline where rows go under.
+        // (`scrollEdgeEffectStyle(.hard)` did this, but turned the bar's
+        // glass and the keyboard light in dark mode.)
+        .background {
+            Color(.systemBackground)
+                .ignoresSafeArea(edges: .top)
+                .overlay(alignment: .bottom) { Divider().opacity(0.6) }
+        }
     }
 
     /// The commander's colour identity as its pips alone (colourless shows
@@ -329,13 +341,30 @@ struct DeckAddCardsView: View {
 
     // MARK: Results
 
-    @ViewBuilder private var results: some View {
-        switch scope {
-        case .all:
-            if ownedOnly { collectionResults } else { scryfallResults }
-        case .recommended:
-            recommendedResults
+    /// Both scopes stay built, the one not chosen hidden: switching shows
+    /// a list that is already laid out instead of building a new one on
+    /// the tap. Recommended joins once the sheet has settled (or at once
+    /// when the sheet opens on it), so it doesn't add to the presentation.
+    private var results: some View {
+        ZStack {
+            scopeLayer(.all) {
+                if ownedOnly { collectionResults } else { scryfallResults }
+            }
+            if recommendedMounted || scope == .recommended {
+                scopeLayer(.recommended) { recommendedResults }
+            }
         }
+        .task {
+            try? await Task.sleep(for: .milliseconds(600))
+            recommendedMounted = true
+        }
+    }
+
+    private func scopeLayer<Content: View>(_ layer: DeckSearchScope, @ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .opacity(scope == layer ? 1 : 0)
+            .allowsHitTesting(scope == layer)
+            .accessibilityHidden(scope != layer)
     }
 
     /// All Cards with the chip on: what is owned, matched in memory.
@@ -411,80 +440,70 @@ struct DeckAddCardsView: View {
         }
     }
 
-    /// The commander's synergies first, then the analysis's list.
-    @ViewBuilder private var recommendedResults: some View {
-        if analysis.analysis == nil || (analysis.plan == nil && analysis.isPlanning) {
-            // The plan reads every spare card in the collection, off the
-            // main actor; on a big one that is a second or two.
-            ProgressView("Reading the collection…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityIdentifier("deck-recommended-loading")
-        } else {
-            List {
-                if usesIdentity { synergySection }
-                Section {
-                    if recommended.isEmpty {
-                        Text(analysis.plan == nil ? "Add a few cards and a commander first."
-                             : (hasCriteria || ownedOnly ? "Nothing here matches." : "Every card that would help is already in the list."))
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(recommended.ids, id: \.self) { id in
-                        if let card = recommended.item(for: id) {
-                            resultRow(card, ownedCopies: recommendedOwned[id], reason: recommendedReasons[id])
-                                .id(id)
-                        }
-                    }
-                } header: {
-                    sectionHeader("For This Deck")
-                } footer: {
-                    Text(analysis.sourcesLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    /// The commander's synergies first, then the analysis's list. Always
+    /// the list: each section says it is loading in its own row and fills
+    /// in when its source lands, rather than the scope sitting behind one
+    /// spinner until the slower of the two is done.
+    private var recommendedResults: some View {
+        List {
+            if usesIdentity { synergySection }
+            headerRow("For This Deck")
+            if analysis.analysis == nil || (analysis.plan == nil && analysis.isPlanning) {
+                // The plan reads every spare card in the collection, off
+                // the main actor; on a big one that is a second or two.
+                loadingRow("Reading your collection…")
+                    .accessibilityIdentifier("deck-recommended-loading")
+            } else {
+                if recommended.isEmpty {
+                    statusRow(analysis.plan == nil ? "Add a few cards and a commander first."
+                              : (hasCriteria || ownedOnly ? "Nothing here matches." : "Every card that would help is already in the list."))
                 }
-            }
-            .listStyle(.plain)
-            // A plain list's headers come with a tall default height and
-            // a gap above the first one; here they are a line of text.
-            .listSectionSpacing(.compact)
-            .environment(\.defaultMinListHeaderHeight, 0)
-            .contentMargins(.top, 0, for: .scrollContent)
-            .contentMargins(.bottom, 80, for: .scrollContent)
-            .scrollDismissesKeyboard(.immediately)
-        }
-    }
-
-    private var synergySection: some View {
-        Section {
-            switch analysis.synergies {
-            case .pending:
-                HStack(spacing: 12) { ProgressView(); Text("Asking EDHREC…").foregroundStyle(.secondary) }.font(.subheadline)
-            case .offline:
-                Text("Needs a connection.").font(.subheadline).foregroundStyle(.secondary)
-            case .unavailable:
-                Text("EDHREC has nothing for this commander.").font(.subheadline).foregroundStyle(.secondary)
-            case .done:
-                if synergyShown.isEmpty {
-                    Text(hasCriteria || ownedOnly ? "Nothing here matches." : "Every synergy card is already in the deck.")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(synergyShown.ids, id: \.self) { id in
-                    if let card = synergyShown.item(for: id) {
-                        resultRow(card, ownedCopies: synergyOwned[id], reason: synergyReasons[id])
+                ForEach(recommended.ids, id: \.self) { id in
+                    if let card = recommended.item(for: id) {
+                        resultRow(card, ownedCopies: recommendedOwned[id], reason: recommendedReasons[id])
                             .id(id)
                     }
                 }
+                Text(analysis.sourcesLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .listRowSeparator(.hidden)
             }
-        } header: {
-            // On the header, not the Section: a Section's identifier is
-            // stamped on every child, hiding the rows' own.
-            sectionHeader("Commander Synergies", source: "EDHREC")
-                .accessibilityIdentifier("deck-recommended-synergies")
+        }
+        .listStyle(.plain)
+        .contentMargins(.top, 0, for: .scrollContent)
+        .contentMargins(.bottom, 80, for: .scrollContent)
+        .scrollDismissesKeyboard(.immediately)
+    }
+
+    @ViewBuilder private var synergySection: some View {
+        headerRow("Commander Synergies", source: "EDHREC")
+            // On the header row: the rows keep their own identifiers.
+            .accessibilityIdentifier("deck-recommended-synergies")
+        switch analysis.synergies {
+        case .pending:
+            loadingRow("Asking EDHREC…")
+        case .offline:
+            statusRow("Needs a connection.")
+        case .unavailable:
+            statusRow("EDHREC has nothing for this commander.")
+        case .done:
+            if synergyShown.isEmpty {
+                statusRow(hasCriteria || ownedOnly ? "Nothing here matches." : "Every synergy card is already in the deck.")
+            }
+            ForEach(synergyShown.ids, id: \.self) { id in
+                if let card = synergyShown.item(for: id) {
+                    resultRow(card, ownedCopies: synergyOwned[id], reason: synergyReasons[id])
+                        .id(id)
+                }
+            }
         }
     }
 
-    /// A pinned header in sentence case, as the deck list's are, with where
-    /// the list comes from trailing — not a footer row of its own.
-    private func sectionHeader(_ title: String, source: String? = nil) -> some View {
+    /// A section's title as an ordinary row, not a Section header: a plain
+    /// list pins its headers, and each one flashed its background as it
+    /// took the pinned place under the sheet's bar.
+    private func headerRow(_ title: String, source: String? = nil) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
@@ -496,8 +515,25 @@ struct DeckAddCardsView: View {
                     .foregroundStyle(Color.secondary)
             }
         }
-        .textCase(nil)
-        .padding(.vertical, 2)
+        .accessibilityAddTraits(.isHeader)
+        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
+        .listRowSeparator(.hidden)
+    }
+
+    private func loadingRow(_ text: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(text).foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        .listRowSeparator(.hidden)
+    }
+
+    private func statusRow(_ text: String) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .listRowSeparator(.hidden)
     }
 
     private func resultRow(_ item: CardItem, ownedCopies: Int?, reason: CardReason? = nil) -> some View {
@@ -540,34 +576,12 @@ struct DeckAddCardsView: View {
     }
 
     private func runSearch(immediately: Bool) {
+        // Recommended is kept current whatever scope is showing, off the
+        // main actor, so switching to it shows a list already made.
+        refreshRecommended(immediately: immediately)
         switch scope {
         case .recommended:
-            // A few hundred rows at most: the match runs where it is asked.
-            let q = effectiveQuery()
-            // What the deck already plays is not offered; what this sheet
-            // put in stays, as a stepper (see `DeckAddSession.touched`).
-            let inDeck = Set((snapshot?.playedItems ?? []).map { DeckAddSession.key(of: $0.card) })
-            let keeps = { (card: CardItem) -> Bool in session.touched.contains(DeckAddSession.key(of: card)) }
-            let picks = analysis.commanderPicks.filter { pick in
-                let key = DeckAddSession.key(of: pick.card)
-                if inDeck.contains(key) && !keeps(pick.card) { return false }
-                if ownedOnly && pick.ownedCopies == 0 && !keeps(pick.card) { return false }
-                return q.isEmpty || q.matches(pick.card)
-            }
-            let sortedPicks = sort.apply(picks, card: \.card)
-            synergyShown = CardItemList(sortedPicks.map(\.card))
-            synergyReasons = Dictionary(picks.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
-            synergyOwned = Dictionary(picks.map { ($0.card.id, $0.ownedCopies) }, uniquingKeysWith: { a, _ in a })
-            // The synergy list leads; a card on it is not listed twice.
-            let led = Set(picks.map { DeckAddSession.key(of: $0.card) })
-            let rows = recommendedShown.filter { rec in
-                if led.contains(DeckAddSession.key(of: rec.card)) { return false }
-                if ownedOnly && !rec.isOwned && !keeps(rec.card) { return false }
-                return q.isEmpty || q.matches(rec.card)
-            }
-            recommended = CardItemList(sort.apply(rows, card: \.card).map(\.card))
-            recommendedReasons = Dictionary(rows.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
-            recommendedOwned = Dictionary(rows.map { ($0.card.id, $0.candidate.ownedCopies) }, uniquingKeysWith: { a, _ in a })
+            break
         case .all where !ownedOnly:
             guard hasCriteria else { controller.clear(); return }
             controller.query = effectiveQuery()
@@ -595,6 +609,56 @@ struct DeckAddCardsView: View {
                     collectionOwned = owned
                     collectionHidden = results.count - shown.count
                 }
+            }
+        }
+    }
+
+    /// The Recommended scope's two lists, matched and sorted off the main
+    /// actor. It used to run on the tap that switched to the scope — a few
+    /// hundred cards filtered, sorted and mapped under the segmented
+    /// control's own animation — and only then did the list appear.
+    private func refreshRecommended(immediately: Bool) {
+        recommendedTask?.cancel()
+        let q = effectiveQuery()
+        // What the deck already plays is not offered; what this sheet put
+        // in stays, as a stepper (see `DeckAddSession.touched`).
+        let inDeck = Set((snapshot?.playedItems ?? []).map { DeckAddSession.key(of: $0.card) })
+        let touched = session.touched
+        let picksIn = analysis.commanderPicks
+        let recsIn = recommendedShown
+        let ownedOnly = self.ownedOnly
+        let sort = sorts[.recommended] ?? .relevance
+        recommendedTask = Task.detached(priority: .userInitiated) {
+            if !immediately { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            let keeps = { (card: CardItem) -> Bool in touched.contains(DeckAddSession.key(of: card)) }
+            let picks = sort.apply(picksIn.filter { pick in
+                let key = DeckAddSession.key(of: pick.card)
+                if inDeck.contains(key) && !keeps(pick.card) { return false }
+                if ownedOnly && pick.ownedCopies == 0 && !keeps(pick.card) { return false }
+                return q.isEmpty || q.matches(pick.card)
+            }, card: \.card)
+            // The synergy list leads; a card on it is not listed twice.
+            let led = Set(picks.map { DeckAddSession.key(of: $0.card) })
+            let rows = sort.apply(recsIn.filter { rec in
+                if led.contains(DeckAddSession.key(of: rec.card)) { return false }
+                if ownedOnly && !rec.isOwned && !keeps(rec.card) { return false }
+                return q.isEmpty || q.matches(rec.card)
+            }, card: \.card)
+            let synergyList = CardItemList(picks.map(\.card))
+            let synergyReasons = Dictionary(picks.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
+            let synergyOwned = Dictionary(picks.map { ($0.card.id, $0.ownedCopies) }, uniquingKeysWith: { a, _ in a })
+            let recommendedList = CardItemList(rows.map(\.card))
+            let recommendedReasons = Dictionary(rows.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
+            let recommendedOwned = Dictionary(rows.map { ($0.card.id, $0.candidate.ownedCopies) }, uniquingKeysWith: { a, _ in a })
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self.synergyShown = synergyList
+                self.synergyReasons = synergyReasons
+                self.synergyOwned = synergyOwned
+                self.recommended = recommendedList
+                self.recommendedReasons = recommendedReasons
+                self.recommendedOwned = recommendedOwned
             }
         }
     }
@@ -637,7 +701,7 @@ struct DeckAddCardsView: View {
             merged.insert(old, at: min(i, merged.count))
         }
         recommendedShown = merged
-        if scope == .recommended { runSearch(immediately: true) }
+        refreshRecommended(immediately: true)
     }
 
     private func loadDeck() async {
@@ -652,7 +716,7 @@ struct DeckAddCardsView: View {
             // before it arrived (the owned cards usually land first) are
             // computed again — only then, not on every add, which would
             // re-run a Scryfall search per tap. Recommended re-ran above.
-            if scope != .recommended, identityBefore != (usesIdentity ? identity : nil) { runSearch(immediately: true) }
+            if identityBefore != (usesIdentity ? identity : nil) { runSearch(immediately: true) }
         }
     }
 
