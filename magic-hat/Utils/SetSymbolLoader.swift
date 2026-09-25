@@ -83,8 +83,6 @@ final class SetSymbolLoader {
     /// A tintable raster of the set symbol at `size` points. Nil on failure.
     func symbol(setCode: String, size: CGFloat) async -> UIImage? {
         let code = setCode.lowercased()
-        // Never on the caller's frame: the badge shows meanwhile.
-        if !rasterizer.isWarm { warmWhenNeeded() }
         let scale = rasterizer.scale
         let key = "\(code)@\(Int(size))@\(Int(scale))"
 
@@ -98,7 +96,15 @@ final class SetSymbolLoader {
             if let image = await Self.readPNG(pngURL, scale: scale) { return image }
             // 2. SVG bytes, from disk or Scryfall.
             guard let svg = await svgData(for: code) else { return nil }
-            // 3. Rasterize on the shared web view, one at a time.
+            // 3. Only now is WebKit needed. It used to be warmed on every
+            //    call, before the PNG cache was looked at, so each launch's
+            //    first card from such a set loaded ScreenTime and built a
+            //    web view for a symbol already on disk: 3.1s waiting on
+            //    dyld's lock plus 3.3s in WKWebView.init on the main thread
+            //    under the debugger, taps queuing behind the viewer. Never on
+            //    the caller's frame: the badge shows meanwhile.
+            if !rasterizer.isWarm { warmWhenNeeded() }
+            // 4. Rasterize on the shared web view, one at a time.
             guard let image = await rasterizer.rasterize(svg: svg, size: size) else { return nil }
             await Self.writePNG(image, to: pngURL)
             return image

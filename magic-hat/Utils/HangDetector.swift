@@ -25,11 +25,17 @@ import os
 
 enum HangDetector {
     private static let maxFrames = 96
+    /// A long hang is sampled more than once — at the threshold, then every
+    /// half second — so a multi-second freeze shows what it spent its time
+    /// on, not just where it was at the start.
+    private static let maxSamples = 16
+    private static let resampleInterval: TimeInterval = 0.5
     nonisolated(unsafe) private static var mainThread: mach_port_t = 0
     nonisolated(unsafe) private static var stackLow: UInt = 0
     nonisolated(unsafe) private static var stackHigh: UInt = 0
-    nonisolated(unsafe) private static let frames = UnsafeMutablePointer<UInt>.allocate(capacity: maxFrames)
-    nonisolated(unsafe) private static var frameCount = 0
+    nonisolated(unsafe) private static let frames = UnsafeMutablePointer<UInt>.allocate(capacity: maxFrames * maxSamples)
+    nonisolated(unsafe) private static let frameCounts = UnsafeMutablePointer<Int>.allocate(capacity: maxSamples)
+    nonisolated(unsafe) private static var sampleIndex = 0
     private static let log = Logger(subsystem: "magic-hat", category: "hang")
 
     /// `UITEST_HANG_LOG=<path>`: every report is also appended to that
@@ -73,31 +79,37 @@ enum HangDetector {
             let start = Date()
             DispatchQueue.main.async { answered.signal() }
 
-            var sampled = false
+            var samples = 0
+            var nextSample = threshold
             while answered.wait(timeout: .now() + step) == .timedOut {
-                if !sampled, Date().timeIntervalSince(start) > threshold {
-                    sample()
-                    sampled = true
+                if samples < maxSamples, Date().timeIntervalSince(start) > nextSample {
+                    sample(into: samples)
+                    samples += 1
+                    nextSample += resampleInterval
                 }
             }
 
             let elapsed = Date().timeIntervalSince(start)
-            if sampled, elapsed > threshold {
-                let stack = symbolicated()
-                let line = String(format: "⚠️ MAIN THREAD HANG %.2fs\n", elapsed) + stack
+            if samples > 0, elapsed > threshold {
+                let stacks = (0..<samples).map { symbolicated($0) }
+                var line = String(format: "⚠️ MAIN THREAD HANG %.2fs\n", elapsed) + stacks[0]
+                for (i, stack) in stacks.enumerated().dropFirst() {
+                    line += String(format: "\n  — sample at %.1fs —\n", threshold + Double(i) * resampleInterval) + stack
+                }
                 log.error("\(line, privacy: .public)")
                 print(line)
-                append(duration: elapsed, stack: stack)
+                append(duration: elapsed, stacks: stacks)
             }
             Thread.sleep(forTimeInterval: gap)
         }
     }
 
-    private static func append(duration: TimeInterval, stack: String) {
+    private static func append(duration: TimeInterval, stacks: [String]) {
         guard let logFile else { return }
+        let lines = stacks.map { $0.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) } }
         let record: [String: Any] = [
             "t": Date().timeIntervalSince1970, "duration": duration,
-            "frames": stack.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) },
+            "frames": lines.first ?? [], "samples": lines,
         ]
         guard var data = try? JSONSerialization.data(withJSONObject: record) else { return }
         data.append(0x0A)
@@ -118,8 +130,9 @@ enum HangDetector {
     /// addresses fit well under this mask, so stripping is a mask.
     private static let addressMask: UInt = 0x0000_007F_FFFF_FFFF
 
-    private static func sample() {
-        frameCount = 0
+    private static func sample(into slot: Int) {
+        sampleIndex = slot
+        frameCounts[slot] = 0
         #if arch(arm64)
         guard thread_suspend(mainThread) == KERN_SUCCESS else { return }
         var state = arm_thread_state64_t()
@@ -156,17 +169,23 @@ enum HangDetector {
         #endif
     }
 
+    private static var frameCount: Int {
+        get { frameCounts[sampleIndex] }
+        set { frameCounts[sampleIndex] = newValue }
+    }
+
     private static func push(_ address: UInt) {
         guard frameCount < maxFrames, address != 0 else { return }
-        frames[frameCount] = address
+        frames[sampleIndex * maxFrames + frameCount] = address
         frameCount += 1
     }
 
-    private static func symbolicated() -> String {
-        guard frameCount > 0 else { return "  (no sample captured)" }
+    private static func symbolicated(_ slot: Int) -> String {
+        let count = frameCounts[slot]
+        guard count > 0 else { return "  (no sample captured)" }
         var lines: [String] = []
-        for i in 0..<frameCount {
-            let address = frames[i]
+        for i in 0..<count {
+            let address = frames[slot * maxFrames + i]
             var info = Dl_info()
             if let pointer = UnsafeRawPointer(bitPattern: address), dladdr(pointer, &info) != 0, let name = info.dli_sname {
                 let image = info.dli_fname.map { URL(fileURLWithPath: String(cString: $0)).lastPathComponent } ?? "?"

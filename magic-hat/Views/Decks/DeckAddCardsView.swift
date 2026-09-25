@@ -126,10 +126,13 @@ struct DeckAddCardsView: View {
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
-                VStack(spacing: 0) {
-                    header
-                    results
-                }
+                results
+                // The scope, chips and board ride in the top bar region with
+                // the navigation bar and the field: the rows scroll beneath
+                // them under the scroll-edge effect (as the deck screen's
+                // section picker does), rather than stopping at a block of
+                // controls stacked above the list.
+                .safeAreaBar(edge: .top) { header }
                 // While the viewer pages, keep the row it is on in view, so
                 // the zoom-out lands on that row's art.
                 .onChange(of: viewer?.currentID) { old, id in
@@ -195,8 +198,10 @@ struct DeckAddCardsView: View {
         .accessibilityValue(query.hasFilters ? "\(query.activeFilterCount) active" : "none")
     }
 
-    /// The two scopes across the top; the chips on the row beneath; the
-    /// board "+" adds to, with the deck's issues, on the row under that.
+    /// Two rows: the scopes, then every chip on one line — "In
+    /// collection", the commander's identity as its pips, and the board
+    /// "+" adds to at the trailing end. What the deck breaks, when it
+    /// breaks something, is a single caption line under them.
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Source", selection: $scope) {
@@ -207,47 +212,47 @@ struct DeckAddCardsView: View {
             HStack(spacing: 8) {
                 Toggle(isOn: $ownedOnly) {
                     Label("In collection", systemImage: "tray.full")
-                        .font(.footnote)
                 }
-                .toggleStyle(.button)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
                 .accessibilityIdentifier("deck-search-owned")
-                if usesIdentity {
-                    Toggle(isOn: $identityFilter) {
-                        HStack(spacing: 4) {
-                            Text("Within identity")
-                            ForEach(identity, id: \.self) { color in
-                                ManaSymbolView(symbol: ManaSymbol(color.rawValue), size: 14)
-                            }
-                        }
-                        .font(.footnote)
-                    }
-                    .toggleStyle(.button)
-                    .buttonBorderShape(.capsule)
-                    .controlSize(.small)
-                }
-                Spacer(minLength: 0)
-            }
-            HStack(spacing: 10) {
-                if let snapshot, !snapshot.stats.violations.isEmpty {
-                    Label {
-                        Text(snapshot.stats.violationSummary)
-                            .foregroundStyle(.primary)
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
-                    .font(.footnote)
-                    .lineLimit(2)
-                    .accessibilityIdentifier("deck-add-issues")
-                }
-                Spacer(minLength: 0)
+                if usesIdentity { identityChip }
+                Spacer(minLength: 8)
                 boardMenu
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .font(.footnote.weight(.medium))
+            if let snapshot, !snapshot.stats.violations.isEmpty {
+                Label {
+                    Text(snapshot.stats.violationSummary)
+                        .foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .font(.caption)
+                .lineLimit(1)
+                .accessibilityIdentifier("deck-add-issues")
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+    }
+
+    /// The commander's colour identity as its pips alone (colourless shows
+    /// {C}); on, results stay within it. Named in full for VoiceOver.
+    private var identityChip: some View {
+        Toggle(isOn: $identityFilter) {
+            HStack(spacing: 2) {
+                ForEach(identity.isEmpty ? ["C"] : identity.map(\.rawValue), id: \.self) { pip in
+                    ManaSymbolView(symbol: ManaSymbol(pip), size: 15)
+                }
+            }
+        }
+        .accessibilityLabel("Within identity, " + (identity.isEmpty ? "Colorless" : identity.map(\.name).joined(separator: ", ")))
+        .accessibilityIdentifier("deck-search-identity")
     }
 
     /// Where "+" puts a card. A row's context menu offers the others.
@@ -265,17 +270,15 @@ struct DeckAddCardsView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Text(session.board.label)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2.weight(.semibold))
             }
-            .font(.subheadline.weight(.medium))
             .lineLimit(1)
         }
         .menuOrder(.fixed)
-        .buttonStyle(.bordered)
-        .buttonBorderShape(.capsule)
+        .fixedSize()
         .accessibilityLabel("Add to \(session.board.label)")
         .accessibilityIdentifier("deck-search-board")
     }
@@ -386,12 +389,19 @@ struct DeckAddCardsView: View {
                         }
                     }
                 } header: {
-                    Text("For This Deck")
+                    sectionHeader("For This Deck")
                 } footer: {
                     Text(analysis.sourcesLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .listStyle(.plain)
+            // A plain list's headers come with a tall default height and
+            // a gap above the first one; here they are a line of text.
+            .listSectionSpacing(.compact)
+            .environment(\.defaultMinListHeaderHeight, 0)
+            .contentMargins(.top, 0, for: .scrollContent)
             .scrollDismissesKeyboard(.immediately)
         }
     }
@@ -400,11 +410,11 @@ struct DeckAddCardsView: View {
         Section {
             switch analysis.synergies {
             case .pending:
-                HStack(spacing: 12) { ProgressView(); Text("Asking EDHREC…").foregroundStyle(.secondary) }
+                HStack(spacing: 12) { ProgressView(); Text("Asking EDHREC…").foregroundStyle(.secondary) }.font(.subheadline)
             case .offline:
-                Text("Needs a connection.").foregroundStyle(.secondary)
+                Text("Needs a connection.").font(.subheadline).foregroundStyle(.secondary)
             case .unavailable:
-                Text("EDHREC has nothing for this commander.").foregroundStyle(.secondary)
+                Text("EDHREC has nothing for this commander.").font(.subheadline).foregroundStyle(.secondary)
             case .done:
                 if synergyShown.isEmpty {
                     Text(hasCriteria || ownedOnly ? "Nothing here matches." : "Every synergy card is already in the deck.")
@@ -420,11 +430,27 @@ struct DeckAddCardsView: View {
         } header: {
             // On the header, not the Section: a Section's identifier is
             // stamped on every child, hiding the rows' own.
-            Text("Commander Synergies")
+            sectionHeader("Commander Synergies", source: "EDHREC")
                 .accessibilityIdentifier("deck-recommended-synergies")
-        } footer: {
-            Text("EDHREC, best first")
         }
+    }
+
+    /// A pinned header in sentence case, as the deck list's are, with where
+    /// the list comes from trailing — not a footer row of its own.
+    private func sectionHeader(_ title: String, source: String? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.primary)
+            Spacer(minLength: 8)
+            if let source {
+                Text(source)
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+            }
+        }
+        .textCase(nil)
+        .padding(.vertical, 2)
     }
 
     private func resultRow(_ item: CardItem, ownedCopies: Int?, reason: CardReason? = nil) -> some View {
@@ -563,10 +589,16 @@ struct DeckAddCardsView: View {
     private func loadDeck() async {
         let store = DeckStore.shared(for: modelContext.container)
         if let fetched = try? await store.snapshot(deckID: deckID), !Task.isCancelled {
+            let identityBefore = usesIdentity ? identity : nil
             snapshot = fetched
             session.update(from: fetched)
             analysis.refresh(snapshot: fetched, container: modelContext.container)
             mergeRecommendations()
+            // The identity filter comes from the deck: results computed
+            // before it arrived (the owned cards usually land first) are
+            // computed again — only then, not on every add, which would
+            // re-run a Scryfall search per tap. Recommended re-ran above.
+            if scope != .recommended, identityBefore != (usesIdentity ? identity : nil) { runSearch(immediately: true) }
         }
     }
 

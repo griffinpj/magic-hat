@@ -34,7 +34,9 @@ struct CollectionsView: View {
     @State private var showingWizard = false
     @State private var importError: String?
     @State private var isParsing = false
-    @State private var overview: CollectionOverview?
+    /// Starts as the last overview saved (see `LastOverview`), so the
+    /// tab's first frame already has its numbers.
+    @State private var overview: CollectionOverview? = LastOverview.saved
     @State private var summaryTask: Task<Void, Never>?
     /// A refresh came due while a collection was pushed on top.
     @State private var summariesStale = false
@@ -79,29 +81,11 @@ struct CollectionsView: View {
                     scheduleSummaries(delay: .zero)
                     return
                 }
-                let key = overviewKey
-                Task { await Self.lastOverview.store(fresh, key: key) }
+                LastOverview.save(fresh)
             }
             guard !Task.isCancelled else { return }
             try? await store.prewarmSnapshots(sort: sort, stamp: stamp)
         }
-    }
-
-    /// The last overview, on disk, so the tab shows its numbers the moment
-    /// it appears after a launch rather than a loading card while every
-    /// row is read (0.6s on the real collection in a debug build). The
-    /// fresh one replaces it as soon as it lands. Keyed by store file, and
-    /// never for the in-memory stores of UI tests.
-    private static let lastOverview = DiskJSONCache(folder: "Overview")
-    private var overviewKey: String {
-        "collections-" + (modelContext.container.configurations.first?.url.lastPathComponent ?? "store")
-    }
-
-    private func showLastOverview() async {
-        guard overview == nil, !UITestSeed.isSeededRun,
-              let last = await Self.lastOverview.stale(CollectionOverview.self, key: overviewKey)?.value,
-              overview == nil else { return }
-        overview = last
     }
 
     private func summary(for name: String) -> CollectionSummary? {
@@ -156,7 +140,6 @@ struct CollectionsView: View {
             } message: {
                 Text(importError ?? "")
             }
-            .task { await showLastOverview() }
             .task(id: tracker.revision) { scheduleSummaries(delay: .zero) }
             // Observed in a child, not with onChange here: reading the
             // revision in this body re-rendered the tab — and re-created the

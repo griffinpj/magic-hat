@@ -202,9 +202,26 @@ enum LaunchPrewarm {
 
     @MainActor private static var keyboardDone = false
 
-    /// Loads the text-input stack without showing a keyboard.
+    /// Whether a debugger is attached (Xcode's Run). Under one, every
+    /// framework the process loads stops it — every thread — while the
+    /// debugger reads the image: measured on a device, the keyboard
+    /// prewarm's chain of soft-linked frameworks froze the app for 8.6s
+    /// two seconds after launch (0.1s without the debugger), which is where
+    /// "nothing responds and the tab says it's adding up" came from.
+    nonisolated static let isBeingDebugged: Bool = {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0 else { return false }
+        return (info.kp_proc.p_flag & P_TRACED) != 0
+    }()
+
+    /// Loads the text-input stack without showing a keyboard. Skipped
+    /// under a debugger (see `isBeingDebugged`): there the load costs
+    /// seconds wherever it lands, and on the first tap into a field it is
+    /// at least the field that is slow, not the whole app at launch.
     @MainActor static func keyboard() {
-        guard !keyboardDone,
+        guard !keyboardDone, !isBeingDebugged,
               let window = UIApplication.shared.connectedScenes
                 .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first
         else { return }
