@@ -305,6 +305,13 @@ struct SetSymbolView: View {
 
     private var color: Color { rarity.flatMap(RarityPalette.color) ?? tint }
 
+    /// Whether the set draws from the font or a bundled vector — no WebKit.
+    /// Places that show many sets at once (the grid) use a plain set code
+    /// otherwise.
+    static func drawsWithoutRasterizer(_ setCode: String) -> Bool {
+        KeyruneFont.glyph(for: setCode) != nil || SetIcons.assetName(for: setCode) != nil
+    }
+
     var body: some View {
         if let glyph = KeyruneFont.glyph(for: setCode), let font = KeyruneFont.fontName {
             Text(glyph)

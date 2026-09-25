@@ -58,6 +58,9 @@ struct DeckAddCardsView: View {
     @State private var searchText = ""
     @State private var query = CardSearchQuery()
     @State private var scope: DeckSearchScope
+    /// Each scope's order, from the floating sort button.
+    @State private var sorts: [DeckSearchScope: DeckAddSort] = [:]
+    private var sort: DeckAddSort { sorts[scope] ?? .relevance }
     @State private var identityFilter = true
     /// The "In collection" chip: only what is owned.
     @State private var ownedOnly: Bool
@@ -133,6 +136,9 @@ struct DeckAddCardsView: View {
                 // section picker does), rather than stopping at a block of
                 // controls stacked above the list.
                 .safeAreaBar(edge: .top) { header }
+                // The collection grid's sort button — leading here, since
+                // the trailing edge is every row's "+" and stepper.
+                .overlay(alignment: .bottomLeading) { if hasRows { sortButton } }
                 // While the viewer pages, keep the row it is on in view, so
                 // the zoom-out lands on that row's art.
                 .onChange(of: viewer?.currentID) { old, id in
@@ -176,6 +182,7 @@ struct DeckAddCardsView: View {
             .onChange(of: identityFilter) { _, _ in runSearch(immediately: true) }
             .onChange(of: ownedOnly) { _, _ in runSearch(immediately: true) }
             .onChange(of: session.board) { _, _ in runSearch(immediately: true) }
+            .onChange(of: sorts) { _, _ in runSearch(immediately: true) }
             .onChange(of: analysis.plan?.id) { _, _ in mergeRecommendations() }
             .onChange(of: analysis.synergyVersion) { _, _ in if scope == .recommended { runSearch(immediately: true) } }
             .task(id: deckTracker.revision) { await loadDeck() }
@@ -283,6 +290,43 @@ struct DeckAddCardsView: View {
         .accessibilityIdentifier("deck-search-board")
     }
 
+    /// Whether the current scope is showing rows (the sort button's cue).
+    private var hasRows: Bool {
+        switch scope {
+        case .all: return ownedOnly ? !collectionCards.isEmpty : controller.phase == .results
+        case .recommended: return !(synergyShown.isEmpty && recommended.isEmpty)
+        }
+    }
+
+    /// The collection grid's floating sort button: a glass circle over the
+    /// list's bottom-leading corner (the art column, clear of the rows'
+    /// "+"), a menu of orders, the current one checked. Remembered per
+    /// scope while the sheet is open.
+    private var sortButton: some View {
+        Menu {
+            // Plain buttons, not a Picker, as in the collection grid.
+            ForEach(DeckAddSort.allCases) { option in
+                Button {
+                    sorts[scope] = option
+                } label: {
+                    Label(option.rawValue, systemImage: option == sort ? "checkmark" : option.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 52, height: 52)
+                .contentShape(Circle())
+        }
+        .menuOrder(.fixed)
+        .accessibilityLabel("Sort")
+        .accessibilityValue(sort.rawValue)
+        .accessibilityIdentifier("deck-search-sort")
+        .glassEffect(.regular.interactive(), in: Circle())
+        .padding(.leading, 20)
+        .padding(.bottom, 20)
+    }
+
     // MARK: Results
 
     @ViewBuilder private var results: some View {
@@ -333,6 +377,7 @@ struct DeckAddCardsView: View {
                 }
             }
             .listStyle(.plain)
+            .contentMargins(.bottom, 80, for: .scrollContent)
             .scrollDismissesKeyboard(.immediately)
         }
     }
@@ -361,6 +406,7 @@ struct DeckAddCardsView: View {
                 }
             }
             .listStyle(.plain)
+            .contentMargins(.bottom, 80, for: .scrollContent)
             .scrollDismissesKeyboard(.immediately)
         }
     }
@@ -402,6 +448,7 @@ struct DeckAddCardsView: View {
             .listSectionSpacing(.compact)
             .environment(\.defaultMinListHeaderHeight, 0)
             .contentMargins(.top, 0, for: .scrollContent)
+            .contentMargins(.bottom, 80, for: .scrollContent)
             .scrollDismissesKeyboard(.immediately)
         }
     }
@@ -477,6 +524,8 @@ struct DeckAddCardsView: View {
     private func effectiveQuery() -> CardSearchQuery {
         var q = query
         q.text = searchText
+        q.sort = sort.scryfall.sort
+        q.direction = sort.scryfall.direction
         if usesIdentity, identityFilter {
             q.useColorIdentity = true
             if identity.isEmpty {
@@ -505,7 +554,8 @@ struct DeckAddCardsView: View {
                 if ownedOnly && pick.ownedCopies == 0 && !keeps(pick.card) { return false }
                 return q.isEmpty || q.matches(pick.card)
             }
-            synergyShown = CardItemList(picks.map(\.card))
+            let sortedPicks = sort.apply(picks, card: \.card)
+            synergyShown = CardItemList(sortedPicks.map(\.card))
             synergyReasons = Dictionary(picks.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
             synergyOwned = Dictionary(picks.map { ($0.card.id, $0.ownedCopies) }, uniquingKeysWith: { a, _ in a })
             // The synergy list leads; a card on it is not listed twice.
@@ -515,7 +565,7 @@ struct DeckAddCardsView: View {
                 if ownedOnly && !rec.isOwned && !keeps(rec.card) { return false }
                 return q.isEmpty || q.matches(rec.card)
             }
-            recommended = CardItemList(rows.map(\.card))
+            recommended = CardItemList(sort.apply(rows, card: \.card).map(\.card))
             recommendedReasons = Dictionary(rows.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
             recommendedOwned = Dictionary(rows.map { ($0.card.id, $0.candidate.ownedCopies) }, uniquingKeysWith: { a, _ in a })
         case .all where !ownedOnly:
@@ -528,10 +578,14 @@ struct DeckAddCardsView: View {
             let all = owned.items
             let typed = q.trimmedText
             let limit = Self.browseLimit
+            let sort = self.sort
             collectionTask = Task.detached(priority: .userInitiated) {
                 if !immediately { try? await Task.sleep(for: .milliseconds(150)) }
                 guard !Task.isCancelled else { return }
-                let results = Self.groupOwned(q.isEmpty ? all : all.filter { q.matches($0) }, typed: typed)
+                // Sorted before the browse limit, so "Price (High)" lists
+                // the priciest cards owned, not the first 400 by name.
+                let results = sort.apply(Self.groupOwned(q.isEmpty ? all : all.filter { q.matches($0) }, typed: typed),
+                                         card: \.card)
                 let shown = q.isEmpty ? Array(results.prefix(limit)) : results
                 let cards = CardItemList(shown.map(\.card))
                 let owned = Dictionary(shown.map { ($0.card.id, $0.ownedCopies) }, uniquingKeysWith: { a, _ in a })

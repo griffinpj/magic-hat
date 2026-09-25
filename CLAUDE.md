@@ -399,10 +399,18 @@ detail screen and actions as an owned card:
   of the presenter whose state was still at its initial values. The item
   is the one thing SwiftUI hands the closure fresh.
 - Owned vs not: `CardItem.isEntry` (an owned row with a quantity) vs
-  `CardItem.owned` (a search hit/printing we hold somewhere). The tile shows
-  a quantity badge for entries, a green check for owned hits, nothing for the
-  rest — no dimming, so results look like the collection. Edit/Remove need
-  an entry; a hit's rows are edited from the Add sheet's owned list.
+  `CardItem.owned` (a search hit/printing we hold somewhere). The tile's
+  badges run along its bottom edge in one row, top corners left to the
+  art: on the left "2× ◆ #123" — copies for an entry (a green check for an
+  owned hit, nothing for the rest), the set symbol (rare/mythic/special in
+  their colour, common and uncommon white, since uncommon's silver is lost
+  on the dark badge; a set neither Keyrune nor the bundled icons draw
+  shows its code — no WebKit from the grid), the collector number — and
+  on the right the price, led by a gradient ✦ for foil/etched, a notch
+  smaller. Dark translucent capsules, not glass: glass is for controls
+  over content, and a blur per badge made this grid stutter before. No
+  dimming, so results look like the collection. Edit/Remove need an
+  entry; a hit's rows are edited from the Add sheet's owned list.
 
 Pricing: Scryfall provides only a single market price per finish
 (`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers).
@@ -829,7 +837,13 @@ capsule chips — "In collection", the commander's identity as its pips
 alone (VoiceOver: "Within identity, …"), and the board menu trailing —
 with what the deck breaks as one caption line under them. Section
 headers are a line of text with their source trailing ("EDHREC"), not
-the plain list's tall default. The scope is All Cards (Scryfall, or with
+the plain list's tall default. A floating glass sort button — the
+collection grid's, in the bottom-leading corner here because the
+trailing edge is every row's "+" — orders each scope (`DeckAddSort`:
+Relevance, Name, Mana Value, Price high/low, Rarity; per scope while the
+sheet is open). Relevance is each list's own order; on Scryfall it is
+EDHREC rank, most-played first; the collection is sorted before the
+400-card browse limit. The scope is All Cards (Scryfall, or with
 "In collection" an in-memory search of what is owned, one row per card,
 everything owned listed until something is typed) or Recommended; for
 commander decks the identity chip applies `id<=`; a row's context menu

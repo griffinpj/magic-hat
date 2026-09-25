@@ -202,7 +202,8 @@ final class RealCollectionTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.tap()
         field.typeText("Argothian Elder")
-        let badge = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'PLST'")).firstMatch
+        // The tile's printing badge reads "1× PLST #…" (its symbol drawn).
+        let badge = app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'PLST #'")).firstMatch
         XCTAssertTrue(badge.waitForExistence(timeout: 15), "the List printing is in the grid")
         settle()
         var mark = hangs().count
