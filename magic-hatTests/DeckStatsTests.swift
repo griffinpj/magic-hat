@@ -31,7 +31,7 @@ struct DeckStatsTests {
         #expect(stats.production[.red] == 11, "ten Mountains plus the any-colour signet")
         #expect(stats.production[.white] == 9)
         #expect(stats.colorlessProduction == 1)
-        #expect(stats.types.map(\.name) == ["Creature", "Instant", "Sorcery", "Artifact", "Land"])
+        #expect(stats.types.map(\.name) == ["Creature", "Artifact", "Instant", "Sorcery", "Land"], "the deck list's section order")
         #expect(abs(stats.averageManaValue - (5 + 1 + 4 + 2 + 1) / 5.0) < 0.001)
         #expect(stats.totalValue == 11)
         #expect(stats.builtCopies == 11 && stats.availableCopies == 1 && stats.missingCopies == 11)

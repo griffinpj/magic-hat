@@ -59,8 +59,8 @@ struct DeckAddCardsView: View {
     @State private var query = CardSearchQuery()
     @State private var scope: DeckSearchScope
     /// Each scope's order, from the floating sort button.
-    @State private var sorts: [DeckSearchScope: DeckAddSort] = [:]
-    private var sort: DeckAddSort { sorts[scope] ?? .relevance }
+    @State private var sorts: [DeckSearchScope: DeckCardSort] = [:]
+    private var sort: DeckCardSort { sorts[scope] ?? .relevance }
     @State private var identityFilter = true
     /// The "In collection" chip: only what is owned.
     @State private var ownedOnly: Bool
@@ -138,9 +138,8 @@ struct DeckAddCardsView: View {
                 // section picker does), rather than stopping at a block of
                 // controls stacked above the list.
                 .safeAreaBar(edge: .top) { header }
-                // The collection grid's sort button — leading here, since
-                // the trailing edge is every row's "+" and stepper.
-                .overlay(alignment: .bottomLeading) { if hasRows { sortButton } }
+                // The collection grid's sort button, in the same corner.
+                .overlay(alignment: .bottomTrailing) { if hasRows { sortButton } }
                 // While the viewer pages, keep the row it is on in view, so
                 // the zoom-out lands on that row's art.
                 .onChange(of: viewer?.currentID) { old, id in
@@ -311,13 +310,12 @@ struct DeckAddCardsView: View {
     }
 
     /// The collection grid's floating sort button: a glass circle over the
-    /// list's bottom-leading corner (the art column, clear of the rows'
-    /// "+"), a menu of orders, the current one checked. Remembered per
-    /// scope while the sheet is open.
+    /// list's bottom-trailing corner, a menu of orders, the current one
+    /// checked. Remembered per scope while the sheet is open.
     private var sortButton: some View {
         Menu {
             // Plain buttons, not a Picker, as in the collection grid.
-            ForEach(DeckAddSort.allCases) { option in
+            ForEach(DeckCardSort.allCases) { option in
                 Button {
                     sorts[scope] = option
                 } label: {
@@ -335,7 +333,7 @@ struct DeckAddCardsView: View {
         .accessibilityValue(sort.rawValue)
         .accessibilityIdentifier("deck-search-sort")
         .glassEffect(.regular.interactive(), in: Circle())
-        .padding(.leading, 20)
+        .padding(.trailing, 20)
         .padding(.bottom, 20)
     }
 

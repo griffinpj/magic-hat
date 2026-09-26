@@ -19,18 +19,32 @@ import SwiftData
 
 @MainActor
 enum CollectionEditController {
-    struct DeleteSummary: Sendable {
+    nonisolated struct DeleteSummary: Sendable {
         let actionID: UUID
         let collectionName: String
         let removedCopies: Int
         let removedRows: Int
     }
 
+    /// Deletes a whole collection on the background writer's context: every
+    /// row and an AuditRecord per row, 3,900 of each for the real export.
+    /// On the main context this held the main thread for seconds (a save
+    /// per 500 rows, with a yield between, was still seconds of saves).
     @discardableResult
     static func delete(
         collectionName: String,
-        context modelContext: ModelContext,
-        progress: (Double) -> Void = { _ in }
+        context: ModelContext,
+        progress: @escaping @MainActor @Sendable (Double) -> Void = { _ in }
+    ) async throws -> DeleteSummary {
+        try await CardMetaWriter.shared(for: context.container).runDelete(collectionName: collectionName, progress: progress)
+    }
+
+    /// The delete itself, on whatever context it is given (the writer's).
+    @discardableResult
+    nonisolated static func delete(
+        collectionName: String,
+        in modelContext: ModelContext,
+        progress: @escaping @MainActor @Sendable (Double) -> Void
     ) async throws -> DeleteSummary {
         let actionID = UUID()
         let now = Date()
@@ -63,10 +77,9 @@ enum CollectionEditController {
             processed += 1
             if processed % 500 == 0 {
                 try modelContext.save()
-                await Task.yield()
             }
             if processed % max(total / 100, 1) == 0 {
-                progress(Double(processed) / Double(total))
+                await progress(Double(processed) / Double(total))
             }
         }
 
@@ -81,8 +94,8 @@ enum CollectionEditController {
         for collection in collections { modelContext.delete(collection) }
 
         try modelContext.save()
-        progress(1)
-        CollectionChangeTracker.shared.bump()
+        await progress(1)
+        await MainActor.run { CollectionChangeTracker.shared.bump() }
 
         return DeleteSummary(
             actionID: actionID,

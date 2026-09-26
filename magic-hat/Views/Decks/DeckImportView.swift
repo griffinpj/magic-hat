@@ -30,11 +30,17 @@ struct DeckImportView: View {
         self.onImported = onImported
         let list = DeckListParser.parse(source.text)
         _text = State(initialValue: source.text)
+        _list = State(initialValue: list)
+        _parsedText = State(initialValue: source.text)
         _name = State(initialValue: source.suggestedName ?? list.title ?? "")
         _format = State(initialValue: list.suggestedFormat)
     }
 
-    private var list: DeckList { DeckListParser.parse(text) }
+    /// The text as parsed, kept up to date off the main actor as the text
+    /// changes. A computed property re-parsed the whole list on every
+    /// render — every keystroke in the name field.
+    @State private var list: DeckList
+    @State private var parsedText: String
 
     var body: some View {
         NavigationStack {
@@ -60,8 +66,9 @@ struct DeckImportView: View {
                     if text.isEmpty {
                         PasteButton(payloadType: String.self) { strings in
                             text = strings.joined(separator: "\n")
-                            if name.isEmpty, let title = DeckListParser.parse(text).title { name = title }
-                            format = DeckListParser.parse(text).suggestedFormat
+                            let pasted = DeckListParser.parse(text)
+                            if name.isEmpty, let title = pasted.title { name = title }
+                            format = pasted.suggestedFormat
                         }
                         .buttonBorderShape(.capsule)
                         .frame(maxWidth: .infinity)
@@ -76,6 +83,16 @@ struct DeckImportView: View {
                 } footer: {
                     if text.isEmpty { Text("Paste a list copied from Moxfield, Archidekt, MTGO, Arena or any deck site.") }
                 }
+            }
+            // Re-parsed off the main actor as the text changes (the first
+            // parse came with the init).
+            .task(id: text) {
+                let text = self.text
+                guard text != parsedText else { return }
+                let parsed = await Task.detached(priority: .userInitiated) { DeckListParser.parse(text) }.value
+                guard !Task.isCancelled else { return }
+                list = parsed
+                parsedText = text
             }
             .navigationTitle("Import Deck")
             .navigationBarTitleDisplayMode(.inline)

@@ -29,6 +29,15 @@ final class FilterVocabulary {
     private(set) var isLoaded = false
     private var loadTask: Task<Void, Never>?
 
+    /// Each list's names folded once (case and diacritics), in the list's
+    /// order, so a keystroke's match is a plain prefix/contains over
+    /// Swift strings. Matching with `range(of:options:)` ran a locale-aware
+    /// search over ~10k artist names on the main thread per keystroke.
+    private var typeKeys: [String] = []
+    private var keywordKeys: [String] = []
+    private var artistKeys: [String] = []
+    private var setKeys: [String] = []
+
     /// Loads everything once; failures leave that list empty (free text
     /// still works) and a later call retries.
     func load() async {
@@ -48,15 +57,25 @@ final class FilterVocabulary {
                 typeEntries.append(contentsOf: names.map { TypeEntry(name: $0, catalog: catalog) })
             }
         }
-        types = typeEntries
         var words: [String] = []
         for catalog in [ScryfallCatalog.keywordAbilities, .keywordActions, .abilityWords] {
             if let names = try? await cache.catalog(catalog) { words.append(contentsOf: names) }
         }
-        keywords = words
-        artists = (try? await cache.catalog(.artistNames)) ?? []
-        sets = ((try? await cache.sets()) ?? []).filter { !Self.hiddenSetTypes.contains($0.setType ?? "") }
+        let artistNames = (try? await cache.catalog(.artistNames)) ?? []
+        let setList = ((try? await cache.sets()) ?? []).filter { !Self.hiddenSetTypes.contains($0.setType ?? "") }
+        // Folding ~12k names is a few tens of milliseconds: off the main actor.
+        let keys = await Task.detached(priority: .userInitiated) {
+            (typeEntries.map { Self.fold($0.name) }, words.map(Self.fold), artistNames.map(Self.fold), setList.map { Self.fold($0.displayName) })
+        }.value
+        types = typeEntries; typeKeys = keys.0
+        keywords = words; keywordKeys = keys.1
+        artists = artistNames; artistKeys = keys.2
+        sets = setList; setKeys = keys.3
         isLoaded = !types.isEmpty || !sets.isEmpty
+    }
+
+    nonisolated static func fold(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
     }
 
     /// Products, not tokens/promos/memorabilia.
@@ -65,36 +84,36 @@ final class FilterVocabulary {
     // MARK: Matching
 
     func typeMatches(_ query: String, limit: Int = 6) -> [TypeEntry] {
-        Self.rank(types, query: query, key: \.name, limit: limit)
+        Self.rank(types, keys: typeKeys, query: query, limit: limit)
     }
 
     func keywordMatches(_ query: String, limit: Int = 6) -> [String] {
-        Self.rank(keywords, query: query, key: \.self, limit: limit)
+        Self.rank(keywords, keys: keywordKeys, query: query, limit: limit)
     }
 
     func artistMatches(_ query: String, limit: Int = 6) -> [String] {
-        Self.rank(artists, query: query, key: \.self, limit: limit)
+        Self.rank(artists, keys: artistKeys, query: query, limit: limit)
     }
 
     func setMatches(_ query: String, limit: Int = 6) -> [ScryfallSet] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return [] }
-        let byCode = sets.filter { $0.code.caseInsensitiveCompare(q) == .orderedSame }
-        let rest = Self.rank(sets, query: q, key: \.displayName, limit: limit)
+        let code = q.lowercased()
+        let byCode = sets.filter { $0.code == code }
+        let rest = Self.rank(sets, keys: setKeys, query: q, limit: limit)
         var out = byCode
         for s in rest where !out.contains(s) { out.append(s) }
         return Array(out.prefix(limit))
     }
 
-    private static func rank<T>(_ items: [T], query: String, key: KeyPath<T, String>, limit: Int) -> [T] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return [] }
+    private static func rank<T>(_ items: [T], keys: [String], query: String, limit: Int) -> [T] {
+        let q = fold(query.trimmingCharacters(in: .whitespaces))
+        guard !q.isEmpty, keys.count == items.count else { return [] }
         var prefix: [T] = [], contains: [T] = []
-        for item in items {
-            let name = item[keyPath: key]
-            if name.range(of: q, options: [.caseInsensitive, .anchored, .diacriticInsensitive]) != nil {
+        for (item, key) in zip(items, keys) {
+            if key.hasPrefix(q) {
                 prefix.append(item)
-            } else if name.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            } else if key.contains(q) {
                 contains.append(item)
             }
             if prefix.count >= limit { break }

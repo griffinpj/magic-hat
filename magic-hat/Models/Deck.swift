@@ -164,7 +164,7 @@ nonisolated enum DeckSearchScope: String, CaseIterable, Hashable, Sendable {
 /// popularity on Scryfall — most-played first, which is what someone
 /// adding to a deck is usually after. The rest sort in memory with a total
 /// order (ties keep the list's own order), or map onto Scryfall's `order`.
-nonisolated enum DeckAddSort: String, CaseIterable, Identifiable, Hashable, Sendable {
+nonisolated enum DeckCardSort: String, CaseIterable, Identifiable, Hashable, Sendable {
     case relevance = "Relevance"
     case name = "Name"
     case manaValue = "Mana Value"

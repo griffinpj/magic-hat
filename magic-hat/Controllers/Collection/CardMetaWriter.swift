@@ -100,6 +100,13 @@ actor CardMetaWriter: ModelActor {
         )
     }
 
+    /// Deleting a whole collection, on this context (see CollectionEditController).
+    func runDelete(
+        collectionName: String, progress: @escaping @MainActor @Sendable (Double) -> Void
+    ) async throws -> CollectionEditController.DeleteSummary {
+        try await CollectionEditController.delete(collectionName: collectionName, in: modelContext, progress: progress)
+    }
+
     func markFailed(_ ids: Set<String>) throws {
         let idList = Array(ids)
         let descriptor = FetchDescriptor<CardMeta>(

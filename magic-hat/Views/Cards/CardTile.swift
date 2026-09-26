@@ -2,17 +2,20 @@
 //  CardTile.swift
 //  magic-hat
 //
-//  One card in the reusable grid: the art, clean, with a two-line caption
-//  under it — the way Photos, Music and the App Store caption a grid, and
-//  the only way the numbers stay readable over busy card art:
+//  One card in the reusable grid: the art, clean, and a two-line caption
+//  beneath it, in the register of Photos' and the App Store's grids — one
+//  number that matters in primary, everything else quiet:
 //
-//    ✦ $12.34      +87%     price (a foil mark first), change since purchase
-//    2× ◆ #123              copies, the set's symbol, the collector number
+//    $138                ×2      the price (a foil mark first); the copies,
+//                                as a small count, only when there is more
+//                                than one — the common case stays clean
+//    ◆ #76                       the set's symbol in its rarity's colour
+//                                and the collector number, secondary
 //
-//  Nothing sits on the image except a card's name while it has no art. The
-//  caption is fixed-height text, so every row of the grid lines up, and
-//  the zoom into the viewer grows out of the art alone (the namespace is
-//  applied to the image, not the tile).
+//  No badges on the image: card art is busy, and text over it fights the
+//  card's own frame. The caption is fixed-height text, so every row of the
+//  grid lines up, and the zoom into the viewer grows out of the art alone
+//  (the namespace is applied to the image, not the tile).
 //
 //  Set symbols come from the Keyrune font or the vectors bundled at build
 //  time (see SetIcons); a set neither covers shows its code here rather
@@ -35,20 +38,20 @@ struct CardTile: View, Equatable {
     /// memory.
     static let imageTargetWidth: CGFloat = 150
 
-    @ScaledMetric(relativeTo: .caption2) private var symbolSize: CGFloat = 11
+    @ScaledMetric(relativeTo: .caption2) private var symbolSize: CGFloat = 12
 
     static func == (lhs: CardTile, rhs: CardTile) -> Bool {
         let l = lhs.item, r = rhs.item
         guard l.id == r.id, l.quantity == r.quantity, l.imageURL == r.imageURL,
               l.aspectRatio == r.aspectRatio, l.owned == r.owned, l.finish == r.finish else { return false }
-        guard l.marketPrice == r.marketPrice, l.purchasePrice == r.purchasePrice else { return false }
+        guard l.marketPrice == r.marketPrice else { return false }
         return l.setCode == r.setCode && l.rarity == r.rarity && l.collectorNumber == r.collectorNumber
     }
 
     private var isFoil: Bool { item.finish != .normal }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             image
             caption
                 .padding(.horizontal, 2)
@@ -68,52 +71,59 @@ struct CardTile: View, Equatable {
     }
 
     private var caption: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            priceLine
-            printingLine
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                price
+                Spacer(minLength: 4)
+                count
+            }
+            printing
         }
+        .lineLimit(1)
+        .monospacedDigit()
+        .accessibilityElement(children: .combine)
     }
 
-    /// The price in the primary colour, led by a foil mark (the sparkles
-    /// take the foil's shimmer as a gradient); how it has moved since it
-    /// was bought, green or red, trailing. A dash until prices arrive.
-    private var priceLine: some View {
+    /// The market price, led by a foil mark (the sparkles take the foil's
+    /// shimmer as a gradient). A quiet dash until prices arrive.
+    private var price: some View {
         HStack(spacing: 3) {
             if isFoil {
                 Image(systemName: "sparkles")
-                    .font(.caption2.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(LinearGradient(colors: [.pink, .orange, .cyan],
                                                     startPoint: .topLeading, endPoint: .bottomTrailing))
                     .accessibilityLabel(item.finish.displayName)
             }
             Text(item.marketPrice.map(PriceFormat.compact) ?? "—")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(item.marketPrice == nil ? .tertiary : .primary)
-            Spacer(minLength: 2)
-            if let change = item.gainLoss, change.amount != 0 {
-                Text(PriceFormat.percent(change.percent))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(change.amount > 0 ? Color.green : Color.red)
-                    .accessibilityLabel("\(change.amount > 0 ? "up" : "down") \(PriceFormat.percent(abs(change.percent)))")
-            }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(item.marketPrice == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
         }
-        .monospacedDigit()
-        .lineLimit(1)
     }
 
-    /// "2× ◆ #123": copies for an owned row (a check for a search hit or a
-    /// printing we own somewhere, which has no quantity of its own), the
-    /// set's symbol in its rarity's colour, the collector number.
-    private var printingLine: some View {
-        HStack(spacing: 3) {
-            if item.isEntry {
-                Text("\(item.quantity)×")
-                    .foregroundStyle(.primary)
-                    .fontWeight(.semibold)
-            } else if item.owned {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-            }
+    /// Copies, as a small count, only when there is more than one; a
+    /// search hit or printing we own somewhere (no quantity of its own)
+    /// gets a check instead.
+    @ViewBuilder private var count: some View {
+        if item.isEntry, item.quantity > 1 {
+            Text("×\(item.quantity)")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(.quaternary, in: Capsule())
+                .accessibilityLabel("\(item.quantity) copies")
+        } else if !item.isEntry, item.owned {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+                .accessibilityLabel("In collection")
+        }
+    }
+
+    /// "◆ #76": the set's symbol in its rarity's colour, the collector number.
+    private var printing: some View {
+        HStack(spacing: 4) {
             if SetSymbolView.drawsWithoutRasterizer(item.setCode) {
                 SetSymbolView(setCode: item.setCode, size: symbolSize, tint: .secondary, rarity: item.rarity)
             } else {
@@ -124,17 +134,7 @@ struct CardTile: View, Equatable {
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .monospacedDigit()
-        .lineLimit(1)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(printingLabel)
-        .accessibilityAddTraits(.isStaticText)
-    }
-
-    private var printingLabel: String {
-        let printing = "\(item.setCode.uppercased()) #\(item.collectorNumber)"
-        if item.isEntry { return "\(item.quantity)× \(printing)" }
-        return item.owned ? "In collection, \(printing)" : printing
+        .accessibilityLabel("\(item.setCode.uppercased()) #\(item.collectorNumber)")
     }
 
     @ViewBuilder private var placeholderName: some View {

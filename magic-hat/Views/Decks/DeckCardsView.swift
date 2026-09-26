@@ -52,6 +52,11 @@ struct DeckCardsView: View {
 
     @Environment(\.modelContext) private var modelContext
     @State private var error: String?
+    /// The order within each section, from the floating sort button;
+    /// remembered across decks. Sections keep their type order.
+    @AppStorage("deck.sort") private var sortRaw: String = DeckCardSort.name.rawValue
+    private var sort: DeckCardSort { DeckCardSort(rawValue: sortRaw) ?? .name }
+    private func sorted(_ items: [DeckCardItem]) -> [DeckCardItem] { sort.apply(items, card: \.card) }
     /// Counts this list's steppers have written, shown until the snapshot
     /// that includes them arrives. A tap used to show nothing until the
     /// deck was re-read off the main actor — behind the Decks tab's and
@@ -107,7 +112,7 @@ struct DeckCardsView: View {
             List {
                 if let filtered {
                     Section {
-                        ForEach(filtered) { row($0) }
+                        ForEach(sorted(filtered)) { row($0) }
                     } header: {
                         header { Text("\(filtered.count) matching") }
                     }
@@ -120,7 +125,7 @@ struct DeckCardsView: View {
                     }
                     if snapshot.format.hasCommander || !snapshot.commanders.isEmpty {
                         Section {
-                            ForEach(snapshot.commanders) { row($0) }
+                            ForEach(sorted(snapshot.commanders)) { row($0) }
                             if snapshot.commanders.isEmpty {
                                 Text("No commander chosen").foregroundStyle(.secondary)
                             }
@@ -130,7 +135,7 @@ struct DeckCardsView: View {
                     }
                     ForEach(snapshot.sections) { section in
                         Section {
-                            ForEach(section.items) { row($0) }
+                            ForEach(sorted(section.items)) { row($0) }
                         } header: {
                             header {
                                 if let glyph = section.glyph {
@@ -146,14 +151,14 @@ struct DeckCardsView: View {
                     }
                     if !snapshot.sideboard.isEmpty {
                         Section {
-                            ForEach(snapshot.sideboard) { row($0) }
+                            ForEach(sorted(snapshot.sideboard)) { row($0) }
                         } header: {
                             header { Text("Sideboard · \(snapshot.sideboard.reduce(0) { $0 + $1.quantity })") }
                         }
                     }
                     if !snapshot.maybeboard.isEmpty {
                         Section {
-                            ForEach(snapshot.maybeboard) { row($0) }
+                            ForEach(sorted(snapshot.maybeboard)) { row($0) }
                         } header: {
                             header { Text("Maybeboard · \(snapshot.maybeboard.reduce(0) { $0 + $1.quantity })") }
                         }
@@ -161,8 +166,36 @@ struct DeckCardsView: View {
                 }
             }
             .listStyle(.plain)
+            .contentMargins(.bottom, 80, for: .scrollContent)
             .scrollDismissesKeyboard(.immediately)
+            .overlay(alignment: .bottomTrailing) { sortButton }
         }
+    }
+
+    /// The collection grid's floating sort button, over the list's
+    /// bottom-trailing corner: a menu of orders, the current one checked.
+    private var sortButton: some View {
+        Menu {
+            ForEach(DeckCardSort.allCases.filter { $0 != .relevance }) { option in
+                Button {
+                    sortRaw = option.rawValue
+                } label: {
+                    Label(option.rawValue, systemImage: option == sort ? "checkmark" : option.systemImage)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 52, height: 52)
+                .contentShape(Circle())
+        }
+        .menuOrder(.fixed)
+        .accessibilityLabel("Sort")
+        .accessibilityValue(sort.rawValue)
+        .accessibilityIdentifier("deck-sort")
+        .glassEffect(.regular.interactive(), in: Circle())
+        .padding(.trailing, 20)
+        .padding(.bottom, 20)
     }
 
     /// A pinned header: sentence case and primary, as in Music, rather than
