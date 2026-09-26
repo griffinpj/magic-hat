@@ -4,7 +4,8 @@ import Foundation
 
 /// The timeline's rules, on a ledger built step by step: undo any number
 /// of times, redo any number of times, and a new action after an undo
-/// forks the timeline — what was undone is superseded, never redoable.
+/// forks the timeline — both branches stay, and undoing back to the fork
+/// lets either be redone.
 @Suite("HistoryTimeline")
 struct HistoryTimelineTests {
     /// A ledger recorder: user actions and the undo/redo actions that
@@ -21,14 +22,13 @@ struct HistoryTimelineTests {
         }
 
         mutating func undo() {
-            let target = timeline.nextUndo
-            steps.append(HistoryStep(id: UUID(), kind: .undo, target: target, timestamp: clock))
+            steps.append(HistoryStep(id: UUID(), kind: .undo, target: timeline.nextUndo, timestamp: clock))
             clock += 1
         }
 
-        mutating func redo() {
-            let target = timeline.nextRedo
-            steps.append(HistoryStep(id: UUID(), kind: .redo, target: target, timestamp: clock))
+        /// Redo the given child of the head, or the default (most recent).
+        mutating func redo(_ target: UUID? = nil) {
+            steps.append(HistoryStep(id: UUID(), kind: .redo, target: target ?? timeline.nextRedo, timestamp: clock))
             clock += 1
         }
 
@@ -38,55 +38,63 @@ struct HistoryTimelineTests {
     @Test func tenActionsUndoFiveRedoFive() {
         var r = Recorder()
         let ids = (0..<10).map { _ in r.act() }
-        #expect(r.timeline.applied == ids && r.timeline.redoable.isEmpty)
+        #expect(r.timeline.applied == ids && r.timeline.redoOptions.isEmpty)
 
         for _ in 0..<5 { r.undo() }
         #expect(r.timeline.applied == Array(ids[0..<5]))
-        #expect(r.timeline.redoable == Array(ids[5..<10].reversed()), "most recently undone last, so it redoes first")
-        #expect(r.timeline.nextRedo == ids[5] && r.timeline.nextUndo == ids[4])
+        #expect(r.timeline.head == ids[4] && r.timeline.nextUndo == ids[4])
+        #expect(r.timeline.redoOptions == [ids[5]], "one way forward: the action after the head")
+        #expect(ids[5..<10].allSatisfy { r.timeline.state(of: $0) == .undone })
 
         for _ in 0..<5 { r.redo() }
-        #expect(r.timeline.applied == ids && r.timeline.redoable.isEmpty)
-        #expect(r.timeline.superseded.isEmpty)
+        #expect(r.timeline.applied == ids && r.timeline.redoOptions.isEmpty)
         #expect(ids.allSatisfy { r.timeline.state(of: $0) == .applied })
     }
 
-    @Test func aNewActionAfterUndoingForksTheTimeline() {
+    /// Ten actions, undo five, two new ones, undo those two: back at the
+    /// fork, both branches are there, and the original can be followed
+    /// through to the tenth.
+    @Test func undoingBackToTheForkRegainsTheOriginalBranch() {
         var r = Recorder()
         let ids = (0..<10).map { _ in r.act() }
         for _ in 0..<5 { r.undo() }
-        for _ in 0..<5 { r.redo() }
-        for _ in 0..<3 { r.undo() }
-        #expect(r.timeline.redoable.count == 3 && r.timeline.applied.count == 7)
+        let b1 = r.act()
+        let b2 = r.act()
+        #expect(r.timeline.applied == Array(ids[0..<5]) + [b1, b2])
+        #expect(r.timeline.redoOptions.isEmpty, "nothing to redo from the new head")
+        #expect(ids[5..<10].allSatisfy { r.timeline.state(of: $0) == .undone }, "the old branch is undone, not gone")
 
-        // The lynchpin: a new action while there is something to redo.
-        let fresh = r.act()
-        #expect(r.timeline.redoable.isEmpty, "nothing to redo once the timeline forked")
-        #expect(r.timeline.nextRedo == nil)
-        #expect(r.timeline.applied == Array(ids[0..<7]) + [fresh])
-        #expect(r.timeline.superseded == Set(ids[7..<10]))
-        #expect(r.timeline.state(of: ids[9]) == .superseded)
-        #expect(r.timeline.state(of: fresh) == .applied)
+        r.undo(); r.undo()
+        #expect(r.timeline.head == ids[4])
+        #expect(r.timeline.isFork)
+        #expect(r.timeline.redoOptions == [b1, ids[5]], "the branch just taken first, then the original")
+        #expect(r.timeline.nextRedo == b1, "a plain Redo takes the recent branch")
 
-        // A redo recorded against a superseded action is ignored, not obeyed.
-        r.steps.append(HistoryStep(id: UUID(), kind: .redo, target: ids[9], timestamp: r.clock))
-        #expect(r.timeline.applied == Array(ids[0..<7]) + [fresh])
+        // The original branch, all the way.
+        r.redo(ids[5])
+        #expect(r.timeline.head == ids[5] && r.timeline.redoOptions == [ids[6]])
+        for _ in 0..<4 { r.redo() }
+        #expect(r.timeline.applied == ids, "the original ten, intact")
+        #expect(r.timeline.state(of: b1) == .undone && r.timeline.state(of: b2) == .undone)
 
-        // Undo keeps going through the fork, back to nothing.
-        for _ in 0..<8 { r.undo() }
-        #expect(r.timeline.applied.isEmpty && r.timeline.nextUndo == nil)
-        #expect(r.timeline.redoable.count == 8)
-        for _ in 0..<8 { r.redo() }
-        #expect(r.timeline.applied == Array(ids[0..<7]) + [fresh])
+        // And the other way again: at the fork, the original branch is now
+        // the most recent, so it is the default.
+        for _ in 0..<5 { r.undo() }
+        #expect(r.timeline.redoOptions == [ids[5], b1])
+        r.redo(b1); r.redo()
+        #expect(r.timeline.applied == Array(ids[0..<5]) + [b1, b2])
     }
 
-    @Test func undoOfAnythingButTheLatestIsIgnored() {
+    @Test func redoOfAnythingButAChildOfTheHeadIsIgnored() {
         var r = Recorder()
-        let a = r.act(), b = r.act()
-        r.steps.append(HistoryStep(id: UUID(), kind: .undo, target: a, timestamp: r.clock))
-        #expect(r.timeline.applied == [a, b], "a stray undo of an earlier action changes nothing")
+        let ids = (0..<4).map { _ in r.act() }
+        for _ in 0..<3 { r.undo() }
+        r.redo(ids[3])   // two below the head: not a child
+        #expect(r.timeline.applied == [ids[0]])
+        r.steps.append(HistoryStep(id: UUID(), kind: .undo, target: ids[3], timestamp: r.clock))
+        #expect(r.timeline.applied == [ids[0]], "a stray undo of a non-head changes nothing")
         r.steps.append(HistoryStep(id: UUID(), kind: .undo, target: nil, timestamp: r.clock))
-        #expect(r.timeline.applied == [a, b])
+        #expect(r.timeline.applied == [ids[0]])
     }
 
     @Test func pathsForMultiStepJumps() {
@@ -97,6 +105,28 @@ struct HistoryTimelineTests {
         #expect(r.timeline.redoPath(through: ids[3]) == [ids[1], ids[2], ids[3]])
         #expect(r.timeline.redoPath(through: ids[0]).isEmpty, "still applied: nothing to redo")
         #expect(r.timeline.undoPath(through: ids[4]).isEmpty, "undone: nothing to undo")
+
+        // A fork, and a jump across it: undo to the shared action, redo down.
+        let b1 = r.act(), b2 = r.act()
+        #expect(r.timeline.redoPath(through: ids[3]).isEmpty, "the other branch is not below the head")
+        #expect(r.timeline.jumpPath(to: ids[3]) == ([b2, b1], [ids[1], ids[2], ids[3]]))
+        #expect(r.timeline.jumpPath(to: b2) == ([], []), "already the head")
+        #expect(r.timeline.jumpPath(to: ids[0]) == ([b2, b1], []), "an applied ancestor: only undos")
+        r.undo(); r.undo(); r.redo(ids[1]); r.redo()
+        #expect(r.timeline.jumpPath(to: b2) == ([ids[2], ids[1]], [b1, b2]))
+    }
+
+    @Test func aWholeEmptyTimelineForksAtTheRoot() {
+        var r = Recorder()
+        let a = r.act()
+        r.undo()
+        #expect(r.timeline.head == nil && r.timeline.redoOptions == [a])
+        let b = r.act()
+        r.undo()
+        #expect(r.timeline.redoOptions == [b, a], "two first actions: both ways forward from nothing")
+        #expect(r.timeline.jumpPath(to: a) == ([], [a]))
+        r.redo(a)
+        #expect(r.timeline.applied == [a])
     }
 
     @Test func resolutionDoesNotDependOnInputOrder() {
@@ -108,6 +138,6 @@ struct HistoryTimelineTests {
         let ordered = r.timeline
         let shuffled = HistoryTimeline.resolve(r.steps.shuffled())
         #expect(shuffled == ordered)
-        #expect(ordered.superseded == Set(ids[4..<6]))
+        #expect(ordered.redoOptions.count == 2 && ordered.redoOptions.last == ids[4])
     }
 }

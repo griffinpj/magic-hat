@@ -5,24 +5,30 @@
 //  The undo/redo timeline, derived from the ledger. Pure and independent
 //  of SwiftData so it is exhaustively testable: give it the ledger's
 //  actions in order — user actions and the `.undo` / `.redo` actions that
-//  reversed and re-applied them — and it says which user actions are
-//  applied, which can be redone, and which an undo left behind.
+//  reversed and re-applied them — and it says where the collection stands
+//  and where it can go.
 //
-//  The rules are UndoManager's, which is what people expect from every
-//  app with an Undo menu:
+//  It is a tree, not a line. Every user action remembers its parent: the
+//  action that was applied when it happened. The applied state is the path
+//  from the first action to the `head`; Undo moves the head to its parent,
+//  Redo to one of its children. A new action after undoing does not erase
+//  what was undone — it adds a second child to the head, a fork. Undo back
+//  to the fork and both branches are there to redo: the one just taken
+//  (offered first, since it is the most recent) and the original one, and
+//  either can be followed to its end. Nothing in the ledger is ever lost,
+//  so nothing in the timeline is either.
 //
-//   - Undo reverses the most recent applied action and moves it to the
-//     redo stack. Any number of times, back to the first action.
-//   - Redo re-applies the most recently undone action. Any number of
-//     times, forward to the last.
-//   - A new user action while there is anything to redo clears the redo
-//     stack: the timeline forked, and what was undone is no longer a
-//     future of it. Those actions stay in the ledger — they happened —
-//     as `superseded`: shown as undone, never redoable.
+//  Ten actions, undo five, do two new ones: the head is the second new
+//  action; the five old ones are undone, on the other branch. Undo the
+//  two: the head is back at the fifth action, which now has two children.
+//  Redo, and the second new action's branch comes back; or pick the old
+//  branch and redo the original five, one at a time or through to the
+//  tenth.
 //
-//  Ten actions, undo five: five to redo. Undo three more: eight to redo.
-//  A new action: nothing to redo, those eight superseded, the timeline is
-//  the first two plus the new one.
+//  A replay is always valid: redoing an action means the collection is in
+//  exactly the state it was recorded against — its parent is applied and
+//  nothing after it is — because that is the only place the head can be
+//  to redo it.
 //
 
 import Foundation
@@ -37,72 +43,134 @@ nonisolated struct HistoryStep: Hashable, Sendable {
 }
 
 nonisolated enum HistoryState: String, Hashable, Sendable {
-    /// In effect.
+    /// In effect: on the path from the first action to the head.
     case applied
-    /// Reversed, and next in line (or behind others) to be redone.
+    /// Reversed. Redoable when its parent is the head; otherwise reached by
+    /// undoing to the fork it branches from, or jumping there.
     case undone
-    /// Reversed, then a new action forked the timeline: shown as undone,
-    /// no longer redoable.
-    case superseded
 }
 
 nonisolated struct HistoryTimeline: Hashable, Sendable {
-    /// Applied user actions, oldest first; `last` is what Undo reverses.
-    var applied: [UUID] = []
-    /// Undone user actions, oldest first; `last` is what Redo re-applies.
-    var redoable: [UUID] = []
-    var superseded: Set<UUID> = []
+    /// Each user action's parent: the action applied when it happened
+    /// (nil for the first action of a fresh collection).
+    private(set) var parent: [UUID: UUID?] = [:]
+    /// Each action's children, in the order they were first taken.
+    private(set) var children: [UUID: [UUID]] = [:]
+    /// Actions with no parent, in order.
+    private(set) var roots: [UUID] = []
+    /// The most recently applied action; nil when everything is undone.
+    private(set) var head: UUID?
+    /// The step index at which each action last became the head — what
+    /// puts the most recently taken branch first among a fork's children.
+    private(set) var lastVisit: [UUID: Int] = [:]
+    /// The applied path, oldest first; `last` is the head.
+    private(set) var applied: [UUID] = []
 
-    var nextUndo: UUID? { applied.last }
-    var nextRedo: UUID? { redoable.last }
+    var nextUndo: UUID? { head }
+
+    /// The head's children, the most recently taken branch first; what Redo
+    /// offers (the first is what a plain tap redoes).
+    var redoOptions: [UUID] {
+        let options = head.map { children[$0] ?? [] } ?? roots
+        return options.sorted { (lastVisit[$0] ?? -1) > (lastVisit[$1] ?? -1) }
+    }
+
+    var nextRedo: UUID? { redoOptions.first }
+
+    /// More than one way forward from here.
+    var isFork: Bool { redoOptions.count > 1 }
 
     func state(of actionID: UUID) -> HistoryState {
-        if superseded.contains(actionID) { return .superseded }
-        if redoable.contains(actionID) { return .undone }
-        return .applied
+        applied.contains(actionID) ? .applied : .undone
     }
+
+    /// Every action the timeline knows, applied or not.
+    var all: Set<UUID> { Set(parent.keys) }
+
+    // MARK: Resolution
 
     /// Replays the ledger's actions, oldest first. Steps must be in the
     /// order they happened; ties on timestamp are broken by id so the
     /// answer is deterministic.
     static func resolve(_ steps: [HistoryStep]) -> HistoryTimeline {
-        var timeline = HistoryTimeline()
+        var t = HistoryTimeline()
         let ordered = steps.sorted {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
             return $0.id.uuidString < $1.id.uuidString
         }
-        for step in ordered {
+        for (index, step) in ordered.enumerated() {
             switch step.kind {
             case .undo:
-                // Only the most recent applied action can be undone; a stray
-                // record for anything else is ignored rather than trusted.
-                guard let target = step.target, timeline.applied.last == target else { continue }
-                timeline.applied.removeLast()
-                timeline.redoable.append(target)
+                // Only the head can be undone; a stray record for anything
+                // else is ignored rather than trusted.
+                guard let target = step.target, t.head == target, let p = t.parent[target] else { continue }
+                t.head = p
             case .redo:
-                guard let target = step.target, timeline.redoable.last == target else { continue }
-                timeline.redoable.removeLast()
-                timeline.applied.append(target)
+                // Only a child of the head can be redone.
+                guard let target = step.target, let p = t.parent[target], p == t.head else { continue }
+                t.head = target
+                t.lastVisit[target] = index
             default:
-                timeline.superseded.formUnion(timeline.redoable)
-                timeline.redoable.removeAll()
-                timeline.applied.append(step.id)
+                t.parent[step.id] = t.head
+                if let h = t.head { t.children[h, default: []].append(step.id) } else { t.roots.append(step.id) }
+                t.head = step.id
+                t.lastVisit[step.id] = index
             }
         }
-        return timeline
+        t.applied = t.path(to: t.head)
+        return t
     }
 
-    /// The applied actions Undo would reverse, most recent first, to bring
+    /// The path from the first action down to `actionID`, oldest first.
+    private func path(to actionID: UUID?) -> [UUID] {
+        var out: [UUID] = []
+        var cursor = actionID
+        while let id = cursor {
+            out.append(id)
+            cursor = parent[id] ?? nil
+        }
+        return out.reversed()
+    }
+
+    // MARK: Paths
+
+    /// The applied actions Undo would reverse, most recent first, to take
     /// the timeline back to just before `actionID` (inclusive).
     func undoPath(through actionID: UUID) -> [UUID] {
         guard let index = applied.firstIndex(of: actionID) else { return [] }
         return Array(applied[index...].reversed())
     }
 
-    /// The undone actions Redo would re-apply, most recently undone first,
-    /// up to and including `actionID`.
+    /// The undone actions Redo would re-apply, in order, from the head's
+    /// child down to and including `actionID` — when it lies below the head.
     func redoPath(through actionID: UUID) -> [UUID] {
-        guard let index = redoable.firstIndex(of: actionID) else { return [] }
-        return Array(redoable[index...].reversed())
+        guard state(of: actionID) == .undone else { return [] }
+        var out: [UUID] = []
+        var cursor: UUID? = actionID
+        while let id = cursor {
+            out.append(id)
+            let p = parent[id] ?? nil
+            if p == head { return out.reversed() }
+            cursor = p
+        }
+        return []
+    }
+
+    /// How to make `actionID` the head from wherever the head is: the
+    /// applied actions to undo (most recent first, down to the fork the two
+    /// share) and then the actions to redo (from the fork down to and
+    /// including `actionID`). Empty when it already is the head.
+    func jumpPath(to actionID: UUID) -> (undos: [UUID], redos: [UUID]) {
+        let targetPath = path(to: actionID)
+        let targetSet = Set(targetPath)
+        var undos: [UUID] = []
+        var cursor = head
+        while let id = cursor, !targetSet.contains(id) {
+            undos.append(id)
+            cursor = parent[id] ?? nil
+        }
+        let fork = cursor   // the deepest shared action, or nil
+        let redos = targetPath.drop(while: { $0 != fork }).dropFirst()
+        return (undos, fork == nil ? targetPath : Array(redos))
     }
 }

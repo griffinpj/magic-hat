@@ -72,7 +72,7 @@ struct UndoRedoTests {
         #expect(records.filter { !$0.action.isUserAction }.allSatisfy { $0.undoesActionID != nil })
     }
 
-    @Test func aNewActionAfterUndoingLeavesNothingToRedo() async throws {
+    @Test func aNewActionForksTheTimelineAndBothBranchesStayReachable() async throws {
         let container = try TestSupport.makeContainer()
         let ctx = container.mainContext
         ctx.insert(MTGCollection(name: "Main"))
@@ -80,30 +80,50 @@ struct UndoRedoTests {
         for i in 0..<10 { try add("c\(i)", "Card \(i)", to: "Main", context: ctx) }
         let undo = UndoController(container: container)
         await undo.refresh()
+        let original = undo.log.timeline.applied
 
         for _ in 0..<5 { await undo.undo() }
         #expect(try rowCount(in: "Main", container) == 5)
-        #expect(undo.log.timeline.redoable.count == 5)
+        #expect(undo.log.timeline.redoOptions == [original[5]])
         for _ in 0..<5 { await undo.redo() }
         #expect(try rowCount(in: "Main", container) == 10)
         for _ in 0..<3 { await undo.undo() }
         #expect(try rowCount(in: "Main", container) == 7 && undo.canRedo)
 
-        // The lynchpin: a new action while three could be redone.
+        // The fork: a new action while three could be redone.
         try add("c10", "Card 10", to: "Main", context: ctx)
         await undo.refresh()
-        #expect(!undo.canRedo, "the timeline forked")
-        #expect(undo.log.timeline.superseded.count == 3)
-        #expect(undo.log.actions.filter { $0.state == .superseded }.count == 3)
-        #expect(undo.log.timeline.applied.count == 8)
+        let fresh = try #require(undo.log.timeline.head)
+        #expect(!undo.canRedo, "the head has no children yet")
+        #expect(undo.log.actions.filter { $0.state == .undone }.count == 3, "the old branch is undone, not gone")
         #expect(try rowCount(in: "Main", container) == 8)
         #expect(try row("c10", in: "Main", container) != nil && (try row("c7", in: "Main", container)) == nil)
 
-        // All the way back, and all the way forward again.
+        // Back to the fork: both ways forward are offered, the recent one first.
+        await undo.undo()
+        #expect(undo.log.timeline.isFork)
+        #expect(undo.log.timeline.redoOptions == [fresh, original[7]])
+        #expect(undo.log.redoOptions.count == 2 && undo.log.branchLength(from: original[7]) == 3)
+
+        // Take the original branch to its end.
+        await undo.redo(branch: original[7])
+        #expect(try rowCount(in: "Main", container) == 8 && (try row("c7", in: "Main", container)) != nil)
+        await undo.redo(through: original[9])
+        #expect(try rowCount(in: "Main", container) == 10 && !undo.canRedo)
+        #expect(try row("c10", in: "Main", container) == nil)
+        #expect(undo.log.timeline.applied == original)
+
+        // And across to the other branch in one jump: three back, one forward.
+        #expect(undo.log.timeline.jumpPath(to: fresh) == (Array(original[7...].reversed()), [fresh]))
+        await undo.jump(to: fresh)
+        #expect(try rowCount(in: "Main", container) == 8 && (try row("c10", in: "Main", container)) != nil)
+        #expect(undo.log.timeline.head == fresh)
+
+        // All the way back, and all the way forward along the recent branch.
         for _ in 0..<8 { await undo.undo() }
         #expect(try rowCount(in: "Main", container) == 0 && !undo.canUndo)
         for _ in 0..<8 { await undo.redo() }
-        #expect(try rowCount(in: "Main", container) == 8 && !undo.canRedo)
+        #expect(try rowCount(in: "Main", container) == 8 && undo.log.timeline.head == fresh)
         #expect(undo.error == nil)
     }
 
@@ -117,9 +137,9 @@ struct UndoRedoTests {
         await undo.refresh()
         let second = undo.log.timeline.applied[1]
         await undo.undo(through: second)
-        #expect(try rowCount(in: "Main", container) == 1 && undo.log.timeline.redoable.count == 3)
-        let last = try #require(undo.log.timeline.redoable.first)   // the oldest undone: redo through it is all three
-        await undo.redo(through: last)
+        #expect(try rowCount(in: "Main", container) == 1 && undo.log.actions.filter { $0.state == .undone }.count == 3)
+        let deepest = try #require(undo.log.actions.first { $0.state == .undone })   // newest first: the deepest undone
+        await undo.redo(through: deepest.actionID)
         #expect(try rowCount(in: "Main", container) == 4 && !undo.canRedo)
     }
 

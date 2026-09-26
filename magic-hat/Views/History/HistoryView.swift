@@ -9,10 +9,13 @@
 //  Removed Cards"), with ⌘Z / ⇧⌘Z on a keyboard. Any number of steps in
 //  either direction; a row's menu jumps several at once ("Undo to Here").
 //
-//  Undone actions stay listed, dimmed and marked, so the timeline reads:
-//  the ones that can be redone, and the ones a later action left behind
-//  (see HistoryTimeline). The ledger's own `.undo` / `.redo` actions are
-//  not rows — they are what moves the marks.
+//  Undone actions stay listed, dimmed and marked. The timeline is a tree
+//  (see HistoryTimeline): undo back to where a new action forked it and
+//  Redo offers both ways forward — a tap takes the most recent branch, a
+//  long press lists them — and any row's menu can jump straight to it,
+//  undoing back to the fork and redoing down the other side. The ledger's
+//  own `.undo` / `.redo` actions are not rows — they are what moves the
+//  marks.
 //
 //  No @Query: the ledger is a large table, and a query over it re-ran on
 //  the main thread after every background save (each hydration batch).
@@ -67,7 +70,7 @@ struct HistoryView: View {
                 .accessibilityIdentifier("history-busy")
             }
             ForEach(undo.log.actions) { action in
-                HistoryRow(action: action)
+                HistoryRow(action: action, isBranchStart: undo.log.timeline.isFork && undo.log.timeline.redoOptions.contains(action.actionID))
                     .contextMenu { menu(for: action) }
                     .accessibilityIdentifier("history-row-\(action.actionID.uuidString)")
             }
@@ -90,6 +93,36 @@ struct HistoryView: View {
             .accessibilityLabel(undo.undoTitle ?? "Undo")
             .accessibilityIdentifier("history-undo")
 
+            redoItem
+        }
+    }
+
+    /// Redo: a plain button, except at a fork, where a tap takes the most
+    /// recently taken branch and a long press lists every branch — the
+    /// shape of Safari's tabs button and Notes' Undo.
+    @ViewBuilder private var redoItem: some View {
+        if undo.log.timeline.isFork {
+            Menu {
+                ForEach(undo.log.redoOptions) { option in
+                    Button {
+                        Task { await undo.redo(branch: option.actionID) }
+                    } label: {
+                        Text("Redo \(option.title)")
+                        let length = undo.log.branchLength(from: option.actionID)
+                        Text(length == 1 ? "1 action on this branch" : "\(length) actions on this branch")
+                    }
+                    .accessibilityIdentifier("history-redo-branch-\(option.actionID.uuidString)")
+                }
+            } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            } primaryAction: {
+                Task { await undo.redo() }
+            }
+            .disabled(!undo.canRedo)
+            .help(undo.redoTitle ?? "Redo")
+            .accessibilityLabel(undo.redoTitle ?? "Redo")
+            .accessibilityIdentifier("history-redo")
+        } else {
             Button {
                 Task { await undo.redo() }
             } label: {
@@ -103,31 +136,50 @@ struct HistoryView: View {
         }
     }
 
-    /// Jumps: several steps back to (or forward to) this action at once.
+    /// Jumps: several steps at once, back through an applied action,
+    /// forward through an undone one below the head, or across to another
+    /// branch — undoing to the fork and redoing down the other side.
     @ViewBuilder private func menu(for action: HistoryAction) -> some View {
         switch action.state {
         case .applied:
             let steps = undo.log.timeline.undoPath(through: action.actionID).count
-            Button(steps == 1 ? "Undo \(action.title)" : "Undo to Here (\(steps) Actions)", systemImage: "arrow.uturn.backward") {
+            Button {
                 Task { await undo.undo(through: action.actionID) }
+            } label: {
+                Label(steps == 1 ? "Undo \(action.title)" : "Undo Through Here", systemImage: "arrow.uturn.backward")
+                if steps > 1 { Text("\(steps) actions") }
             }
             .disabled(undo.isBusy)
         case .undone:
-            let steps = undo.log.timeline.redoPath(through: action.actionID).count
-            Button(steps == 1 ? "Redo \(action.title)" : "Redo to Here (\(steps) Actions)", systemImage: "arrow.uturn.forward") {
-                Task { await undo.redo(through: action.actionID) }
+            let path = undo.log.timeline.jumpPath(to: action.actionID)
+            if path.undos.isEmpty {
+                Button {
+                    Task { await undo.redo(through: action.actionID) }
+                } label: {
+                    Label(path.redos.count == 1 ? "Redo \(action.title)" : "Redo Through Here", systemImage: "arrow.uturn.forward")
+                    if path.redos.count > 1 { Text("\(path.redos.count) actions") }
+                }
+                .disabled(undo.isBusy)
+            } else {
+                Button {
+                    Task { await undo.jump(to: action.actionID) }
+                } label: {
+                    Label("Switch to This Branch", systemImage: "arrow.triangle.branch")
+                    Text("\(path.undos.count) back, \(path.redos.count) forward")
+                }
+                .disabled(undo.isBusy)
             }
-            .disabled(undo.isBusy)
-        case .superseded:
-            Text("Undone, then the timeline moved on")
         }
     }
 }
 
 private struct HistoryRow: View {
     let action: HistoryAction
+    /// One of the ways forward from the head, at a fork.
+    var isBranchStart = false
 
     private var icon: String {
+        if isBranchStart { return "arrow.triangle.branch" }
         switch action.action {
         case .deckBuild, .deckDisassemble: return "rectangle.stack"
         case .undo: return "arrow.uturn.backward"
@@ -167,7 +219,7 @@ private struct HistoryRow: View {
                         .foregroundStyle(action.isApplied ? .red : .secondary)
                 }
                 if !action.isApplied {
-                    Text("Undone")
+                    Text(isBranchStart ? "Undone · branch" : "Undone")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)

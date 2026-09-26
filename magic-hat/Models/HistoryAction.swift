@@ -53,4 +53,20 @@ nonisolated struct HistoryLog: Hashable, Sendable {
 
     var nextUndo: HistoryAction? { action(timeline.nextUndo) }
     var nextRedo: HistoryAction? { action(timeline.nextRedo) }
+    /// The ways forward from the head, the most recently taken first; more
+    /// than one at a fork.
+    var redoOptions: [HistoryAction] { timeline.redoOptions.compactMap(action) }
+
+    /// How many actions lie on the branch that starts with `actionID`,
+    /// following the most recently taken way at each further fork.
+    func branchLength(from actionID: UUID) -> Int {
+        var count = 0
+        var cursor: UUID? = actionID
+        while let id = cursor {
+            count += 1
+            let next = (timeline.children[id] ?? []).sorted { (timeline.lastVisit[$0] ?? -1) > (timeline.lastVisit[$1] ?? -1) }
+            cursor = next.first
+        }
+        return count
+    }
 }
