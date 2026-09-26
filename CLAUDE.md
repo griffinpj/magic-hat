@@ -1116,25 +1116,31 @@ git's chrome. `HistoryTimeline.lines()` decomposes it: the current line
 other chain hanging off a placed line, nearest the head first; every
 action is on exactly one line. One section per line: the current one
 headed "Timeline · 3 applied · 2 to redo", each other headed by its name
-or "Branch from 〈the action it leaves〉" with "n actions · 5 minutes
-ago", a **Switch** button (checkout: `jump(to: line.tip)`) and Rename in
-its context menu. A rail in the gutter (`HistoryRail`, a Canvas per
-row, rows with zero vertical insets so it is continuous) draws each
-branch as a line with a dot per action — solid where applied, dashed
-ahead of the head, a ring on the head, hollow when undone, secondary
-for another branch and running off the bottom of its card toward the
-action it forks from. Deliberately not a lane graph and not a toggle:
-no consumer Apple app draws a commit graph, most histories never fork,
-and a second mode is a second thing to keep right. Names
-(`HistoryBranchName`, a SwiftData table: actionID → name) are set on
-the line's tip; a line's name is the one nearest its tip, so it stays
-with the work it was given to — new actions on top keep it, and it
-follows the branch when a later fork makes it the one not taken. At a
-fork there is **no hidden gesture**: the Redo
-button presents an action sheet listing the branches (Mail's reply
-button: one control whose action is ambiguous asks), and the other
-branch sits right there with Switch. A long-press menu
-was tried first and dropped: nobody would find it. Any row pushes
+or what it starts with ("Removed Sol Ring and 2 more") with "n actions ·
+5 minutes ago", a **Switch** button (checkout: `jump(to: line.tip)`) and
+a "…" menu with Rename (a List header takes no context menu). Where a
+branch hangs is drawn both ways: the row it splits from wears a stub on
+the rail and a tag naming the branch (tap: scroll to its card), and the
+branch's card ends in a **junction row** — the rail runs into a small
+dot, "Splits from Added Sol Ring in Timeline", and "Switch: 2 back, 1
+forward", which is what Switch does (tap: scroll to that row). A rail in
+the gutter (`HistoryRail`, a Canvas per row, rows with zero vertical
+insets so it is continuous) draws each branch as a line with a dot per
+action — solid where applied, dashed ahead of the head, a ring on the
+head, hollow when undone, secondary for another branch. Deliberately not
+a lane graph and not a toggle: no consumer Apple app draws a commit
+graph, most histories never fork, and a second mode is a second thing
+to keep right. Names (`HistoryBranchName`, a SwiftData table: actionID →
+name) are set on the line's tip; a line's name is the one nearest its
+tip, so it stays with the work it was given to — new actions on top
+keep it, and it follows the branch when a later fork makes it the one
+not taken. At a fork there is **no hidden gesture**: Redo becomes a
+menu that opens on tap (Mail's reply arrow), listing the branches with
+their lengths; a long-press menu and an action sheet were both tried
+and dropped — nobody finds a long press, and a sheet over a list that
+already shows the branches looked like a second UI. The replay's
+"Working…" is a glass pill floating over the list, never a row, so
+nothing shifts. Any row pushes
 `HistoryDetailView`: what it did, when, Applied/Undone, copies in and
 out, then the cards it changed — grouped by collection, or for a build
 or disassembly by the *move* ("Main → Atraxa", each card once with its
