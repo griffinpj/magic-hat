@@ -7,19 +7,21 @@
 //  and Redo in the bar, as Notes and Freeform place them, each disabled
 //  when there is nothing to do and named for what it would do ("Undo
 //  Removed Cards"), with ⌘Z / ⇧⌘Z on a keyboard. Any number of steps in
-//  either direction; a row's menu jumps several at once ("Undo to Here").
+//  either direction.
 //
-//  Undone actions stay listed, dimmed and marked. The timeline is a tree
-//  (see HistoryTimeline): undo back to where a new action forked it and
-//  both ways forward are offered — as a section at the top of the list,
-//  one row per branch with its name, length and age (a pending choice
-//  lives in the content, the way Photos surfaces duplicates to review),
-//  and from the Redo button as an action sheet (Mail's reply button: one
-//  button whose action is ambiguous asks). No hidden gesture. Any row
-//  pushes its detail — the cards it changed, and the one button that
-//  undoes, redoes or switches to it — and its context menu does the same
-//  in place. The ledger's own `.undo` / `.redo` actions are not rows —
-//  they are what moves the marks.
+//  The timeline is a tree (see HistoryTimeline) and the list shows it as
+//  branches, git's idea without git's chrome: the current line first —
+//  what is applied, and above it, dimmed, what Redo would take — then a
+//  section per other branch, named by the user or for the action it
+//  forks from, with a Switch button (checkout) and Rename in its context
+//  menu. A rail in the gutter (HistoryRail) draws each branch as a line
+//  with a dot per action, so a fork reads at a glance without a graph
+//  mode; a lane graph over a mostly linear history is noise, and no
+//  toggle means one list to keep right. At a fork the Redo button asks
+//  which branch as an action sheet (Mail's reply button: one control
+//  whose action is ambiguous asks) — no hidden gesture. Any row pushes
+//  its detail: the cards it changed, and the one button that undoes,
+//  redoes or switches to it.
 //
 //  No @Query: the ledger is a large table, and a query over it re-ran on
 //  the main thread after every background save (each hydration batch).
@@ -36,6 +38,8 @@ struct HistoryView: View {
     private var deckTracker: DeckChangeTracker { .shared }
     private var undo: UndoController { .shared(for: modelContext.container) }
     @State private var showsBranches = false
+    @State private var renaming: HistoryLine?
+    @State private var renameText = ""
 
     var body: some View {
         NavigationStack {
@@ -63,7 +67,7 @@ struct HistoryView: View {
                     }
                 }
             } message: {
-                Text("Your history splits here. The branch you don't take stays, and you can come back to it.")
+                Text("Your history splits here. The branch you don't take stays, and you can switch to it below.")
             }
             .task(id: "\(tracker.revision)|\(deckTracker.revision)") { await undo.refresh() }
             .sensoryFeedback(.success, trigger: undo.completed)
@@ -75,6 +79,8 @@ struct HistoryView: View {
         }
     }
 
+    // MARK: List
+
     private var list: some View {
         List {
             if undo.isBusy {
@@ -84,72 +90,133 @@ struct HistoryView: View {
                 }
                 .accessibilityIdentifier("history-busy")
             }
-            if undo.log.timeline.isFork {
-                forkSection
+            if let line = undo.log.currentLine {
+                lineSection(line)
             }
-            ForEach(undo.log.actions) { action in
-                NavigationLink(value: action.actionID) {
-                    HistoryRow(action: action, isBranchStart: undo.log.timeline.isFork && undo.log.timeline.redoOptions.contains(action.actionID))
-                }
-                .contextMenu { menu(for: action) }
-                .accessibilityIdentifier("history-row-\(action.actionID.uuidString)")
+            ForEach(undo.log.otherLines) { line in
+                lineSection(line)
             }
         }
+        .listStyle(.insetGrouped)
         .animation(.default, value: undo.log.actions)
+        .alert("Rename Branch", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { line in
+            TextField("Name", text: $renameText)
+            Button("Save") {
+                let name = renameText
+                Task { await undo.rename(line, to: name) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Leave it empty to use the default name.")
+        }
     }
 
-    /// At a fork: the ways forward, one row each, the branch taken most
-    /// recently first. Tapping a row redoes that branch.
-    private var forkSection: some View {
+    /// One branch: its actions newest first on a rail, under a header
+    /// that names it and, for another branch, offers Switch.
+    @ViewBuilder private func lineSection(_ line: HistoryLine) -> some View {
+        let rows = Array(line.actions.reversed())
         Section {
-            ForEach(undo.log.redoOptions) { option in
-                Button {
-                    Task { await undo.redo(branch: option.actionID) }
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "arrow.triangle.branch")
-                            .foregroundStyle(.tint)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(option.title)
-                                .font(.body.weight(.medium))
-                                .foregroundStyle(.primary)
-                            Text(option.detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Text("\(lengthText(option)) · \(option.timestamp, format: .relative(presentation: .named))")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                        Text("Redo")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.tint)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                            .background(.tint.opacity(0.15), in: Capsule())
+            ForEach(Array(rows.enumerated()), id: \.element) { index, id in
+                if let action = undo.log.action(id) {
+                    NavigationLink(value: id) {
+                        HistoryRow(action: action, mark: mark(for: line, rows: rows, index: index), emphasized: line.isCurrent)
                     }
-                    .contentShape(Rectangle())
+                    .contextMenu { menu(for: action) }
+                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
+                    .accessibilityIdentifier("history-row-\(id.uuidString)")
                 }
-                .buttonStyle(.plain)
-                .disabled(undo.isBusy)
-                .accessibilityIdentifier("history-branch-\(option.actionID.uuidString)")
             }
         } header: {
-            Text("Your History Splits Here")
-        } footer: {
-            Text("Redo either branch. The other stays, and you can come back to it any time.")
+            lineHeader(line)
         }
     }
 
-    private func lengthText(_ option: HistoryAction) -> String {
-        let length = undo.log.branchLength(from: option.actionID)
-        return length == 1 ? "1 action" : "\(length) actions"
+    private func mark(for line: HistoryLine, rows: [UUID], index: Int) -> RailMark {
+        let timeline = undo.log.timeline
+        let id = rows[index]
+        func stroke(newer: UUID) -> RailStroke {
+            line.isCurrent && timeline.state(of: newer) == .undone ? .dashed : .solid
+        }
+        let above: RailStroke? = index == 0 ? nil : stroke(newer: rows[index - 1])
+        let below: RailStroke?
+        if index < rows.count - 1 {
+            below = stroke(newer: id)
+        } else {
+            below = line.isCurrent ? nil : .solid   // runs off toward the action it forks from
+        }
+        let dot: RailDot = id == timeline.head ? .head : (timeline.state(of: id) == .applied ? .applied : .undone)
+        return RailMark(above: above, below: below, dot: dot)
+    }
+
+    @ViewBuilder private func lineHeader(_ line: HistoryLine) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(undo.log.title(of: line))
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                lineCaption(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !line.isCurrent {
+                Button("Switch") {
+                    Task { await undo.switchTo(line) }
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
+                .font(.subheadline.weight(.semibold))
+                .disabled(undo.isBusy)
+                .accessibilityIdentifier("history-switch-\(line.id.uuidString)")
+            }
+            Menu {
+                Button("Rename…", systemImage: "pencil") {
+                    renameText = undo.log.customName(of: line) ?? ""
+                    renaming = line
+                }
+                if !line.isCurrent {
+                    Button("Switch to This Branch", systemImage: "arrow.triangle.branch") {
+                        Task { await undo.switchTo(line) }
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Branch options")
+            .accessibilityIdentifier("history-line-menu-\(line.id.uuidString)")
+        }
+        .textCase(nil)
+        .padding(.bottom, 4)
+    }
+
+    /// "3 applied · 2 to redo" for the current line; "2 actions · 5 minutes
+    /// ago" for another.
+    private func lineCaption(_ line: HistoryLine) -> Text {
+        if line.isCurrent {
+            let applied = undo.log.timeline.applied.count
+            let ahead = line.actions.count - applied
+            var parts: [String] = [applied == 1 ? "1 applied" : "\(applied) applied"]
+            if ahead > 0 { parts.append(ahead == 1 ? "1 to redo" : "\(ahead) to redo") }
+            return Text(parts.joined(separator: " · "))
+        }
+        let count = line.actions.count == 1 ? "1 action" : "\(line.actions.count) actions"
+        if let latest = undo.log.latest(on: line) {
+            return Text("\(count) · \(latest, format: .relative(presentation: .named))")
+        }
+        return Text(count)
     }
 
     private func branchLabel(_ option: HistoryAction) -> String {
-        "\(option.title) (\(lengthText(option)))"
+        let length = undo.log.branchLength(from: option.actionID)
+        return "\(option.title) (\(length == 1 ? "1 action" : "\(length) actions"))"
     }
+
+    // MARK: Toolbar
 
     /// Undo and Redo together at the trailing end: one glass group, the
     /// way every editor puts them, each disabled when it has nothing to do.
@@ -226,13 +293,15 @@ struct HistoryView: View {
     }
 }
 
+/// One action on the rail: icon, title, what and where, when; the copies
+/// at the trailing end. Dimmed when undone; on the current line an
+/// undone row is also marked, since it is what Redo would take.
 private struct HistoryRow: View {
     let action: HistoryAction
-    /// One of the ways forward from the head, at a fork.
-    var isBranchStart = false
+    let mark: RailMark
+    let emphasized: Bool
 
     private var icon: String {
-        if isBranchStart { return "arrow.triangle.branch" }
         switch action.action {
         case .deckBuild, .deckDisassemble: return "rectangle.stack"
         case .manualAdd: return "plus.circle"
@@ -244,7 +313,8 @@ private struct HistoryRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .top) {
+        HStack(alignment: .top, spacing: 12) {
+            Color.clear.frame(width: 20, height: 1)
             Image(systemName: icon)
                 .foregroundStyle(action.isApplied ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 .padding(.top, 2)
@@ -273,8 +343,8 @@ private struct HistoryRow: View {
                         .font(.callout.weight(.semibold))
                         .foregroundStyle(action.isApplied ? .red : .secondary)
                 }
-                if !action.isApplied {
-                    Text(isBranchStart ? "Undone · branch" : "Undone")
+                if !action.isApplied, emphasized {
+                    Text("Undone")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
@@ -284,7 +354,11 @@ private struct HistoryRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 12)
+        .background(alignment: .leading) {
+            HistoryRail(mark: mark, emphasized: emphasized)
+                .frame(width: 20)
+        }
         .opacity(action.isApplied ? 1 : 0.6)
         .accessibilityElement(children: .combine)
         .accessibilityValue(action.isApplied ? "" : "Undone")
@@ -293,5 +367,5 @@ private struct HistoryRow: View {
 
 #Preview {
     HistoryView()
-        .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self], inMemory: true)
+        .modelContainer(for: [CollectionEntry.self, CardMeta.self, AuditRecord.self, HistoryBranchName.self], inMemory: true)
 }

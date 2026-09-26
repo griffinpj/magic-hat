@@ -174,3 +174,69 @@ nonisolated struct HistoryTimeline: Hashable, Sendable {
         return (undos, fork == nil ? targetPath : Array(redos))
     }
 }
+
+// MARK: Lines
+
+/// One chain of the tree, for showing it as a list of branches: the
+/// current line (what is applied, then what Redo would take, out to a
+/// leaf) and every other chain hanging off a line already placed.
+nonisolated struct HistoryLine: Identifiable, Hashable, Sendable {
+    /// The line's first action.
+    let id: UUID
+    /// The action it branches from; nil when it starts the history.
+    let forkFrom: UUID?
+    /// Oldest first; `last` is the tip.
+    let actions: [UUID]
+    let isCurrent: Bool
+
+    var tip: UUID { actions[actions.count - 1] }
+}
+
+nonisolated extension HistoryTimeline {
+    /// The tree as lines. The current line comes first; the others follow
+    /// in discovery order — those forking nearest the head first, and at
+    /// one fork the most recently taken first — so the list reads from
+    /// where the user is outward. Every action is on exactly one line.
+    func lines() -> [HistoryLine] {
+        var assigned = Set<UUID>()
+        var lines: [HistoryLine] = []
+
+        func nextChild(of id: UUID?) -> UUID? {
+            let options = id.map { children[$0] ?? [] } ?? roots
+            return options.filter { !assigned.contains($0) }.max { (lastVisit[$0] ?? -1) < (lastVisit[$1] ?? -1) }
+        }
+        func chain(from start: UUID) -> [UUID] {
+            var out = [start]
+            assigned.insert(start)
+            var cursor = start
+            while let next = nextChild(of: cursor) {
+                out.append(next)
+                assigned.insert(next)
+                cursor = next
+            }
+            return out
+        }
+
+        var current = applied
+        assigned.formUnion(current)
+        if let next = nextChild(of: head) { current += chain(from: next) }
+        if let first = current.first {
+            lines.append(HistoryLine(id: first, forkFrom: nil, actions: current, isCurrent: true))
+        }
+
+        // Under every placed action (nearest the tip first) and under the
+        // start, each remaining child begins a line of its own.
+        var frontier: [UUID?] = current.reversed().map { Optional($0) } + [nil]
+        var index = 0
+        while index < frontier.count {
+            let node = frontier[index]
+            index += 1
+            while let start = nextChild(of: node) {
+                let actions = chain(from: start)
+                lines.append(HistoryLine(id: start, forkFrom: node, actions: actions, isCurrent: false))
+                frontier.append(contentsOf: actions.reversed().map { Optional($0) })
+            }
+        }
+        return lines
+    }
+}

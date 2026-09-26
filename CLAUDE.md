@@ -1110,12 +1110,30 @@ Counterspell and 1 more · Main" under it, "Built Atraxa · from Main",
 "Imported 3,846 Cards" — because at a fork two branches can both be
 "Added Cards" (`HistoryAction.title` / `detail`; the store keeps the
 three largest names, the printing count and the deck's name per
-action). At a fork there is **no hidden gesture**: the list leads with
-a "Your History Splits Here" section, one row per branch (name, detail,
-length, how long ago) with a Redo pill — a pending choice shown as
-content, the way Photos surfaces duplicates to review — and the Redo
+action). **The list shows the tree as branches** — git's idea without
+git's chrome. `HistoryTimeline.lines()` decomposes it: the current line
+(the applied path, then what Redo would take, out to a leaf) and every
+other chain hanging off a placed line, nearest the head first; every
+action is on exactly one line. One section per line: the current one
+headed "Timeline · 3 applied · 2 to redo", each other headed by its name
+or "Branch from 〈the action it leaves〉" with "n actions · 5 minutes
+ago", a **Switch** button (checkout: `jump(to: line.tip)`) and Rename in
+its context menu. A rail in the gutter (`HistoryRail`, a Canvas per
+row, rows with zero vertical insets so it is continuous) draws each
+branch as a line with a dot per action — solid where applied, dashed
+ahead of the head, a ring on the head, hollow when undone, secondary
+for another branch and running off the bottom of its card toward the
+action it forks from. Deliberately not a lane graph and not a toggle:
+no consumer Apple app draws a commit graph, most histories never fork,
+and a second mode is a second thing to keep right. Names
+(`HistoryBranchName`, a SwiftData table: actionID → name) are set on
+the line's tip; a line's name is the one nearest its tip, so it stays
+with the work it was given to — new actions on top keep it, and it
+follows the branch when a later fork makes it the one not taken. At a
+fork there is **no hidden gesture**: the Redo
 button presents an action sheet listing the branches (Mail's reply
-button: one control whose action is ambiguous asks). A long-press menu
+button: one control whose action is ambiguous asks), and the other
+branch sits right there with Switch. A long-press menu
 was tried first and dropped: nobody would find it. Any row pushes
 `HistoryDetailView`: what it did, when, Applied/Undone, copies in and
 out, then the cards it changed — grouped by collection, or for a build
@@ -1183,9 +1201,12 @@ returns, the refusals), `HistoryDetailTests` (titles and detail lines,
 `historyDetail` merging printings and grouping by collection, a build
 as moves, the cap and the filter, an import named by its size),
 `HistoryFlowTests` (UI: undo a removal, redo it, undo again, add
-something, nothing to redo from there; undo that and the fork section
-and Redo's sheet list both branches; take the original; the other
-branch's detail screen switches back to it).
+something — the removal is now a branch section with Switch; undo that
+and Redo's sheet lists both; take the original; rename the other from
+its header; its detail screen switches back to it, name and all).
+`HistoryTimelineTests` also covers `lines()` (a branch off a branch, a
+fork at the start) and `UndoRedoTests` a name through switches, new
+actions, renaming and clearing.
 
 ## Data flow notes
 

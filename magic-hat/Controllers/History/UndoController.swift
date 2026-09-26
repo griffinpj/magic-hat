@@ -94,6 +94,33 @@ final class UndoController {
         await perform(undos: path.undos, redos: path.redos)
     }
 
+    /// Makes the line's tip the head: undo to the fork it shares with the
+    /// current line, then redo up it.
+    func switchTo(_ line: HistoryLine) async {
+        await jump(to: line.tip)
+    }
+
+    /// Names a line, on the action at its tip; any older name on the line
+    /// goes, since the one nearest the tip is the line's. An empty name
+    /// clears it. A small write on the main context, like a list edit.
+    func rename(_ line: HistoryLine, to name: String) async {
+        let context = container.mainContext
+        let ids = Set(line.actions)
+        do {
+            for existing in try context.fetch(FetchDescriptor<HistoryBranchName>()) where ids.contains(existing.actionID) {
+                context.delete(existing)
+            }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                context.insert(HistoryBranchName(actionID: line.tip, name: trimmed))
+            }
+            try context.save()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        await refresh()
+    }
+
     private func perform(undos: [UUID], redos: [UUID]) async {
         guard !undos.isEmpty || !redos.isEmpty, !isBusy else { return }
         isBusy = true

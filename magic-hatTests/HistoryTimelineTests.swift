@@ -129,6 +129,58 @@ struct HistoryTimelineTests {
         #expect(r.timeline.applied == [a])
     }
 
+    /// The tree as lines: the current one out to what Redo would take,
+    /// then each other branch, nearest the head first.
+    @Test func linesFollowTheCurrentBranchAndHangTheOthersOffIt() {
+        var r = Recorder()
+        #expect(r.timeline.lines().isEmpty)
+        let ids = (0..<10).map { _ in r.act() }
+        var lines = r.timeline.lines()
+        #expect(lines.count == 1 && lines[0].isCurrent && lines[0].actions == ids && lines[0].forkFrom == nil)
+
+        for _ in 0..<5 { r.undo() }
+        lines = r.timeline.lines()
+        #expect(lines.count == 1 && lines[0].actions == ids, "undone actions ahead are still the one line")
+
+        let b1 = r.act(), b2 = r.act()
+        lines = r.timeline.lines()
+        #expect(lines.map(\.actions) == [Array(ids[0..<5]) + [b1, b2], Array(ids[5..<10])])
+        #expect(lines[1].forkFrom == ids[4] && !lines[1].isCurrent && lines[1].tip == ids[9])
+
+        r.undo(); r.undo()
+        lines = r.timeline.lines()
+        #expect(lines[0].actions == Array(ids[0..<5]) + [b1, b2], "the current line runs on to what Redo would take")
+        #expect(lines[1].actions == Array(ids[5..<10]))
+
+        r.redo(ids[5])
+        for _ in 0..<4 { r.redo() }
+        lines = r.timeline.lines()
+        #expect(lines[0].actions == ids && lines[1].actions == [b1, b2] && lines[1].forkFrom == ids[4])
+
+        // A branch off a branch: nearest the head first, and under each
+        // line its own branches, so every action is on exactly one line.
+        for _ in 0..<7 { r.undo() }          // head = ids[2]
+        let c1 = r.act()
+        for _ in 0..<2 { r.undo() }          // head = ids[1]
+        let d1 = r.act()
+        lines = r.timeline.lines()
+        #expect(lines.map(\.actions) == [Array(ids[0..<2]) + [d1], [ids[2], c1], Array(ids[3..<10]), [b1, b2]])
+        #expect(lines.map(\.forkFrom) == [nil, ids[1], ids[2], ids[4]])
+        #expect(lines.map(\.isCurrent) == [true, false, false, false])
+        let all = lines.flatMap(\.actions)
+        #expect(Set(all) == r.timeline.all && all.count == r.timeline.all.count)
+    }
+
+    @Test func aForkAtTheStartIsALineFromNothing() {
+        var r = Recorder()
+        let a = r.act()
+        r.undo()
+        let b = r.act()
+        let lines = r.timeline.lines()
+        #expect(lines.map(\.actions) == [[b], [a]])
+        #expect(lines[1].forkFrom == nil && !lines[1].isCurrent)
+    }
+
     @Test func resolutionDoesNotDependOnInputOrder() {
         var r = Recorder()
         let ids = (0..<6).map { _ in r.act() }

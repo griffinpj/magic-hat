@@ -25,6 +25,7 @@ struct magic_hatApp: App {
             CollectionEntry.self,
             CardMeta.self,
             AuditRecord.self,
+            HistoryBranchName.self,
             CardRuling.self,
             SavedSearch.self,
             Deck.self,
