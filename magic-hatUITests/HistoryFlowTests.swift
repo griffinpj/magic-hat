@@ -4,8 +4,9 @@
 //
 //  Undo and redo from the History tab, on the seeded store: a removal is
 //  undone (the card is back in the grid) and redone (gone again), then
-//  undone once more and followed by a new action — after which there is
-//  nothing to redo, and the row stays marked Undone.
+//  undone once more and followed by a new action — a fork. Undoing that
+//  offers both branches (the section, Redo's sheet); the original is
+//  taken, and the other branch's detail screen switches back to it.
 //
 
 import XCTest
@@ -91,14 +92,46 @@ final class HistoryFlowTests: XCTestCase {
         XCTAssertFalse(redo.isEnabled, "a new action after an undo leaves nothing to redo from here")
         XCTAssertTrue(app.staticTexts["history-undone"].firstMatch.exists, "the other branch still reads Undone")
 
-        // Back to the fork: both branches are ways forward again.
+        // Back to the fork: both branches are ways forward again — as a
+        // section at the top of the list, and from Redo as a sheet.
         undo.tap()
         XCTAssertTrue(redo.waitForEnabled(timeout: 10), "at the fork, Redo is back")
-        XCTAssertTrue(app.staticTexts["Undone · branch"].firstMatch.waitForExistence(timeout: 5), "the branch starts are marked")
+        let branches = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-branch-'"))
+        XCTAssertTrue(branches.firstMatch.waitForExistence(timeout: 5), "the fork section lists the branches")
+        XCTAssertEqual(branches.count, 2)
+        XCTAssertTrue(app.staticTexts["Added Card 0"].firstMatch.exists && app.staticTexts["Removed Card 1"].firstMatch.exists,
+                      "rows are named for their cards")
         shot(app, "history-fork")
-        redo.press(forDuration: 1)
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-redo-branch-'")).firstMatch.waitForExistence(timeout: 5), "a long press on Redo lists the branches")
-        shot(app, "history-fork-menu")
+        redo.tap()
+        let original = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Removed Card 1'")).firstMatch
+        XCTAssertTrue(original.waitForExistence(timeout: 5), "Redo asks which branch")
+        shot(app, "history-fork-sheet")
+        original.tap()
+        XCTAssertTrue(app.staticTexts["history-busy"].waitForNonExistence(timeout: 10))
+        XCTAssertFalse(branches.firstMatch.exists, "one branch taken: no longer a fork")
+        app.tabBars.buttons["Collection"].tap()
+        XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10), "the original branch again: the removal stands")
+
+        // The other branch's row opens its detail; its one button switches.
+        app.tabBars.buttons["History"].tap()
+        app.staticTexts["Added Card 0"].firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Added Card 0"].waitForExistence(timeout: 5), "the detail is titled for the action")
+        let change = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'history-change-'")).firstMatch
+        XCTAssertTrue(change.waitForExistence(timeout: 10), "the changed card is listed")
+        let act = app.buttons["history-detail-action"]
+        XCTAssertTrue(act.waitForExistence(timeout: 5))
+        XCTAssertTrue(act.label.contains("Switch to This Branch"), "undone on the other branch: \(act.label)")
+        shot(app, "history-detail")
+        act.tap()
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline, !act.label.contains("Undo This Action") { usleep(200_000) }
+        XCTAssertTrue(act.label.contains("Undo This Action"), "switched: the action stands, so the button undoes it")
+        app.navigationBars.buttons.firstMatch.tap()
+        app.tabBars.buttons["Collection"].tap()
+        XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForExistence(timeout: 10), "the removal is undone on this branch")
+        app.staticTexts["Card 0"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["2× Card 0"].waitForExistence(timeout: 10), "and the add applied")
+        app.buttons["viewer-close"].tap()
     }
 
     /// A PNG under `TEST_RUNNER_UITEST_SHOT_DIR` when set, as the tour writes them.

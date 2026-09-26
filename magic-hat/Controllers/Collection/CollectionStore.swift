@@ -87,8 +87,13 @@ actor CollectionStore: ModelActor {
 
     /// "deck:<uuid>" -> "Deck: Name", for rows that live in a deck.
     private func deckLabels() throws -> [String: String] {
+        try deckNames().mapValues { "Deck: \($0)" }
+    }
+
+    /// "deck:<uuid>" -> "Name".
+    private func deckNames() throws -> [String: String] {
         let decks = try modelContext.fetch(FetchDescriptor<Deck>())
-        return Dictionary(decks.map { ($0.collectionKey, "Deck: \($0.name)") }, uniquingKeysWith: { a, _ in a })
+        return Dictionary(decks.map { ($0.collectionKey, $0.name) }, uniquingKeysWith: { a, _ in a })
     }
 
     /// Every owned row, decks included, each labelled with where it lives.
@@ -158,14 +163,16 @@ actor CollectionStore: ModelActor {
     }
 
     /// The audit ledger grouped by action, newest first, each user action
-    /// with where it stands in the undo/redo timeline (HistoryTimeline). The
-    /// ledger grows with every import; a @Query over it re-fetched the
-    /// whole table on the main thread after every background save.
+    /// with where it stands in the undo/redo timeline (HistoryTimeline) and
+    /// named for the cards it touched. The ledger grows with every import;
+    /// a @Query over it re-fetched the whole table on the main thread after
+    /// every background save.
     func history() throws -> HistoryLog {
         var descriptor = FetchDescriptor<AuditRecord>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
-        descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.quantityDelta, \.collectionName, \.binderName, \.actionRaw, \.undoesActionID]
+        descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.quantityDelta, \.collectionName, \.binderName,
+                                        \.actionRaw, \.undoesActionID, \.scryfallID, \.cardName]
         let records = try modelContext.fetch(descriptor)
-        let labels = try deckLabels()
+        let names = try deckNames()
         let grouped = Dictionary(grouping: records, by: \.actionID)
         var steps: [HistoryStep] = []
         steps.reserveCapacity(grouped.count)
@@ -180,12 +187,31 @@ actor CollectionStore: ModelActor {
             guard kind.isUserAction else { continue }
             let added = recs.filter { $0.quantityDelta > 0 }.reduce(0) { $0 + $1.quantityDelta }
             let removed = recs.filter { $0.quantityDelta < 0 }.reduce(0) { $0 + $1.quantityDelta }
-            var scopes = Set(recs.map { record -> String in
+            var scopes = Set<String>()
+            var deckName: String?
+            for record in recs {
                 let name = record.collectionName
-                if let label = labels[name] { return label }
-                return Deck.isDeckCollection(name) ? "Deleted deck" : name
-            })
-            scopes.formUnion(recs.map(\.binderName).filter { !$0.isEmpty })
+                if let deck = names[name] {
+                    scopes.insert("Deck: \(deck)")
+                    deckName = deck
+                } else if Deck.isDeckCollection(name) {
+                    scopes.insert("Deleted deck")
+                } else {
+                    scopes.insert(name)
+                }
+                if !record.binderName.isEmpty { scopes.insert(record.binderName) }
+            }
+            // The cards, largest change first, by printing.
+            var copies: [String: (name: String, copies: Int)] = [:]
+            for record in recs {
+                copies[record.scryfallID, default: (record.cardName, 0)].copies += abs(record.quantityDelta)
+            }
+            let ranked = copies.values.sorted { a, b in
+                if a.copies != b.copies { return a.copies > b.copies }
+                return a.name < b.name
+            }
+            var seen = Set<String>()
+            let cardNames = ranked.compactMap { seen.insert($0.name).inserted ? $0.name : nil }.prefix(3)
             actions.append(HistoryAction(
                 actionID: id,
                 timestamp: recs.map(\.timestamp).max() ?? .distantPast,
@@ -193,11 +219,115 @@ actor CollectionStore: ModelActor {
                 removed: -removed,
                 scopes: scopes.sorted(),
                 action: kind,
-                state: timeline.state(of: id)
+                state: timeline.state(of: id),
+                cardCount: copies.count,
+                cardNames: Array(cardNames),
+                deckName: deckName,
+                replaced: recs.contains { $0.action == .importReplace }
             ))
         }
         actions.sort { $0.timestamp > $1.timestamp }
         return HistoryLog(actions: actions, timeline: timeline)
+    }
+
+    /// One action's changes, merged per printing and grouped by the
+    /// collection they landed in — or, for a build or disassembly, by the
+    /// move (source → destination), each card once. Every group is sorted
+    /// largest change first and carries the full count; the screen caps
+    /// what it shows. Art comes from CardMeta when the card is cached.
+    func historyDetail(actionID: UUID) throws -> HistoryDetail {
+        let records = try modelContext.fetch(FetchDescriptor<AuditRecord>(predicate: #Predicate { $0.actionID == actionID }))
+        let deckNames = try deckNames()
+        func plain(_ collection: String) -> String {
+            deckNames[collection] ?? (Deck.isDeckCollection(collection) ? "a deleted deck" : collection)
+        }
+        func label(_ collection: String) -> String {
+            deckNames[collection].map { "Deck: \($0)" } ?? (Deck.isDeckCollection(collection) ? "Deleted deck" : collection)
+        }
+
+        // Metadata for the printing line and the art, where cached.
+        var metas: [String: CardMeta] = [:]
+        for chunk in Array(Set(records.map(\.scryfallID))).chunked(into: 500) {
+            for meta in try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { chunk.contains($0.scryfallID) })) {
+                metas[meta.scryfallID] = meta
+            }
+        }
+
+        // Merge the records per printing and collection.
+        struct Key: Hashable { let collection: String; let card: String; let finish: String; let condition: String }
+        var merged: [Key: (record: AuditRecord, delta: Int)] = [:]
+        for record in records {
+            let key = Key(collection: record.collectionName, card: record.scryfallID, finish: record.finishRaw, condition: record.condition)
+            merged[key, default: (record, 0)].delta += record.quantityDelta
+        }
+        func change(_ record: AuditRecord, delta: Int, id: String) -> HistoryChange {
+            let meta = metas[record.scryfallID]
+            return HistoryChange(
+                id: id, scryfallID: record.scryfallID, name: record.cardName,
+                setCode: record.setCode ?? meta?.setCode ?? "",
+                collectorNumber: record.collectorNumber ?? meta?.collectorNumber ?? "",
+                rarity: record.rarity ?? meta?.rarity,
+                finish: record.finish, condition: record.condition, delta: delta,
+                artCropURL: meta?.artCropURL, imageURL: meta?.imageNormalURL
+            )
+        }
+
+        var groups: [String: (kind: HistoryChangeGroup.Kind, title: String, destination: String?, changes: [HistoryChange])] = [:]
+        var order: [String] = []
+        func append(_ change: HistoryChange, to id: String, kind: HistoryChangeGroup.Kind, title: String, destination: String? = nil) {
+            if groups[id] == nil {
+                groups[id] = (kind, title, destination, [])
+                order.append(id)
+            }
+            groups[id]!.changes.append(change)
+        }
+
+        let kind = records.first?.action
+        var leftover = merged
+        if kind == .deckBuild || kind == .deckDisassemble {
+            // A move: the same printing out of one collection and into
+            // another by the same count, shown once.
+            struct Printing: Hashable { let card: String; let finish: String; let condition: String }
+            let byPrinting = Dictionary(grouping: merged.keys) { Printing(card: $0.card, finish: $0.finish, condition: $0.condition) }
+            for (printing, keys) in byPrinting {
+                let outs = keys.filter { merged[$0]!.delta < 0 }
+                let ins = keys.filter { merged[$0]!.delta > 0 }
+                guard outs.count == 1, ins.count == 1, let out = outs.first, let into = ins.first,
+                      -merged[out]!.delta == merged[into]!.delta else { continue }
+                let id = "\(out.collection)→\(into.collection)"
+                append(change(merged[into]!.record, delta: merged[into]!.delta, id: "\(id)|\(printing.card)|\(printing.finish)|\(printing.condition)"),
+                       to: id, kind: .move, title: plain(out.collection), destination: plain(into.collection))
+                leftover[out] = nil
+                leftover[into] = nil
+            }
+        }
+        for (key, value) in leftover where value.delta != 0 {
+            append(change(value.record, delta: value.delta, id: "\(key.collection)|\(key.card)|\(key.finish)|\(key.condition)"),
+                   to: key.collection, kind: .scope, title: label(key.collection))
+        }
+
+        var built: [HistoryChangeGroup] = []
+        for id in order {
+            let group = groups[id]!
+            let changes = group.changes.sorted { a, b in
+                if abs(a.delta) != abs(b.delta) { return abs(a.delta) > abs(b.delta) }
+                return a.name < b.name
+            }
+            var added = 0
+            var removed = 0
+            for change in changes {
+                if change.delta > 0 { added += change.delta } else { removed -= change.delta }
+            }
+            built.append(HistoryChangeGroup(id: id, kind: group.kind, title: group.title, destination: group.destination,
+                                            added: added, removed: removed, total: changes.count, changes: changes))
+        }
+        // Moves first, then whichever moved most.
+        built.sort { a, b in
+            if (a.kind == .move) != (b.kind == .move) { return a.kind == .move }
+            if a.added + a.removed != b.added + b.removed { return a.added + a.removed > b.added + b.removed }
+            return a.title < b.title
+        }
+        return HistoryDetail(actionID: actionID, groups: built)
     }
 
     /// Per-collection totals and top cards (the Add sheet's picker). With

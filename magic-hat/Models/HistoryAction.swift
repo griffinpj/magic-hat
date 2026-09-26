@@ -8,6 +8,11 @@
 //  actions themselves are not listed: they are what moves the state on
 //  the actions they reverse.
 //
+//  Named for what it did to which cards ("Added Lightning Bolt", "Built
+//  Atraxa", "Imported 3,846 Cards") rather than by kind alone: at a fork
+//  two branches can both be "Added Cards", and the names are what tell
+//  them apart.
+//
 
 import Foundation
 
@@ -22,20 +27,79 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
     let scopes: [String]
     let action: AuditAction
     let state: HistoryState
+    /// Distinct printings the action touched.
+    let cardCount: Int
+    /// Up to three of their names, the largest changes first.
+    let cardNames: [String]
+    /// For a deck action: the deck's name, or nil once the deck is gone.
+    let deckName: String?
+    /// An import that cleared the collection before adding.
+    let replaced: Bool
     var id: UUID { actionID }
+
+    init(actionID: UUID, timestamp: Date, added: Int, removed: Int, scopes: [String], action: AuditAction,
+         state: HistoryState, cardCount: Int = 0, cardNames: [String] = [], deckName: String? = nil, replaced: Bool = false) {
+        self.actionID = actionID
+        self.timestamp = timestamp
+        self.added = added
+        self.removed = removed
+        self.scopes = scopes
+        self.action = action
+        self.state = state
+        self.cardCount = cardCount
+        self.cardNames = cardNames
+        self.deckName = deckName
+        self.replaced = replaced
+    }
 
     var isApplied: Bool { state == .applied }
 
-    /// Short name for Undo/Redo labels ("Undo Import").
+    /// What was done, to what: the row's headline and the Undo/Redo
+    /// label ("Undo Added Lightning Bolt").
     var title: String {
         switch action {
-        case .importAdd, .importReplace: return "Import"
-        case .manualAdd: return "Added Cards"
-        case .manualRemove: return "Removed Cards"
-        case .deckBuild: return "Built Deck"
-        case .deckDisassemble: return "Disassembled Deck"
+        case .importAdd, .importReplace:
+            if replaced, let scope = scopes.first { return "Replaced \(scope)" }
+            return "Imported \(cards)"
+        case .manualAdd:
+            return cardCount == 1 && cardNames.count == 1 ? "Added \(cardNames[0])" : "Added \(cards)"
+        case .manualRemove:
+            return cardCount == 1 && cardNames.count == 1 ? "Removed \(cardNames[0])" : "Removed \(cards)"
+        case .deckBuild: return "Built \(deckName ?? "Deck")"
+        case .deckDisassemble: return "Disassembled \(deckName ?? "Deck")"
         case .undo: return "Undo"
         case .redo: return "Redo"
+        }
+    }
+
+    /// The second line: which cards, and where.
+    var detail: String {
+        var parts: [String] = []
+        if let names = namesLine { parts.append(names) }
+        parts.append(placeLine)
+        return parts.joined(separator: " · ")
+    }
+
+    private var cards: String { cardCount == 1 ? "1 Card" : "\(cardCount.formatted()) Cards" }
+
+    /// "Sol Ring, Arcane Signet and 58 more" when more than one card moved.
+    private var namesLine: String? {
+        guard cardCount > 1, !cardNames.isEmpty else { return nil }
+        let shown = cardNames.prefix(2)
+        let rest = cardCount - shown.count
+        let names = shown.joined(separator: ", ")
+        return rest > 0 ? "\(names) and \(rest.formatted()) more" : names
+    }
+
+    /// "from Main" for a build, "to Main" for a disassembly, the
+    /// collections otherwise.
+    private var placeLine: String {
+        let deckLabel = deckName.map { "Deck: \($0)" }
+        let others = scopes.filter { $0 != deckLabel && $0 != "Deleted deck" }
+        switch action {
+        case .deckBuild where !others.isEmpty: return "from \(others.joined(separator: ", "))"
+        case .deckDisassemble where !others.isEmpty: return "to \(others.joined(separator: ", "))"
+        default: return scopes.joined(separator: ", ")
         }
     }
 }
