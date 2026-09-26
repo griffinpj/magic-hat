@@ -400,14 +400,15 @@ detail screen and actions as an owned card:
   is the one thing SwiftUI hands the closure fresh.
 - Owned vs not: `CardItem.isEntry` (an owned row with a quantity) vs
   `CardItem.owned` (a search hit/printing we hold somewhere). The tile is
-  the art, clean, over a two-line caption (Photos/Music-style, readable
-  whatever the art is): "✦ $12.34 … +87%" — a gradient ✦ for foil/etched,
-  the price, the change since purchase in green/red (`PriceFormat.percent`)
-  — and "2× ◆ #123" in secondary: copies for an entry (a green check for
-  an owned hit), the set symbol in its rarity's colour (a set neither
-  Keyrune nor the bundled icons draw shows its code — no WebKit from the
-  grid), the collector number. The zoom's source is the image, not the
-  caption (`CardTile(zoom:)`). No dimming, so results look like the
+  the art, clean, over a two-line caption (Photos/App Store register):
+  the price in primary (a gradient ✦ first for foil/etched, a tertiary
+  dash until prices arrive) with the copies as a small "×2" count at the
+  trailing end *only when more than one* (a green check for an owned
+  hit) — the common case stays clean — and "◆ #123" in secondary: the set
+  symbol in its rarity's colour (a set neither Keyrune nor the bundled
+  icons draw shows its code — no WebKit from the grid) and the collector
+  number. No gain/loss on the tile; the viewer's price line has it. The
+  zoom's source is the image, not the caption (`CardTile(zoom:)`). No dimming, so results look like the
   collection. Edit/Remove need an entry; a hit's rows are edited from the
   Add sheet's owned list.
 
@@ -716,7 +717,10 @@ rarities are button-style toggle chips (formats: the common eight, More
 reveals the rest); colours are mana pips; price and stats are number fields.
 Vocabularies come from `FilterVocabulary`, loaded once through
 `ScryfallCatalogCache` (`/catalog/*` and `/sets`, on disk for a week) and
-matched in memory, prefix first.
+matched in memory, prefix first, against names folded once (case and
+diacritics, off the main actor at load) with plain `hasPrefix`/`contains`
+— a locale-aware `range(of:options:)` over ~10k artists ran on the main
+thread per keystroke.
 
 **Suggestions and the keyboard:** a token field's suggestions are rows
 under it, so focusing one of the four (types, rules text, sets, artist)
@@ -813,7 +817,11 @@ and white on Cards — the pages stop at the bar, so without it the bar
 strip was white over a grey Form. **Cards** is
 the list: commander, mainboard by type with count and value, sideboard,
 maybeboard; each row says built / in collection / missing, with a
-quantity stepper (a locked deck shows ×n and edits nothing). It is a
+quantity stepper (a locked deck shows ×n and edits nothing). Sections
+run creatures, planeswalkers, battles, artifacts, instants, sorceries,
+enchantments, lands (`DeckStats.typeOrder`), and the same floating sort
+button as the grid orders the rows within each (`DeckCardSort` minus
+Relevance, remembered as `deck.sort`). It is a
 *plain* list so the type headers pin while scrolling — mid-scroll the
 header says which group this is (Contacts, Music's Songs); inset-grouped
 never pins. Rows have no swipe actions: the stepper removes, and a
@@ -846,8 +854,8 @@ Recommended's lists are matched and sorted off the main actor on every
 input change whatever scope shows (`refreshRecommended`), so switching to
 it is instant; each of its sections shows its own loading row rather than
 the scope waiting behind one spinner. A floating glass sort button — the
-collection grid's, in the bottom-leading corner here because the
-trailing edge is every row's "+" — orders each scope (`DeckAddSort`:
+collection grid's, in the same bottom-trailing corner — orders each
+scope (`DeckCardSort`:
 Relevance, Name, Mana Value, Price high/low, Rarity; per scope while the
 sheet is open). Relevance is each list's own order; on Scryfall it is
 EDHREC rank, most-played first; the collection is sorted before the
@@ -890,6 +898,9 @@ moves only what's new.
 
 **Import** (`DeckListParser` → `DeckStore.resolve` → Scryfall for the
 rest, cached through `CardMetaWriter` → `DeckEditController.importLines`).
+The import sheet parses the text once per change, off the main actor
+(a computed `list` re-parsed it on every render, every keystroke in the
+name field); the export sheet builds its text the same way per option.
 The parser reads the shapes deck sites export — `// COMMANDER` headers, a
 blank line ending the commander section, `1 Name (SET) 123 *F*`, `4x
 Name`, Arena's About/Name block; the fixture
@@ -1051,7 +1062,11 @@ Metal Toolchain component: `xcodebuild -downloadComponent MetalToolchain`
 ## Adding, editing and removing cards
 
 `CollectionEditController.add / update / remove / createCollection`, all
-writing AuditRecords under one actionID and bumping the tracker. Identity is
+writing AuditRecords under one actionID and bumping the tracker. Those
+are single rows on the main context; **deleting a collection runs on
+`CardMetaWriter`** (`runDelete`), since it is every row and an audit
+record each — 3,900 of both on the real export, seconds on the main
+thread when it ran there. Identity is
 `mergeKey`, the same rule the import uses: adding a printing that matches an
 existing row raises its quantity; editing a row so its identity matches
 another row merges them. The collection can never hold two rows that mean

@@ -106,7 +106,9 @@ nonisolated struct DeckStats: Hashable, Sendable {
                                  builtCopies: 0, availableCopies: 0, missingCopies: 0, issues: [])
 
     /// Card types in the order the deck list groups them.
-    static let typeOrder = ["Creature", "Planeswalker", "Battle", "Instant", "Sorcery", "Artifact", "Enchantment", "Land", "Other"]
+    /// The deck list's section order: creatures and the other permanents
+    /// that act like them, artifacts, then the spells, enchantments, lands.
+    static let typeOrder = ["Creature", "Planeswalker", "Battle", "Artifact", "Instant", "Sorcery", "Enchantment", "Land", "Other"]
 
     static func glyph(forType type: String) -> String? {
         switch type {

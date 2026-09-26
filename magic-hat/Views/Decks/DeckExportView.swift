@@ -24,7 +24,14 @@ struct DeckExportView: View {
     @State private var options = DeckExportOptions()
     @State private var copied = 0
 
-    private var text: String { DeckListParser.export(snapshot, options: options) }
+    /// The list as it will be shared, built off the main actor when the
+    /// options change; a computed property rebuilt it on every render.
+    @State private var text: String
+
+    init(snapshot: DeckSnapshot) {
+        self.snapshot = snapshot
+        _text = State(initialValue: DeckListParser.export(snapshot, options: DeckExportOptions()))
+    }
     private var isArena: Bool { options.format == .arena }
 
     var body: some View {
@@ -77,6 +84,12 @@ struct DeckExportView: View {
                             .accessibilityIdentifier("export-preview")
                     }
                 }
+            }
+            .task(id: options) {
+                let snapshot = self.snapshot, options = self.options
+                let built = await Task.detached(priority: .userInitiated) { DeckListParser.export(snapshot, options: options) }.value
+                guard !Task.isCancelled else { return }
+                text = built
             }
             .navigationTitle("Export List")
             .navigationBarTitleDisplayMode(.inline)
