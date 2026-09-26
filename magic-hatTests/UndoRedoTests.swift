@@ -127,6 +127,44 @@ struct UndoRedoTests {
         #expect(undo.error == nil)
     }
 
+    @Test func aBranchKeepsItsNameThroughSwitchesAndNewActions() async throws {
+        let container = try TestSupport.makeContainer()
+        let ctx = container.mainContext
+        ctx.insert(MTGCollection(name: "Main"))
+        try ctx.save()
+        for i in 0..<3 { try add("c\(i)", "Card \(i)", to: "Main", context: ctx) }
+        let undo = UndoController(container: container)
+        await undo.refresh()
+        await undo.undo()
+        try add("n1", "New One", to: "Main", context: ctx)   // the fork
+        await undo.refresh()
+        #expect(undo.log.lines.count == 2)
+        let other = try #require(undo.log.otherLines.first)
+        #expect(undo.log.title(of: other) == "Branch from Added Card 1")
+        #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "Timeline")
+
+        await undo.rename(other, to: "  Before the trade ")
+        #expect(undo.error == nil)
+        let named = try #require(undo.log.otherLines.first)
+        #expect(undo.log.title(of: named) == "Before the trade" && undo.log.customName(of: named) == "Before the trade")
+
+        // Switch to it: it is the current line now, and still named.
+        await undo.switchTo(named)
+        #expect(try rowCount(in: "Main", container) == 3 && (try row("n1", in: "Main", container)) == nil)
+        #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "Before the trade")
+        #expect(undo.log.title(of: try #require(undo.log.otherLines.first)) == "Branch from Added Card 1")
+
+        // New work on top keeps the name; renaming again replaces it; empty clears it.
+        try add("n2", "New Two", to: "Main", context: ctx)
+        await undo.refresh()
+        #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "Before the trade")
+        await undo.rename(try #require(undo.log.currentLine), to: "After the trade")
+        #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "After the trade")
+        #expect(try ModelContext(container).fetch(FetchDescriptor<HistoryBranchName>()).count == 1, "one name per line")
+        await undo.rename(try #require(undo.log.currentLine), to: "")
+        #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "Timeline")
+    }
+
     @Test func multiStepJumpsThroughAnAction() async throws {
         let container = try TestSupport.makeContainer()
         let ctx = container.mainContext

@@ -227,7 +227,9 @@ actor CollectionStore: ModelActor {
             ))
         }
         actions.sort { $0.timestamp > $1.timestamp }
-        return HistoryLog(actions: actions, timeline: timeline)
+        let branchNames = Dictionary(try modelContext.fetch(FetchDescriptor<HistoryBranchName>()).map { ($0.actionID, $0.name) },
+                                     uniquingKeysWith: { a, _ in a })
+        return HistoryLog(actions: actions, timeline: timeline, names: branchNames)
     }
 
     /// One action's changes, merged per printing and grouped by the

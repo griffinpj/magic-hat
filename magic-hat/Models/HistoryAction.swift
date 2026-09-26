@@ -104,11 +104,22 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
     }
 }
 
-/// The History tab in one value: every user action with its state, and
-/// the timeline that says what Undo and Redo do next.
+/// The History tab in one value: every user action with its state, the
+/// timeline that says what Undo and Redo do next, the tree as lines, and
+/// the names the user gave them.
 nonisolated struct HistoryLog: Hashable, Sendable {
-    var actions: [HistoryAction] = []
-    var timeline = HistoryTimeline()
+    let actions: [HistoryAction]
+    let timeline: HistoryTimeline
+    /// Names by the action they were set on (a line's tip at the time).
+    let names: [UUID: String]
+    let lines: [HistoryLine]
+
+    init(actions: [HistoryAction] = [], timeline: HistoryTimeline = HistoryTimeline(), names: [UUID: String] = [:]) {
+        self.actions = actions
+        self.timeline = timeline
+        self.names = names
+        self.lines = timeline.lines()
+    }
 
     func action(_ id: UUID?) -> HistoryAction? {
         guard let id else { return nil }
@@ -132,5 +143,32 @@ nonisolated struct HistoryLog: Hashable, Sendable {
             cursor = next.first
         }
         return count
+    }
+
+    // MARK: Lines
+
+    var currentLine: HistoryLine? { lines.first { $0.isCurrent } }
+    var otherLines: [HistoryLine] { lines.filter { !$0.isCurrent } }
+
+    /// The user's name for the line: the one set nearest its tip.
+    func customName(of line: HistoryLine) -> String? {
+        for id in line.actions.reversed() {
+            if let name = names[id] { return name }
+        }
+        return nil
+    }
+
+    /// The user's name, else "Timeline" for the current line and "Branch
+    /// from …" (the action it leaves) for any other.
+    func title(of line: HistoryLine) -> String {
+        if let name = customName(of: line) { return name }
+        if line.isCurrent { return "Timeline" }
+        if let fork = action(line.forkFrom) { return "Branch from \(fork.title)" }
+        return "Branch from the Start"
+    }
+
+    /// When anything on the line last happened.
+    func latest(on line: HistoryLine) -> Date? {
+        line.actions.compactMap { action($0)?.timestamp }.max()
     }
 }
