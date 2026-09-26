@@ -3,12 +3,13 @@
 //  magic-hat
 //
 //  Undo and redo for the ledger, for the History tab (and any other screen
-//  that wants an Undo button): what the next Undo and Redo would do, and
-//  the doing. The timeline comes from the ledger through CollectionStore
-//  (HistoryTimeline); a replay runs on CardMetaWriter's context, off the
-//  main thread — undoing an import is thousands of rows — and each step is
-//  its own ledger action, so a multi-step undo that fails midway leaves
-//  the collection at a step boundary, never between two.
+//  that wants an Undo button): what the next Undo and Redo would do, the
+//  branches Redo can take at a fork, and the doing. The timeline comes
+//  from the ledger through CollectionStore (HistoryTimeline); a replay
+//  runs on CardMetaWriter's context, off the main thread — undoing an
+//  import is thousands of rows — and each step is its own ledger action,
+//  so a multi-step jump that fails midway leaves the collection at a step
+//  boundary, never between two.
 //
 //  One per container, kept while the app runs, like the stores.
 //
@@ -48,6 +49,7 @@ final class UndoController {
 
     /// "Undo Removed Cards", or nil when there is nothing to undo.
     var undoTitle: String? { log.nextUndo.map { "Undo \($0.title)" } }
+    /// The default Redo — the most recently taken branch at a fork.
     var redoTitle: String? { log.nextRedo.map { "Redo \($0.title)" } }
 
     /// Reads the ledger again. Views call it when a tracker moves.
@@ -57,35 +59,54 @@ final class UndoController {
         isLoaded = true
     }
 
-    /// Reverses the most recent applied action.
+    /// Reverses the head.
     func undo() async {
-        await perform(log.timeline.nextUndo.map { [$0] } ?? [], .undo)
+        await perform(undos: log.timeline.nextUndo.map { [$0] } ?? [], redos: [])
     }
 
-    /// Re-applies the most recently undone action.
+    /// Re-applies the head's most recently taken child.
     func redo() async {
-        await perform(log.timeline.nextRedo.map { [$0] } ?? [], .redo)
+        await perform(undos: [], redos: log.timeline.nextRedo.map { [$0] } ?? [])
+    }
+
+    /// Re-applies one particular child of the head — the other branch at a
+    /// fork.
+    func redo(branch actionID: UUID) async {
+        guard log.timeline.redoOptions.contains(actionID) else { return }
+        await perform(undos: [], redos: [actionID])
     }
 
     /// Reverses every applied action back to and including `actionID`.
     func undo(through actionID: UUID) async {
-        await perform(log.timeline.undoPath(through: actionID), .undo)
+        await perform(undos: log.timeline.undoPath(through: actionID), redos: [])
     }
 
-    /// Re-applies undone actions forward to and including `actionID`.
+    /// Re-applies undone actions forward to and including `actionID`, when
+    /// it lies below the head.
     func redo(through actionID: UUID) async {
-        await perform(log.timeline.redoPath(through: actionID), .redo)
+        await perform(undos: [], redos: log.timeline.redoPath(through: actionID))
     }
 
-    private func perform(_ actionIDs: [UUID], _ direction: LedgerReplay.Direction) async {
-        guard !actionIDs.isEmpty, !isBusy else { return }
+    /// Makes `actionID` the head from wherever the head is: undo back to
+    /// the fork the two share, then redo down the other branch.
+    func jump(to actionID: UUID) async {
+        let path = log.timeline.jumpPath(to: actionID)
+        await perform(undos: path.undos, redos: path.redos)
+    }
+
+    private func perform(undos: [UUID], redos: [UUID]) async {
+        guard !undos.isEmpty || !redos.isEmpty, !isBusy else { return }
         isBusy = true
         defer { isBusy = false }
         let writer = CardMetaWriter.shared(for: container)
         var done = 0
         do {
-            for id in actionIDs {
-                try await writer.runReplay(actionID: id, direction: direction)
+            for id in undos {
+                try await writer.runReplay(actionID: id, direction: .undo)
+                done += 1
+            }
+            for id in redos {
+                try await writer.runReplay(actionID: id, direction: .redo)
                 done += 1
             }
         } catch {

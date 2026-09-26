@@ -1104,9 +1104,12 @@ work — deck and mark actions will join the toolbar when they exist.
 
 The History tab lists the ledger's user actions newest first and offers
 Undo / Redo in the bar (Notes' and Freeform's placement; ⌘Z / ⇧⌘Z on a
-keyboard; a row's context menu jumps several steps: "Undo to Here").
-Any number of steps either way. Built in three layers so another kind of
-record can join later:
+keyboard). Any number of steps either way. At a fork Redo is a menu with
+a primary action — a tap takes the most recently taken branch, a long
+press lists every branch with its length — and a row's context menu
+jumps several steps: "Undo Through Here", "Redo Through Here", or
+"Switch to This Branch" (n back, m forward). Built in three layers so
+another kind of record can join later:
 
 - **The ledger is never rewritten.** An undo is a new action of kind
   `.undo` whose records carry the negated deltas and `undoesActionID`;
@@ -1115,16 +1118,23 @@ record can join later:
   actions are not rows in History — they change the *state* of the
   action they name.
 - **`HistoryTimeline` (Models) derives the state from the ledger** —
-  pure, no SwiftData, exhaustively tested. Replaying the actions in
-  order: a user action appends to `applied` and *clears* `redoable`
-  (superseding whatever was there); `.undo` moves the latest applied
-  action to `redoable`; `.redo` moves the latest undone back. That is
-  UndoManager's rule and the crucial case: undo several times, then do
-  something new, and the undone actions are `superseded` — listed as
-  Undone, dimmed, never redoable — because the timeline forked. Stray
-  undo/redo records that don't target the top of a stack are ignored,
-  not obeyed. Ordering is by timestamp with an id tie-break, so it is
-  deterministic whatever order the rows come in.
+  pure, no SwiftData, exhaustively tested — and it is a **tree**, not a
+  line. Replaying the actions in order: a user action's `parent` is the
+  `head` (the applied action) at that moment, and it becomes the head;
+  `.undo` moves the head to its parent; `.redo` moves it to one of its
+  children. Applied = the path from the first action to the head;
+  everything else is `undone`. The crucial case: undo several times,
+  then do something new, and the head grows a *second* child — a fork.
+  Nothing is superseded: undo back to the fork and `redoOptions` lists
+  both children (`lastVisit` puts the branch taken most recently first,
+  which is what a plain Redo takes), so the original branch can be
+  redone to its end, or the new one, and `jumpPath(to:)` gets anywhere
+  (undo to the shared action, redo down). A replay is always consistent:
+  an action can only be redone when its parent is the head, which is the
+  exact state it was recorded against. Stray undo/redo records that
+  don't target the head (or a child of it) are ignored, not obeyed.
+  Ordering is by timestamp with an id tie-break, so it is deterministic
+  whatever order the rows come in.
 - **`LedgerReplay` (Controllers/History) does the replay** on whatever
   context it is given (CardMetaWriter's, via `runReplay`, so undoing an
   import is off the main thread): each record's delta, negated or not,
@@ -1144,11 +1154,14 @@ existed, which carry the display label "Deck: Name" instead of the deck's
 key (`DeckBuilder` now records `deck:<uuid>`; History labels it). Deck
 *list* edits write no ledger and are not undoable — a list is a wish.
 
-Tests: `HistoryTimelineTests` (the rules, including the fork),
-`UndoRedoTests` (rows return intact, builds and disassemblies undo and
-redo with copies conserved, an import undoes to empty and back, a
-deleted collection returns, the refusals), `HistoryFlowTests` (UI: undo
-a removal, redo it, undo again, add something, nothing to redo).
+Tests: `HistoryTimelineTests` (the rules; ten actions, undo five, two
+new, undo two, redo the original five; forks at the root; jump paths),
+`UndoRedoTests` (rows return intact, the fork with both branches reached
+against the store, builds and disassemblies undo and redo with copies
+conserved, an import undoes to empty and back, a deleted collection
+returns, the refusals), `HistoryFlowTests` (UI: undo a removal, redo it,
+undo again, add something, nothing to redo from there; undo that and
+Redo is back with both branches marked).
 
 ## Data flow notes
 

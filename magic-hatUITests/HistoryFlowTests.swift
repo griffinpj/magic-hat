@@ -88,8 +88,23 @@ final class HistoryFlowTests: XCTestCase {
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(undo.waitForExistence(timeout: 5))
         XCTAssertTrue(undo.isEnabled, "the add can be undone")
-        XCTAssertFalse(redo.isEnabled, "a new action after an undo leaves nothing to redo")
-        XCTAssertTrue(app.staticTexts["history-undone"].firstMatch.exists, "the superseded row still reads Undone")
+        XCTAssertFalse(redo.isEnabled, "a new action after an undo leaves nothing to redo from here")
+        XCTAssertTrue(app.staticTexts["history-undone"].firstMatch.exists, "the other branch still reads Undone")
+
+        // Back to the fork: both branches are ways forward again.
+        undo.tap()
+        XCTAssertTrue(redo.waitForEnabled(timeout: 10), "at the fork, Redo is back")
+        XCTAssertTrue(app.staticTexts["Undone · branch"].firstMatch.waitForExistence(timeout: 5), "the branch starts are marked")
+        shot(app, "history-fork")
+        redo.press(forDuration: 1)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-redo-branch-'")).firstMatch.waitForExistence(timeout: 5), "a long press on Redo lists the branches")
+        shot(app, "history-fork-menu")
+    }
+
+    /// A PNG under `TEST_RUNNER_UITEST_SHOT_DIR` when set, as the tour writes them.
+    private func shot(_ app: XCUIApplication, _ name: String) {
+        guard let dir = ProcessInfo.processInfo.environment["UITEST_SHOT_DIR"], !dir.isEmpty else { return }
+        try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
     }
 }
 
