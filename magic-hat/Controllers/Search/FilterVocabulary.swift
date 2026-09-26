@@ -122,6 +122,8 @@ final class FilterVocabulary {
     }
 }
 
-extension ScryfallSet {
+// Read inside the detached fold above: opted out of the file's main-actor
+// default so a plain value type's property is usable off the main actor.
+nonisolated extension ScryfallSet {
     var displayName: String { name ?? code.uppercased() }
 }
