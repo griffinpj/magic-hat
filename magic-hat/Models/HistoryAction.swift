@@ -158,13 +158,33 @@ nonisolated struct HistoryLog: Hashable, Sendable {
         return nil
     }
 
-    /// The user's name, else "Timeline" for the current line and "Branch
-    /// from …" (the action it leaves) for any other.
+    /// The user's name, else "Timeline" for the current line and, for any
+    /// other, what it starts with ("Removed Sol Ring and 2 more"). Where
+    /// it hangs is the junction row's job, not the name's.
     func title(of line: HistoryLine) -> String {
         if let name = customName(of: line) { return name }
         if line.isCurrent { return "Timeline" }
-        if let fork = action(line.forkFrom) { return "Branch from \(fork.title)" }
-        return "Branch from the Start"
+        guard let first = action(line.id) else { return "Branch" }
+        let more = line.actions.count - 1
+        return more == 0 ? first.title : "\(first.title) and \(more) more"
+    }
+
+    /// The line an action is on.
+    func line(containing actionID: UUID?) -> HistoryLine? {
+        guard let actionID else { return nil }
+        return lines.first { $0.actions.contains(actionID) }
+    }
+
+    /// The lines that split off right after `actionID`.
+    func branches(from actionID: UUID) -> [HistoryLine] {
+        lines.filter { $0.forkFrom == actionID }
+    }
+
+    /// What switching to the line does: actions undone back to the fork,
+    /// actions redone up the line.
+    func switchCost(of line: HistoryLine) -> (back: Int, forward: Int) {
+        let path = timeline.jumpPath(to: line.tip)
+        return (path.undos.count, path.redos.count)
     }
 
     /// When anything on the line last happened.

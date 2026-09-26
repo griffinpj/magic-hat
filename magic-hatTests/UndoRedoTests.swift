@@ -140,7 +140,9 @@ struct UndoRedoTests {
         await undo.refresh()
         #expect(undo.log.lines.count == 2)
         let other = try #require(undo.log.otherLines.first)
-        #expect(undo.log.title(of: other) == "Branch from Added Card 1")
+        #expect(undo.log.title(of: other) == "Added Card 2", "named for what it starts with")
+        #expect(other.forkFrom == undo.log.actions.first { $0.title == "Added Card 1" }?.actionID)
+        #expect(undo.log.switchCost(of: other) == (1, 1))
         #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "Timeline")
 
         await undo.rename(other, to: "  Before the trade ")
@@ -152,7 +154,7 @@ struct UndoRedoTests {
         await undo.switchTo(named)
         #expect(try rowCount(in: "Main", container) == 3 && (try row("n1", in: "Main", container)) == nil)
         #expect(undo.log.title(of: try #require(undo.log.currentLine)) == "Before the trade")
-        #expect(undo.log.title(of: try #require(undo.log.otherLines.first)) == "Branch from Added Card 1")
+        #expect(undo.log.title(of: try #require(undo.log.otherLines.first)) == "Added New One")
 
         // New work on top keeps the name; renaming again replaces it; empty clears it.
         try add("n2", "New Two", to: "Main", context: ctx)

@@ -17,9 +17,9 @@
 //  menu. A rail in the gutter (HistoryRail) draws each branch as a line
 //  with a dot per action, so a fork reads at a glance without a graph
 //  mode; a lane graph over a mostly linear history is noise, and no
-//  toggle means one list to keep right. At a fork the Redo button asks
-//  which branch as an action sheet (Mail's reply button: one control
-//  whose action is ambiguous asks) — no hidden gesture. Any row pushes
+//  toggle means one list to keep right. At a fork the Redo button opens
+//  a menu of the branches on tap (Mail's reply arrow: one control,
+//  several outcomes, a menu on tap) — no hidden gesture, no sheet. Any row pushes
 //  its detail: the cards it changed, and the one button that undoes,
 //  redoes or switches to it.
 //
@@ -37,7 +37,6 @@ struct HistoryView: View {
     private var tracker: CollectionChangeTracker { .shared }
     private var deckTracker: DeckChangeTracker { .shared }
     private var undo: UndoController { .shared(for: modelContext.container) }
-    @State private var showsBranches = false
     @State private var renaming: HistoryLine?
     @State private var renameText = ""
 
@@ -60,15 +59,6 @@ struct HistoryView: View {
             .navigationTitle("History")
             .navigationDestination(for: UUID.self) { HistoryDetailView(actionID: $0) }
             .toolbar { toolbar }
-            .confirmationDialog("Redo Which Branch?", isPresented: $showsBranches, titleVisibility: .visible) {
-                ForEach(undo.log.redoOptions) { option in
-                    Button(branchLabel(option)) {
-                        Task { await undo.redo(branch: option.actionID) }
-                    }
-                }
-            } message: {
-                Text("Your history splits here. The branch you don't take stays, and you can switch to it below.")
-            }
             .task(id: "\(tracker.revision)|\(deckTracker.revision)") { await undo.refresh() }
             .sensoryFeedback(.success, trigger: undo.completed)
             .alert("Couldn't Change That", isPresented: Binding(get: { undo.error != nil }, set: { if !$0 { undo.error = nil } })) {
@@ -82,23 +72,22 @@ struct HistoryView: View {
     // MARK: List
 
     private var list: some View {
-        List {
-            if undo.isBusy {
-                HStack(spacing: 12) {
-                    ProgressView()
-                    Text("Working…").foregroundStyle(.secondary)
+        ScrollViewReader { proxy in
+            List {
+                if let line = undo.log.currentLine {
+                    lineSection(line, proxy: proxy)
                 }
-                .accessibilityIdentifier("history-busy")
-            }
-            if let line = undo.log.currentLine {
-                lineSection(line)
-            }
-            ForEach(undo.log.otherLines) { line in
-                lineSection(line)
+                ForEach(undo.log.otherLines) { line in
+                    lineSection(line, proxy: proxy)
+                }
             }
         }
         .listStyle(.insetGrouped)
         .animation(.default, value: undo.log.actions)
+        .overlay(alignment: .bottom) {
+            if undo.isBusy { busyPill }
+        }
+        .animation(.default, value: undo.isBusy)
         .alert("Rename Branch", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { line in
             TextField("Name", text: $renameText)
             Button("Save") {
@@ -111,28 +100,81 @@ struct HistoryView: View {
         }
     }
 
+    /// Floats over the list while a replay runs, so nothing shifts.
+    private var busyPill: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Working…")
+                .font(.subheadline.weight(.medium))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.bottom, 12)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("history-busy")
+    }
+
     /// One branch: its actions newest first on a rail, under a header
-    /// that names it and, for another branch, offers Switch.
-    @ViewBuilder private func lineSection(_ line: HistoryLine) -> some View {
+    /// that names it and, for another branch, offers Switch; a row that a
+    /// branch leaves from carries a tag naming it (tap: the branch's
+    /// card), and another branch's card ends in a junction row saying
+    /// which action it splits from (tap: that row) and what Switch does.
+    @ViewBuilder private func lineSection(_ line: HistoryLine, proxy: ScrollViewProxy) -> some View {
         let rows = Array(line.actions.reversed())
         Section {
             ForEach(Array(rows.enumerated()), id: \.element) { index, id in
                 if let action = undo.log.action(id) {
+                    let branches = undo.log.branches(from: id)
                     NavigationLink(value: id) {
-                        HistoryRow(action: action, mark: mark(for: line, rows: rows, index: index), emphasized: line.isCurrent)
+                        HistoryRow(action: action, mark: mark(for: line, rows: rows, index: index, stub: !branches.isEmpty),
+                                   emphasized: line.isCurrent, branches: branches.map { undo.log.title(of: $0) }) { branchIndex in
+                            withAnimation { proxy.scrollTo("line-\(branches[branchIndex].id.uuidString)", anchor: .top) }
+                        }
                     }
+                    .id(id)
                     .contextMenu { menu(for: action) }
                     .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
                     .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
                     .accessibilityIdentifier("history-row-\(id.uuidString)")
                 }
             }
+            if !line.isCurrent {
+                let cost = undo.log.switchCost(of: line)
+                Button {
+                    withAnimation {
+                        if let fork = line.forkFrom {
+                            proxy.scrollTo(fork, anchor: .center)
+                        } else if let start = undo.log.currentLine?.actions.first {
+                            proxy.scrollTo(start, anchor: .bottom)
+                        }
+                    }
+                } label: {
+                    HistoryJunctionRow(origin: junctionText(for: line), cost: cost)
+                }
+                .buttonStyle(.plain)
+                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
+                .accessibilityIdentifier("history-junction-\(line.id.uuidString)")
+            }
         } header: {
             lineHeader(line)
+                .id("line-\(line.id.uuidString)")
         }
     }
 
-    private func mark(for line: HistoryLine, rows: [UUID], index: Int) -> RailMark {
+    /// "Splits from Added Sol Ring in Timeline", or "Splits from the start".
+    private func junctionText(for line: HistoryLine) -> String {
+        guard let fork = undo.log.action(line.forkFrom) else { return "Splits from the start" }
+        if let host = undo.log.line(containing: fork.actionID) {
+            return "Splits from \(fork.title) in \(undo.log.title(of: host))"
+        }
+        return "Splits from \(fork.title)"
+    }
+
+    private func mark(for line: HistoryLine, rows: [UUID], index: Int, stub: Bool) -> RailMark {
         let timeline = undo.log.timeline
         let id = rows[index]
         func stroke(newer: UUID) -> RailStroke {
@@ -143,10 +185,10 @@ struct HistoryView: View {
         if index < rows.count - 1 {
             below = stroke(newer: id)
         } else {
-            below = line.isCurrent ? nil : .solid   // runs off toward the action it forks from
+            below = line.isCurrent ? nil : .solid   // on into the junction row
         }
         let dot: RailDot = id == timeline.head ? .head : (timeline.state(of: id) == .applied ? .applied : .undone)
-        return RailMark(above: above, below: below, dot: dot)
+        return RailMark(above: above, below: below, dot: dot, stub: stub)
     }
 
     @ViewBuilder private func lineHeader(_ line: HistoryLine) -> some View {
@@ -161,6 +203,7 @@ struct HistoryView: View {
             }
             Spacer()
             if !line.isCurrent {
+                let cost = undo.log.switchCost(of: line)
                 Button("Switch") {
                     Task { await undo.switchTo(line) }
                 }
@@ -169,6 +212,8 @@ struct HistoryView: View {
                 .controlSize(.small)
                 .font(.subheadline.weight(.semibold))
                 .disabled(undo.isBusy)
+                .help("Undo \(cost.back) and redo \(cost.forward)")
+                .accessibilityLabel("Switch to this branch: \(cost.back) back, \(cost.forward) forward")
                 .accessibilityIdentifier("history-switch-\(line.id.uuidString)")
             }
             Menu {
@@ -211,9 +256,9 @@ struct HistoryView: View {
         return Text(count)
     }
 
-    private func branchLabel(_ option: HistoryAction) -> String {
+    private func branchLength(_ option: HistoryAction) -> String {
         let length = undo.log.branchLength(from: option.actionID)
-        return "\(option.title) (\(length == 1 ? "1 action" : "\(length) actions"))"
+        return length == 1 ? "1 action" : "\(length) actions"
     }
 
     // MARK: Toolbar
@@ -237,23 +282,42 @@ struct HistoryView: View {
         }
     }
 
-    /// Redo: at a fork it asks which branch (an action sheet) rather than
-    /// guessing; otherwise it redoes.
-    private var redoItem: some View {
-        Button {
-            if undo.log.timeline.isFork {
-                showsBranches = true
-            } else {
-                Task { await undo.redo() }
+    /// Redo: a button, except at a fork, where a tap opens a menu of the
+    /// branches (Mail's reply arrow: one control, several outcomes, a menu
+    /// on tap) rather than guessing. No long press, no sheet.
+    @ViewBuilder private var redoItem: some View {
+        if undo.log.timeline.isFork {
+            Menu {
+                Section("Redo which branch?") {
+                    ForEach(undo.log.redoOptions) { option in
+                        Button {
+                            Task { await undo.redo(branch: option.actionID) }
+                        } label: {
+                            Text(option.title)
+                            Text(branchLength(option))
+                            Image(systemName: "arrow.triangle.branch")
+                        }
+                    }
+                }
+            } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
             }
-        } label: {
-            Label("Redo", systemImage: "arrow.uturn.forward")
+            .disabled(!undo.canRedo)
+            .help("Redo…")
+            .accessibilityLabel("Redo, choose a branch")
+            .accessibilityIdentifier("history-redo")
+        } else {
+            Button {
+                Task { await undo.redo() }
+            } label: {
+                Label("Redo", systemImage: "arrow.uturn.forward")
+            }
+            .disabled(!undo.canRedo)
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .help(undo.redoTitle ?? "Redo")
+            .accessibilityLabel(undo.redoTitle ?? "Redo")
+            .accessibilityIdentifier("history-redo")
         }
-        .disabled(!undo.canRedo)
-        .keyboardShortcut("z", modifiers: [.command, .shift])
-        .help(undo.log.timeline.isFork ? "Redo…" : (undo.redoTitle ?? "Redo"))
-        .accessibilityLabel(undo.log.timeline.isFork ? "Redo, choose a branch" : (undo.redoTitle ?? "Redo"))
-        .accessibilityIdentifier("history-redo")
     }
 
     /// Jumps: several steps at once, back through an applied action,
@@ -300,6 +364,9 @@ private struct HistoryRow: View {
     let action: HistoryAction
     let mark: RailMark
     let emphasized: Bool
+    /// Names of the branches that split off right after this action.
+    var branches: [String] = []
+    var onBranchTap: (Int) -> Void = { _ in }
 
     private var icon: String {
         switch action.action {
@@ -320,15 +387,56 @@ private struct HistoryRow: View {
                 .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(action.title).font(.body.weight(.medium))
-                Text(action.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(action.timestamp, format: .dateTime.day().month().year().hour().minute())
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(action.title).font(.body.weight(.medium))
+                    Text(action.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(action.timestamp, format: .dateTime.day().month().year().hour().minute())
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                // One element for the text; the branch tags stay their own,
+                // so a tag is a button to VoiceOver and the tests, not
+                // folded into the row.
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(action.isApplied ? "" : "Undone")
+
+                // Where a branch leaves: under the text, beside the stub
+                // peeling off the rail, one tag per branch.
+                if !branches.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(Array(branches.prefix(2).enumerated()), id: \.offset) { index, name in
+                            Button {
+                                onBranchTap(index)
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.triangle.branch")
+                                    Text(name)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Branch \(name)")
+                            .accessibilityIdentifier("history-branch-tag")
+                        }
+                        if branches.count > 2 {
+                            Text("+\(branches.count - 2) more")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.top, 3)
+                }
             }
+            .layoutPriority(1)
 
             Spacer()
 
@@ -360,8 +468,40 @@ private struct HistoryRow: View {
                 .frame(width: 20)
         }
         .opacity(action.isApplied ? 1 : 0.6)
+    }
+}
+
+/// The foot of another branch's card: the rail runs into a small dot and
+/// the text says which action the branch splits from and what Switch
+/// would do. Tapping it scrolls to that action.
+private struct HistoryJunctionRow: View {
+    let origin: String
+    let cost: (back: Int, forward: Int)
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Color.clear.frame(width: 20, height: 1)
+            Image(systemName: "arrow.triangle.branch")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(origin)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("Switch: \(cost.back) back, \(cost.forward) forward")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 8)
+        .background(alignment: .leading) {
+            HistoryRail(mark: RailMark(above: .solid, below: nil, dot: .junction), emphasized: false)
+                .frame(width: 20)
+        }
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityValue(action.isApplied ? "" : "Undone")
     }
 }
 

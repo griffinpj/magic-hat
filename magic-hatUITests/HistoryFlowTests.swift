@@ -94,7 +94,7 @@ final class HistoryFlowTests: XCTestCase {
         XCTAssertFalse(redo.isEnabled, "a new action after an undo leaves nothing to redo from here")
         let switches = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-switch-'"))
         XCTAssertTrue(switches.firstMatch.waitForExistence(timeout: 5), "the other branch is a section with Switch")
-        XCTAssertTrue(app.staticTexts["Branch from the Start"].firstMatch.exists, "named for where it forks")
+        XCTAssertTrue(app.staticTexts["Splits from the start"].firstMatch.exists, "the junction row says where it hangs")
         XCTAssertTrue(app.staticTexts["Added Card 0"].firstMatch.exists && app.staticTexts["Removed Card 1"].firstMatch.exists,
                       "rows are named for their cards")
         shot(app, "history-branches")
@@ -106,16 +106,16 @@ final class HistoryFlowTests: XCTestCase {
         shot(app, "history-fork")
         redo.tap()
         let original = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Removed Card 1'")).firstMatch
-        XCTAssertTrue(original.waitForExistence(timeout: 5), "Redo asks which branch")
-        shot(app, "history-fork-sheet")
+        XCTAssertTrue(original.waitForExistence(timeout: 5), "Redo opens a menu of the branches")
+        shot(app, "history-fork-menu")
         original.tap()
-        XCTAssertTrue(app.staticTexts["history-busy"].waitForNonExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["history-busy"].waitForNonExistence(timeout: 10))
         app.tabBars.buttons["Collection"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10), "the original branch again: the removal stands")
 
         // Name the other branch from its header's menu.
         app.tabBars.buttons["History"].tap()
-        XCTAssertTrue(app.staticTexts["Branch from the Start"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Splits from the start"].firstMatch.waitForExistence(timeout: 5))
         let lineMenu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-line-menu-'")).element(boundBy: 1)
         XCTAssertTrue(lineMenu.waitForExistence(timeout: 5), "the other branch's header has a menu")
         lineMenu.tap()
@@ -164,6 +164,28 @@ final class HistoryFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Added Card 10"].firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Side quest"].firstMatch.exists, "new work on the branch keeps its name")
         shot(app, "history-two-rows")
+
+        // A fork off a row: undo the add, add another. The row it splits
+        // from wears the branch's tag; the branch's card says where it hangs.
+        undo.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["history-busy"].waitForNonExistence(timeout: 10))
+        app.tabBars.buttons["Collection"].tap()
+        app.staticTexts["Card 100"].firstMatch.tap()
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        XCTAssertTrue(addConfirm.waitForExistence(timeout: 10))
+        addConfirm.tap()
+        app.buttons["add-card-done"].tap()
+        app.buttons["viewer-close"].tap()
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.staticTexts["Added Card 100"].firstMatch.waitForExistence(timeout: 10))
+        let tag = app.buttons["history-branch-tag"].firstMatch
+        XCTAssertTrue(tag.waitForExistence(timeout: 5), "the fork row carries the branch's tag")
+        XCTAssertTrue(tag.label.contains("Added Card 10"), "named for what the branch starts with: \(tag.label)")
+        XCTAssertTrue(app.staticTexts["Splits from Added Card 0 in Side quest"].firstMatch.exists, "the branch's junction names the fork and its line")
+        XCTAssertTrue(app.staticTexts["Switch: 1 back, 1 forward"].firstMatch.exists, "and what Switch would do")
+        shot(app, "history-fork-off-row")
+        tag.tap()
     }
 
     /// A PNG under `TEST_RUNNER_UITEST_SHOT_DIR` when set, as the tour writes them.

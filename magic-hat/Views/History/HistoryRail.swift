@@ -17,7 +17,11 @@ import SwiftUI
 import UIKit
 
 nonisolated enum RailStroke: Hashable, Sendable { case solid, dashed }
-nonisolated enum RailDot: Hashable, Sendable { case applied, undone, head }
+nonisolated enum RailDot: Hashable, Sendable {
+    case applied, undone, head
+    /// The foot of a branch's card: where it joins the action it splits from.
+    case junction
+}
 
 nonisolated struct RailMark: Hashable, Sendable {
     /// Toward the newer row above; nil at the top of a card.
@@ -25,6 +29,9 @@ nonisolated struct RailMark: Hashable, Sendable {
     /// Toward the older row below; nil at the bottom of the history.
     var below: RailStroke?
     var dot: RailDot
+    /// A branch leaves here: a short curve peels off the dot toward the
+    /// cards below, where that branch is listed.
+    var stub = false
 }
 
 struct HistoryRail: View {
@@ -47,8 +54,19 @@ struct HistoryRail: View {
                 context.stroke(path, with: .color(color.opacity(style == .dashed ? 0.6 : 1)),
                                style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: dash))
             }
-            if let above = mark.above { stroke(above, from: 0, to: y - radius - 2) }
+            if let above = mark.above { stroke(above, from: 0, to: y - radius - (mark.dot == .junction ? 0.5 : 2)) }
             if let below = mark.below { stroke(below, from: y + radius + 2, to: size.height) }
+
+            if mark.stub {
+                let branch = Color(uiColor: .secondaryLabel)
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: y + radius))
+                path.addQuadCurve(to: CGPoint(x: x + 13, y: y + 16), control: CGPoint(x: x, y: y + 16))
+                context.stroke(path, with: .color(branch), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                let end = CGRect(x: x + 13 - 2.5, y: y + 16 - 2.5, width: 5, height: 5)
+                context.fill(Path(ellipseIn: end), with: .color(Color(uiColor: .secondarySystemGroupedBackground)))
+                context.stroke(Path(ellipseIn: end), with: .color(branch), lineWidth: 1.5)
+            }
 
             let dotRect = CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
             switch mark.dot {
@@ -60,6 +78,10 @@ struct HistoryRail: View {
             case .head:
                 context.fill(Path(ellipseIn: dotRect), with: .color(color))
                 context.stroke(Path(ellipseIn: dotRect.insetBy(dx: -3.5, dy: -3.5)), with: .color(color.opacity(0.5)), lineWidth: 1.5)
+            case .junction:
+                let small = dotRect.insetBy(dx: 1.5, dy: 1.5)
+                context.fill(Path(ellipseIn: small), with: .color(Color(uiColor: .secondarySystemGroupedBackground)))
+                context.stroke(Path(ellipseIn: small), with: .color(color), lineWidth: 1.5)
             }
         }
         .accessibilityHidden(true)
