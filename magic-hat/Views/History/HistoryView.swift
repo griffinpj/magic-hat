@@ -11,11 +11,15 @@
 //
 //  Undone actions stay listed, dimmed and marked. The timeline is a tree
 //  (see HistoryTimeline): undo back to where a new action forked it and
-//  Redo offers both ways forward — a tap takes the most recent branch, a
-//  long press lists them — and any row's menu can jump straight to it,
-//  undoing back to the fork and redoing down the other side. The ledger's
-//  own `.undo` / `.redo` actions are not rows — they are what moves the
-//  marks.
+//  both ways forward are offered — as a section at the top of the list,
+//  one row per branch with its name, length and age (a pending choice
+//  lives in the content, the way Photos surfaces duplicates to review),
+//  and from the Redo button as an action sheet (Mail's reply button: one
+//  button whose action is ambiguous asks). No hidden gesture. Any row
+//  pushes its detail — the cards it changed, and the one button that
+//  undoes, redoes or switches to it — and its context menu does the same
+//  in place. The ledger's own `.undo` / `.redo` actions are not rows —
+//  they are what moves the marks.
 //
 //  No @Query: the ledger is a large table, and a query over it re-ran on
 //  the main thread after every background save (each hydration batch).
@@ -31,6 +35,7 @@ struct HistoryView: View {
     private var tracker: CollectionChangeTracker { .shared }
     private var deckTracker: DeckChangeTracker { .shared }
     private var undo: UndoController { .shared(for: modelContext.container) }
+    @State private var showsBranches = false
 
     var body: some View {
         NavigationStack {
@@ -49,7 +54,17 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("History")
+            .navigationDestination(for: UUID.self) { HistoryDetailView(actionID: $0) }
             .toolbar { toolbar }
+            .confirmationDialog("Redo Which Branch?", isPresented: $showsBranches, titleVisibility: .visible) {
+                ForEach(undo.log.redoOptions) { option in
+                    Button(branchLabel(option)) {
+                        Task { await undo.redo(branch: option.actionID) }
+                    }
+                }
+            } message: {
+                Text("Your history splits here. The branch you don't take stays, and you can come back to it.")
+            }
             .task(id: "\(tracker.revision)|\(deckTracker.revision)") { await undo.refresh() }
             .sensoryFeedback(.success, trigger: undo.completed)
             .alert("Couldn't Change That", isPresented: Binding(get: { undo.error != nil }, set: { if !$0 { undo.error = nil } })) {
@@ -69,13 +84,71 @@ struct HistoryView: View {
                 }
                 .accessibilityIdentifier("history-busy")
             }
+            if undo.log.timeline.isFork {
+                forkSection
+            }
             ForEach(undo.log.actions) { action in
-                HistoryRow(action: action, isBranchStart: undo.log.timeline.isFork && undo.log.timeline.redoOptions.contains(action.actionID))
-                    .contextMenu { menu(for: action) }
-                    .accessibilityIdentifier("history-row-\(action.actionID.uuidString)")
+                NavigationLink(value: action.actionID) {
+                    HistoryRow(action: action, isBranchStart: undo.log.timeline.isFork && undo.log.timeline.redoOptions.contains(action.actionID))
+                }
+                .contextMenu { menu(for: action) }
+                .accessibilityIdentifier("history-row-\(action.actionID.uuidString)")
             }
         }
         .animation(.default, value: undo.log.actions)
+    }
+
+    /// At a fork: the ways forward, one row each, the branch taken most
+    /// recently first. Tapping a row redoes that branch.
+    private var forkSection: some View {
+        Section {
+            ForEach(undo.log.redoOptions) { option in
+                Button {
+                    Task { await undo.redo(branch: option.actionID) }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(option.title)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(.primary)
+                            Text(option.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Text("\(lengthText(option)) · \(option.timestamp, format: .relative(presentation: .named))")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                        Text("Redo")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.tint)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 5)
+                            .background(.tint.opacity(0.15), in: Capsule())
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(undo.isBusy)
+                .accessibilityIdentifier("history-branch-\(option.actionID.uuidString)")
+            }
+        } header: {
+            Text("Your History Splits Here")
+        } footer: {
+            Text("Redo either branch. The other stays, and you can come back to it any time.")
+        }
+    }
+
+    private func lengthText(_ option: HistoryAction) -> String {
+        let length = undo.log.branchLength(from: option.actionID)
+        return length == 1 ? "1 action" : "\(length) actions"
+    }
+
+    private func branchLabel(_ option: HistoryAction) -> String {
+        "\(option.title) (\(lengthText(option)))"
     }
 
     /// Undo and Redo together at the trailing end: one glass group, the
@@ -97,43 +170,23 @@ struct HistoryView: View {
         }
     }
 
-    /// Redo: a plain button, except at a fork, where a tap takes the most
-    /// recently taken branch and a long press lists every branch — the
-    /// shape of Safari's tabs button and Notes' Undo.
-    @ViewBuilder private var redoItem: some View {
-        if undo.log.timeline.isFork {
-            Menu {
-                ForEach(undo.log.redoOptions) { option in
-                    Button {
-                        Task { await undo.redo(branch: option.actionID) }
-                    } label: {
-                        Text("Redo \(option.title)")
-                        let length = undo.log.branchLength(from: option.actionID)
-                        Text(length == 1 ? "1 action on this branch" : "\(length) actions on this branch")
-                    }
-                    .accessibilityIdentifier("history-redo-branch-\(option.actionID.uuidString)")
-                }
-            } label: {
-                Label("Redo", systemImage: "arrow.uturn.forward")
-            } primaryAction: {
+    /// Redo: at a fork it asks which branch (an action sheet) rather than
+    /// guessing; otherwise it redoes.
+    private var redoItem: some View {
+        Button {
+            if undo.log.timeline.isFork {
+                showsBranches = true
+            } else {
                 Task { await undo.redo() }
             }
-            .disabled(!undo.canRedo)
-            .help(undo.redoTitle ?? "Redo")
-            .accessibilityLabel(undo.redoTitle ?? "Redo")
-            .accessibilityIdentifier("history-redo")
-        } else {
-            Button {
-                Task { await undo.redo() }
-            } label: {
-                Label("Redo", systemImage: "arrow.uturn.forward")
-            }
-            .disabled(!undo.canRedo)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-            .help(undo.redoTitle ?? "Redo")
-            .accessibilityLabel(undo.redoTitle ?? "Redo")
-            .accessibilityIdentifier("history-redo")
+        } label: {
+            Label("Redo", systemImage: "arrow.uturn.forward")
         }
+        .disabled(!undo.canRedo)
+        .keyboardShortcut("z", modifiers: [.command, .shift])
+        .help(undo.log.timeline.isFork ? "Redo…" : (undo.redoTitle ?? "Redo"))
+        .accessibilityLabel(undo.log.timeline.isFork ? "Redo, choose a branch" : (undo.redoTitle ?? "Redo"))
+        .accessibilityIdentifier("history-redo")
     }
 
     /// Jumps: several steps at once, back through an applied action,
@@ -182,6 +235,8 @@ private struct HistoryRow: View {
         if isBranchStart { return "arrow.triangle.branch" }
         switch action.action {
         case .deckBuild, .deckDisassemble: return "rectangle.stack"
+        case .manualAdd: return "plus.circle"
+        case .manualRemove: return "minus.circle"
         case .undo: return "arrow.uturn.backward"
         case .redo: return "arrow.uturn.forward"
         default: return "square.and.arrow.down"
@@ -196,7 +251,7 @@ private struct HistoryRow: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(action.title).font(.body.weight(.medium))
-                Text(action.scopes.joined(separator: ", "))
+                Text(action.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

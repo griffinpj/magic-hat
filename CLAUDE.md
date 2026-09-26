@@ -1104,11 +1104,31 @@ work — deck and mark actions will join the toolbar when they exist.
 
 The History tab lists the ledger's user actions newest first and offers
 Undo / Redo in the bar (Notes' and Freeform's placement; ⌘Z / ⇧⌘Z on a
-keyboard). Any number of steps either way. At a fork Redo is a menu with
-a primary action — a tap takes the most recently taken branch, a long
-press lists every branch with its length — and a row's context menu
-jumps several steps: "Undo Through Here", "Redo Through Here", or
-"Switch to This Branch" (n back, m forward). Built in three layers so
+keyboard). Any number of steps either way. Rows are named for their
+cards — "Added Lightning Bolt", "Removed 3 Cards" with "Sol Ring,
+Counterspell and 1 more · Main" under it, "Built Atraxa · from Main",
+"Imported 3,846 Cards" — because at a fork two branches can both be
+"Added Cards" (`HistoryAction.title` / `detail`; the store keeps the
+three largest names, the printing count and the deck's name per
+action). At a fork there is **no hidden gesture**: the list leads with
+a "Your History Splits Here" section, one row per branch (name, detail,
+length, how long ago) with a Redo pill — a pending choice shown as
+content, the way Photos surfaces duplicates to review — and the Redo
+button presents an action sheet listing the branches (Mail's reply
+button: one control whose action is ambiguous asks). A long-press menu
+was tried first and dropped: nobody would find it. Any row pushes
+`HistoryDetailView`: what it did, when, Applied/Undone, copies in and
+out, then the cards it changed — grouped by collection, or for a build
+or disassembly by the *move* ("Main → Atraxa", each card once with its
+art, printing and count) — largest first, at most
+`HistoryDetail.visibleLimit` (40) per group with an "n more" footer, and
+a search field only when there is more than fits (an import is
+thousands; filtering runs off-main against a list held in an
+`@Observable` model, never a `@State` array). One prominent button in a
+bottom `safeAreaBar` does the one thing that makes sense for that row —
+Undo / Undo Through Here (n back), Redo / Redo Through Here, or Switch
+to This Branch (n back, m forward) — and flips as the replay lands. The
+row's context menu offers the same in place. Built in three layers so
 another kind of record can join later:
 
 - **The ledger is never rewritten.** An undo is a new action of kind
@@ -1159,9 +1179,13 @@ new, undo two, redo the original five; forks at the root; jump paths),
 `UndoRedoTests` (rows return intact, the fork with both branches reached
 against the store, builds and disassemblies undo and redo with copies
 conserved, an import undoes to empty and back, a deleted collection
-returns, the refusals), `HistoryFlowTests` (UI: undo a removal, redo it,
-undo again, add something, nothing to redo from there; undo that and
-Redo is back with both branches marked).
+returns, the refusals), `HistoryDetailTests` (titles and detail lines,
+`historyDetail` merging printings and grouping by collection, a build
+as moves, the cap and the filter, an import named by its size),
+`HistoryFlowTests` (UI: undo a removal, redo it, undo again, add
+something, nothing to redo from there; undo that and the fork section
+and Redo's sheet list both branches; take the original; the other
+branch's detail screen switches back to it).
 
 ## Data flow notes
 
