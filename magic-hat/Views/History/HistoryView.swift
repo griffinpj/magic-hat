@@ -436,20 +436,31 @@ private struct HistoryRow: View {
                     .padding(.top, 3)
                 }
             }
-            .layoutPriority(1)
 
-            Spacer()
+            Spacer(minLength: 8)
 
+            // Its own width, always: squeezed, "+98" wrapped a digit per
+            // line under a long detail line. The text truncates instead.
             VStack(alignment: .trailing, spacing: 2) {
-                if action.added > 0 {
-                    Text("+\(action.added)")
+                if action.action == .deckBuild || action.action == .deckDisassemble {
+                    // Copies moved, not added or removed.
+                    Text("\(max(action.added, action.removed))")
                         .font(.callout.weight(.semibold))
-                        .foregroundStyle(action.isApplied ? .green : .secondary)
-                }
-                if action.removed > 0 {
-                    Text("−\(action.removed)")
-                        .font(.callout.weight(.semibold))
-                        .foregroundStyle(action.isApplied ? .red : .secondary)
+                        .foregroundStyle(action.isApplied ? .primary : .secondary)
+                    Text("moved")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    if action.added > 0 {
+                        Text("+\(action.added)")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(action.isApplied ? .green : .secondary)
+                    }
+                    if action.removed > 0 {
+                        Text("−\(action.removed)")
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(action.isApplied ? .red : .secondary)
+                    }
                 }
                 if !action.isApplied, emphasized {
                     Text("Undone")
@@ -461,6 +472,8 @@ private struct HistoryRow: View {
                         .accessibilityIdentifier("history-undone")
                 }
             }
+            .monospacedDigit()
+            .fixedSize()
         }
         .padding(.vertical, 12)
         .background(alignment: .leading) {

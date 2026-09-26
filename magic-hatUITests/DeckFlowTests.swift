@@ -137,6 +137,12 @@ final class DeckFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Test Collection"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'deck:'")).firstMatch.exists,
                        "no deck: collection listed")
+        // History reads the build as copies moved, not added and removed;
+        // undone, the row keeps its shape.
+        app.tabBars.buttons["History"].tap()
+        XCTAssertTrue(app.staticTexts["Built UI Deck"].firstMatch.waitForExistence(timeout: 10), "the build is a history row")
+        XCTAssertTrue(app.staticTexts["moved"].firstMatch.exists)
+        shot("history-after-build")
         app.tabBars.buttons["Decks"].tap()
         XCTAssertTrue(app.navigationBars["UI Deck"].waitForExistence(timeout: 5))
 
