@@ -157,29 +157,47 @@ actor CollectionStore: ModelActor {
         )
     }
 
-    /// The audit ledger grouped by action, newest first. The ledger grows
-    /// with every import; a @Query over it re-fetched the whole table on
-    /// the main thread after every background save.
-    func history() throws -> [HistoryAction] {
+    /// The audit ledger grouped by action, newest first, each user action
+    /// with where it stands in the undo/redo timeline (HistoryTimeline). The
+    /// ledger grows with every import; a @Query over it re-fetched the
+    /// whole table on the main thread after every background save.
+    func history() throws -> HistoryLog {
         var descriptor = FetchDescriptor<AuditRecord>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
-        descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.quantityDelta, \.collectionName, \.binderName, \.actionRaw]
+        descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.quantityDelta, \.collectionName, \.binderName, \.actionRaw, \.undoesActionID]
         let records = try modelContext.fetch(descriptor)
+        let labels = try deckLabels()
         let grouped = Dictionary(grouping: records, by: \.actionID)
-        return grouped.values.map { recs -> HistoryAction in
+        var steps: [HistoryStep] = []
+        steps.reserveCapacity(grouped.count)
+        for (id, recs) in grouped {
+            steps.append(HistoryStep(id: id, kind: recs[0].action, target: recs[0].undoesActionID,
+                                     timestamp: recs.map(\.timestamp).min() ?? .distantPast))
+        }
+        let timeline = HistoryTimeline.resolve(steps)
+        var actions: [HistoryAction] = []
+        for (id, recs) in grouped {
+            let kind = recs[0].action
+            guard kind.isUserAction else { continue }
             let added = recs.filter { $0.quantityDelta > 0 }.reduce(0) { $0 + $1.quantityDelta }
             let removed = recs.filter { $0.quantityDelta < 0 }.reduce(0) { $0 + $1.quantityDelta }
-            var scopes = Set(recs.map(\.collectionName))
+            var scopes = Set(recs.map { record -> String in
+                let name = record.collectionName
+                if let label = labels[name] { return label }
+                return Deck.isDeckCollection(name) ? "Deleted deck" : name
+            })
             scopes.formUnion(recs.map(\.binderName).filter { !$0.isEmpty })
-            return HistoryAction(
-                actionID: recs[0].actionID,
+            actions.append(HistoryAction(
+                actionID: id,
                 timestamp: recs.map(\.timestamp).max() ?? .distantPast,
                 added: added,
                 removed: -removed,
                 scopes: scopes.sorted(),
-                action: recs[0].action
-            )
+                action: kind,
+                state: timeline.state(of: id)
+            ))
         }
-        .sorted { $0.timestamp > $1.timestamp }
+        actions.sort { $0.timestamp > $1.timestamp }
+        return HistoryLog(actions: actions, timeline: timeline)
     }
 
     /// Per-collection totals and top cards (the Add sheet's picker). With

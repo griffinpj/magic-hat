@@ -84,6 +84,7 @@ enum LaunchPrewarm {
         "arrow.up.arrow.down",
         "arrow.up.right",
         "arrow.uturn.backward",
+        "arrow.uturn.forward",
         "bolt",
         "bookmark",
         "bookmark.badge.plus",

@@ -102,7 +102,8 @@ struct DeckBuilderTests {
         let builds = audits.filter { $0.action == .deckBuild }
         #expect(Set(builds.map(\.actionID)).count == 1, "one action")
         #expect(builds.reduce(0) { $0 + $1.quantityDelta } == 0, "every −n has its +n")
-        #expect(builds.filter { $0.quantityDelta > 0 }.allSatisfy { $0.collectionName == "Deck: Test Deck" })
+        #expect(builds.filter { $0.quantityDelta > 0 }.allSatisfy { $0.collectionName == w.deck.collectionKey },
+                "deck rows are recorded under the deck's key, which undo needs")
 
         // The snapshot sees it.
         let snap = try #require(try await DeckStore.shared(for: w.container).snapshot(deckID: w.deck.id))

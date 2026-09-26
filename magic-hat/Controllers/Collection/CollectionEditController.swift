@@ -70,7 +70,8 @@ enum CollectionEditController {
                 finish: entry.finish,
                 condition: entry.condition,
                 quantityDelta: -entry.quantity,
-                collectionEntryID: entry.id
+                collectionEntryID: entry.id,
+                snapshot: EntrySnapshot(entry)
             ))
             modelContext.delete(entry)
 
@@ -195,7 +196,7 @@ extension CollectionEditController {
             scryfallID: scryfallID, cardName: request.printing.name,
             collectionName: collectionName, finish: request.finish,
             condition: request.condition, quantityDelta: request.quantity,
-            collectionEntryID: entry.id
+            collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
         ))
         try modelContext.save()
         CollectionChangeTracker.shared.bump()
@@ -236,7 +237,7 @@ extension CollectionEditController {
                 actionID: actionID, action: .manualRemove, timestamp: now,
                 scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
                 finish: oldFinish, condition: oldCondition, quantityDelta: -oldQuantity,
-                collectionEntryID: entry.id
+                collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
             ))
             if let other = siblings.first(where: { $0.id != entry.id && $0.mergeKey == newKey }) {
                 other.quantity += entry.quantity
@@ -245,7 +246,7 @@ extension CollectionEditController {
                     actionID: actionID, action: .manualAdd, timestamp: now,
                     scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
                     finish: edits.finish, condition: edits.condition, quantityDelta: entry.quantity,
-                    collectionEntryID: other.id
+                    collectionEntryID: other.id, snapshot: EntrySnapshot(other)
                 ))
                 modelContext.delete(entry)
             } else {
@@ -253,7 +254,7 @@ extension CollectionEditController {
                     actionID: actionID, action: .manualAdd, timestamp: now,
                     scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
                     finish: edits.finish, condition: edits.condition, quantityDelta: entry.quantity,
-                    collectionEntryID: entry.id
+                    collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
                 ))
             }
         } else if entry.quantity != oldQuantity {
@@ -262,7 +263,7 @@ extension CollectionEditController {
                 actionID: actionID, action: delta > 0 ? .manualAdd : .manualRemove, timestamp: now,
                 scryfallID: entry.scryfallID, cardName: entry.name, collectionName: entry.collectionName,
                 finish: entry.finish, condition: entry.condition, quantityDelta: delta,
-                collectionEntryID: entry.id
+                collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
             ))
         }
 
@@ -279,7 +280,7 @@ extension CollectionEditController {
             actionID: UUID(), action: .manualRemove, timestamp: Date(),
             scryfallID: entry.scryfallID, cardName: entry.name, collectionName: entry.collectionName,
             finish: entry.finish, condition: entry.condition, quantityDelta: -entry.quantity,
-            collectionEntryID: entry.id
+            collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
         ))
         modelContext.delete(entry)
         try modelContext.save()

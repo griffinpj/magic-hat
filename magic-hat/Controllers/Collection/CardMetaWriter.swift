@@ -107,6 +107,12 @@ actor CardMetaWriter: ModelActor {
         try await CollectionEditController.delete(collectionName: collectionName, in: modelContext, progress: progress)
     }
 
+    /// Undo or redo of one ledger action, on this context (see LedgerReplay).
+    @discardableResult
+    func runReplay(actionID: UUID, direction: LedgerReplay.Direction) throws -> UUID {
+        try LedgerReplay.replay(actionID: actionID, direction: direction, in: modelContext)
+    }
+
     func markFailed(_ ids: Set<String>) throws {
         let idList = Array(ids)
         let descriptor = FetchDescriptor<CardMeta>(
