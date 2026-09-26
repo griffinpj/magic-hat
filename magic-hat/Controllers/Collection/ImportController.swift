@@ -103,7 +103,8 @@ enum ImportController {
                     finish: entry.finish,
                     condition: entry.condition,
                     quantityDelta: -entry.quantity,
-                    collectionEntryID: entry.id
+                    collectionEntryID: entry.id,
+                    snapshot: EntrySnapshot(entry)
                 ))
                 modelContext.delete(entry)
             }
@@ -205,7 +206,8 @@ enum ImportController {
                 finish: row.finish,
                 condition: row.condition,
                 quantityDelta: row.quantity,
-                collectionEntryID: entry.id
+                collectionEntryID: entry.id,
+                snapshot: EntrySnapshot(entry)
             ))
 
             processed += 1

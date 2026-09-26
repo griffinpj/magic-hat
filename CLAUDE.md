@@ -78,8 +78,9 @@ are cross-cutting, not owned by one feature.
     merging by `mergeKey`. Copies are conserved; `DeckBuilderTests` asserts
     it. Deleting a built deck disassembles first.
   - `AuditRecord` — append-only ledger. Records sharing an `actionID` come
-    from one user action; each has a signed `quantityDelta`. Backs the
-    History tab and future undo/redo.
+    from one user action; each has a signed `quantityDelta` and a
+    snapshot of the row it touched (`EntrySnapshot`). Backs the History
+    tab and undo/redo (see History, undo and redo).
   - `ManaBoxRow` — parsed CSV row (the on-disk import schema).
 - `Clients/` — API clients. Only describe endpoints + request/response
   shapes.
@@ -1098,6 +1099,56 @@ rows are edited from the Add sheet's owned list. Remove confirms, then the
 viewer steps to the neighbouring card (Photos after a delete) rather than
 closing; it closes only when nothing is left. Nothing is shown that doesn't
 work — deck and mark actions will join the toolbar when they exist.
+
+## History, undo and redo
+
+The History tab lists the ledger's user actions newest first and offers
+Undo / Redo in the bar (Notes' and Freeform's placement; ⌘Z / ⇧⌘Z on a
+keyboard; a row's context menu jumps several steps: "Undo to Here").
+Any number of steps either way. Built in three layers so another kind of
+record can join later:
+
+- **The ledger is never rewritten.** An undo is a new action of kind
+  `.undo` whose records carry the negated deltas and `undoesActionID`;
+  a redo is `.redo` with the original deltas. The ledger's sum is always
+  the collection, and History shows what really happened. Undo/redo
+  actions are not rows in History — they change the *state* of the
+  action they name.
+- **`HistoryTimeline` (Models) derives the state from the ledger** —
+  pure, no SwiftData, exhaustively tested. Replaying the actions in
+  order: a user action appends to `applied` and *clears* `redoable`
+  (superseding whatever was there); `.undo` moves the latest applied
+  action to `redoable`; `.redo` moves the latest undone back. That is
+  UndoManager's rule and the crucial case: undo several times, then do
+  something new, and the undone actions are `superseded` — listed as
+  Undone, dimmed, never redoable — because the timeline forked. Stray
+  undo/redo records that don't target the top of a stack are ignored,
+  not obeyed. Ordering is by timestamp with an id tie-break, so it is
+  deterministic whatever order the rows come in.
+- **`LedgerReplay` (Controllers/History) does the replay** on whatever
+  context it is given (CardMetaWriter's, via `runReplay`, so undoing an
+  import is off the main thread): each record's delta, negated or not,
+  applied to the row with its merge key; a row that has to come back is
+  rebuilt from the record's `EntrySnapshot` (language, price paid, set
+  and number, a deck row's `sourceCollectionName`), falling back to
+  CardMeta for older records; a deleted collection comes back with its
+  rows. All-or-nothing per action: every row copies are taken from is
+  checked first. `UndoController` (one per container) holds the
+  `HistoryLog`, runs single or multi-step replays, and bumps both
+  trackers.
+
+Two things a replay refuses, with an alert: a deck that no longer exists
+(its copies would land under a deck nobody can open — disassemble before
+deleting, which the app does), and deck records written before this
+existed, which carry the display label "Deck: Name" instead of the deck's
+key (`DeckBuilder` now records `deck:<uuid>`; History labels it). Deck
+*list* edits write no ledger and are not undoable — a list is a wish.
+
+Tests: `HistoryTimelineTests` (the rules, including the fork),
+`UndoRedoTests` (rows return intact, builds and disassemblies undo and
+redo with copies conserved, an import undoes to empty and back, a
+deleted collection returns, the refusals), `HistoryFlowTests` (UI: undo
+a removal, redo it, undo again, add something, nothing to redo).
 
 ## Data flow notes
 

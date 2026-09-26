@@ -122,7 +122,6 @@ actor DeckBuilder: ModelActor {
         let actionID = UUID()
         let now = Date()
         let deckKey = deck.collectionKey
-        let deckLabel = "Deck: \(deck.name)"
         var moved = 0
 
         let entryIDs = Array(Set(plan.entries.flatMap { $0.takes.map(\.entryID) }))
@@ -160,15 +159,19 @@ actor DeckBuilder: ModelActor {
                     target = created
                 }
 
+                // The deck's row is recorded under its key, not the "Deck:
+                // Name" label (History labels it): undo needs the collection.
                 modelContext.insert(AuditRecord(
                     actionID: actionID, action: .deckBuild, timestamp: now,
                     scryfallID: source.scryfallID, cardName: source.name, collectionName: source.collectionName,
-                    finish: source.finish, condition: source.condition, quantityDelta: -n, collectionEntryID: source.id
+                    finish: source.finish, condition: source.condition, quantityDelta: -n, collectionEntryID: source.id,
+                    snapshot: EntrySnapshot(source)
                 ))
                 modelContext.insert(AuditRecord(
                     actionID: actionID, action: .deckBuild, timestamp: now,
-                    scryfallID: source.scryfallID, cardName: source.name, collectionName: deckLabel,
-                    finish: source.finish, condition: source.condition, quantityDelta: n, collectionEntryID: target.id
+                    scryfallID: source.scryfallID, cardName: source.name, collectionName: deckKey,
+                    finish: source.finish, condition: source.condition, quantityDelta: n, collectionEntryID: target.id,
+                    snapshot: EntrySnapshot(target)
                 ))
 
                 source.quantity -= n
@@ -190,7 +193,6 @@ actor DeckBuilder: ModelActor {
         let actionID = UUID()
         let now = Date()
         let deckKey = deck.collectionKey
-        let deckLabel = "Deck: \(deck.name)"
         let deckEntries = try modelContext.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == deckKey }))
         guard !deckEntries.isEmpty else { return DisassembleResult(actionID: actionID, returnedCopies: 0) }
 
@@ -235,13 +237,15 @@ actor DeckBuilder: ModelActor {
             }
             modelContext.insert(AuditRecord(
                 actionID: actionID, action: .deckDisassemble, timestamp: now,
-                scryfallID: entry.scryfallID, cardName: entry.name, collectionName: deckLabel,
-                finish: entry.finish, condition: entry.condition, quantityDelta: -entry.quantity, collectionEntryID: entry.id
+                scryfallID: entry.scryfallID, cardName: entry.name, collectionName: deckKey,
+                finish: entry.finish, condition: entry.condition, quantityDelta: -entry.quantity, collectionEntryID: entry.id,
+                snapshot: EntrySnapshot(entry)
             ))
             modelContext.insert(AuditRecord(
                 actionID: actionID, action: .deckDisassemble, timestamp: now,
                 scryfallID: entry.scryfallID, cardName: entry.name, collectionName: home,
-                finish: entry.finish, condition: entry.condition, quantityDelta: entry.quantity, collectionEntryID: target.id
+                finish: entry.finish, condition: entry.condition, quantityDelta: entry.quantity, collectionEntryID: target.id,
+                snapshot: EntrySnapshot(target)
             ))
             returned += entry.quantity
             modelContext.delete(entry)
