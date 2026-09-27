@@ -251,6 +251,8 @@ struct CardViewerView: View {
         } primaryAction: {
             adding = currentItem
         }
+        // As written, even when the menu opens upward from the bar.
+        .menuOrder(.fixed)
         .accessibilityIdentifier("viewer-add")
     }
 
@@ -488,7 +490,11 @@ private struct QuickAddToast: View {
     let text: String
 
     var body: some View {
-        Label(text, systemImage: "checkmark.circle.fill")
+        Label {
+            Text(text)
+        } icon: {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        }
             .font(.subheadline.weight(.medium))
             .lineLimit(1)
             .padding(.horizontal, 16)

@@ -53,8 +53,18 @@ struct CardGridView<Header: View, Accessory: View>: View {
     @AppStorage(AppSettings.gridColumnsKey) private var columnsRaw = GridDensity.standard.rawValue
     private var density: GridDensity { GridDensity(rawValue: columnsRaw) ?? .standard }
     private var spacing: CGFloat { density.rawValue >= 5 ? 6 : 10 }
+    /// The grid's width, for landscape and iPad: the setting says how many
+    /// across a phone held upright; a wider grid keeps the tiles that size
+    /// and fits more of them, rather than blowing three up to fill it.
+    @State private var width: CGFloat = 0
+    private var columnCount: Int {
+        let upright: CGFloat = 440
+        guard width > upright else { return density.rawValue }
+        let tile = upright / CGFloat(density.rawValue)
+        return max(density.rawValue, Int(width / tile))
+    }
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: spacing), count: density.rawValue)
+        Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnCount)
     }
 
     var body: some View {
@@ -101,6 +111,7 @@ struct CardGridView<Header: View, Accessory: View>: View {
                 }
                 .padding(spacing)
             }
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
             // Search results sit under the keyboard while typing; a scroll
             // should put it away. No-op elsewhere.
             .scrollDismissesKeyboard(.immediately)

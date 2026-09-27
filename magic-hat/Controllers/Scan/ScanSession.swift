@@ -59,6 +59,10 @@ final class ScanSession {
     private var cooldownName: String?
     private var emptyFrames = 0
     private var matchTask: Task<Void, Never>?
+    /// A reading that found nothing, and when: not asked again for a few
+    /// seconds, so a card Scryfall can't place isn't looked up four times
+    /// a second while it sits in the guide.
+    private var failed: (key: String, at: Date)?
 
     var trayCopies: Int { tray.reduce(0) { $0 + $1.quantity } }
 
@@ -92,6 +96,7 @@ final class ScanSession {
             return
         }
         guard matchingKey != reading.key else { return }
+        if let failed, failed.key == reading.key, Date().timeIntervalSince(failed.at) < 4 { return }
         matchingKey = reading.key
         phase = .matching(name)
         matchTask?.cancel()
@@ -100,7 +105,11 @@ final class ScanSession {
             guard !Task.isCancelled else { return }
             matchingKey = nil
             recent.removeAll()
-            guard let match else { phase = .looking; return }
+            guard let match else {
+                failed = (reading.key, Date())
+                phase = .looking
+                return
+            }
             switch match.confidence {
             case .sure: accept(match.card, exactPrinting: match.exactPrinting)
             case .unsure: phase = .confirm(match)
