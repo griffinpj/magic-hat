@@ -54,7 +54,8 @@ actor DeckStore: ModelActor {
                 mainCopies: snapshot.mainCopies, builtCopies: snapshot.builtCopies,
                 identity: snapshot.identity,
                 coverArtURL: deck.coverArtURL ?? snapshot.commanders.first?.card.artCropURL ?? snapshot.sections.first?.items.first?.card.artCropURL,
-                isLocked: deck.isLocked, totalValue: snapshot.stats.totalValue, updatedDate: deck.updatedDate
+                isLocked: deck.isLocked, totalValue: snapshot.stats.totalValue, updatedDate: deck.updatedDate,
+                folderID: deck.folderID, createdDate: deck.createdDate
             )
         }
     }

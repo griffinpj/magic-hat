@@ -37,6 +37,81 @@ enum DeckEditController {
         return deck
     }
 
+    // MARK: Folders
+
+    /// A new folder in `parent` (nil: the top level). Names needn't be
+    /// unique, as in Files within different folders; blank is refused.
+    @discardableResult
+    static func createFolder(named raw: String, in parent: UUID?, context: ModelContext) throws -> DeckFolder {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw FolderError.emptyName }
+        let folder = DeckFolder(name: name, parentID: parent)
+        context.insert(folder)
+        try context.save()
+        DeckChangeTracker.shared.bump()
+        return folder
+    }
+
+    static func renameFolder(_ id: UUID, to raw: String, context: ModelContext) throws {
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw FolderError.emptyName }
+        guard let folder = try fetchFolder(id, context: context) else { return }
+        folder.name = name
+        try context.save()
+        DeckChangeTracker.shared.bump()
+    }
+
+    /// Deletes the folder only: its decks and folders move up into its
+    /// parent, as nothing a folder holds is ever lost with it.
+    static func deleteFolder(_ id: UUID, context: ModelContext) throws {
+        guard let folder = try fetchFolder(id, context: context) else { return }
+        let parent = folder.parentID
+        let optionalID: UUID? = id
+        for deck in try context.fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.folderID == optionalID })) {
+            deck.folderID = parent
+        }
+        for child in try context.fetch(FetchDescriptor<DeckFolder>(predicate: #Predicate { $0.parentID == optionalID })) {
+            child.parentID = parent
+        }
+        context.delete(folder)
+        try context.save()
+        DeckChangeTracker.shared.bump()
+    }
+
+    /// Files decks into `folder` (nil: the top level).
+    static func moveDecks(_ ids: [UUID], to folder: UUID?, context: ModelContext) throws {
+        for deck in try context.fetch(FetchDescriptor<Deck>(predicate: #Predicate { ids.contains($0.id) })) {
+            deck.folderID = folder
+        }
+        try context.save()
+        DeckChangeTracker.shared.bump()
+    }
+
+    /// Moves a folder into another (nil: the top level). Refused into
+    /// itself or anything inside it.
+    static func moveFolder(_ id: UUID, to parent: UUID?, context: ModelContext) throws {
+        let tree = DeckFolderTree(try context.fetch(FetchDescriptor<DeckFolder>()))
+        guard !tree.isInside(parent, id) else { throw FolderError.intoItself }
+        guard let folder = try fetchFolder(id, context: context) else { return }
+        folder.parentID = parent
+        try context.save()
+        DeckChangeTracker.shared.bump()
+    }
+
+    enum FolderError: Error, LocalizedError {
+        case emptyName, intoItself
+        var errorDescription: String? {
+            switch self {
+            case .emptyName: return "Give the folder a name."
+            case .intoItself: return "A folder can't go inside itself."
+            }
+        }
+    }
+
+    private static func fetchFolder(_ id: UUID, context: ModelContext) throws -> DeckFolder? {
+        try context.fetch(FetchDescriptor<DeckFolder>(predicate: #Predicate { $0.id == id })).first
+    }
+
     /// Deletes the list. The caller disassembles first if the deck is
     /// built — the physical cards must go home before their deck vanishes.
     static func delete(deckID: UUID, context: ModelContext) throws {
