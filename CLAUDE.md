@@ -1462,23 +1462,54 @@ only one).
 
 ## Scan
 
-The Scan tab (Views/Scan, Controllers/Scan, `Utils/CardCamera`). The camera
-session and Vision (`VNRecognizeTextRequest`, accurate, no language
-correction) run on the camera's own queue, ~4 frames a second, one at a
-time, inside the guide only (`regionOfInterest` from
-`CardCamera.guideRegion`, which maps the guide through the preview's
-aspect-fill; the rotation coordinator gives Vision the orientation, so
-landscape works). `CardTextReader` (pure) reads the title band and the
-bottom-left info block (collector number + a set code that must be a known
-set). `ScanSession` acts only when two of three frames agree, ignores the
-card just added until it leaves the guide, and keeps the tray.
-`ScanMatcher` tries `GET /cards/:set/:number` then `/cards/named?fuzzy=`;
-sure only when the found name is ≥ 0.88 similar to the read title,
-otherwise it asks ("Is this…?" with autocomplete alternatives). Nothing is
-added on a guess. The tray adds everything as one action
-(`CollectionEditController.addMany`). A photo runs the same reader — the
-simulator has no camera. `ScanTests.visionReadsADrawnCard` runs Vision on
-a rendered card.
+The Scan tab (Views/Scan, Controllers/Scan, `Utils/CardCamera`), camera
+first in ManaBox's shape with native chrome: the picture edge to edge, a
+card-shaped guide, the tray's total in a glass capsule, a glass control
+column (review, light, photo, settings), and the card just scanned in a
+glass panel at the bottom. The layout is laid out, not computed — pills,
+then the guide taking the room left, then the panel (landscape: panel
+beside the guide) — and the guide's measured frame feeds the dimming mask
+and Vision's `regionOfInterest` (`CardCamera.guideRegion`, through the
+preview's aspect-fill).
+
+The camera session and Vision (`VNRecognizeTextRequest`, accurate, no
+language correction) run on the camera's own queue, ~4 frames a second,
+one at a time. The default camera is the multi-lens virtual device (it
+switches to macro close up); Scan Settings picks another
+(`CardCamera.select`). `CardTextReader` (pure) reads the title band and the
+bottom-left info block: collector number, a set code that must be a known
+set, the language, and the ★ that marks a foil (• nonfoil).
+
+`ScanMatcher`: set+number first (`GET /cards/:set/:number`), sure only if
+the name agrees; else the fuzzy name (`/cards/named?fuzzy=&set=` with the
+set read), sure at ≥ 0.88 similarity, otherwise it asks. The printing is
+then narrowed by `printingQuery` — the number alone, the locked sets,
+promos out — through one `unique:prints` search. `.outsideLockedSets` skips
+a card with a message.
+
+`ScanSession`: two of three frames must agree before a lookup; the card
+just taken is ignored while it stays (`isSameAsLast`: same name and no
+different printing read), and the same printing as the tray's head is
+never a new row — another copy is the panel's +1. A different printing of
+the same card is a new card. The panel edits the head in place: printing
+(a horizontal strip of every printing from `PrintingsCache`, in the panel,
+no navigation), finish (limited to the printing's `finishes`), language,
+count; scanning pauses while the strip is open. Quick Mode off opens the
+strip when the printing wasn't read. `ScanSettings` (UserDefaults): camera,
+quick mode, locked sets, ignore promos, prefer foil, sounds, total, ignore
+low values. The tray adds everything as one action
+(`CollectionEditController.addMany`). A photo runs the same reader.
+`-uitest-scan-demo` (debug) shows the chrome over a stand-in with real
+cards from Scryfall, for `ScanTour`; the simulator has no camera.
+`ScanTests`/`ScanSessionTests` cover reading, matching queries, no double
+counts and the in-place edits; `visionReadsADrawnCard` runs Vision on a
+rendered card.
+
+A collection's or list's "…" menu (and an empty list's placeholder) has
+Import: pasted or typed list text, a .txt, or a ManaBox .csv
+(`CollectionImportView`). Text resolves like a deck import and lands as one
+`addMany` action; a CSV goes through `ImportController` in add mode, every
+binder into this collection or list. Unfound names are listed.
 
 ## Search: Sets, and/or
 

@@ -71,3 +71,29 @@ struct ListTests {
         #expect(restored.first?.kind == .list)
     }
 }
+
+@MainActor
+@Suite("Import into a list", .serialized)
+struct ListImportTests {
+    @Test func textLinesLandAsOneAction() async throws {
+        let container = try TestSupport.makeContainer()
+        let ctx = container.mainContext
+        ctx.insert(MTGCollection(name: "Wants", kind: .list))
+        for (id, name, set, number) in [("s1", "Sol Ring", "c21", "263"), ("b1", "Lightning Bolt", "m11", "146")] {
+            let meta = CardMeta(scryfallID: id, name: name, setCode: set, setName: set.uppercased(), collectorNumber: number,
+                                rarity: "rare", fetchState: .fetched)
+            meta.oracleID = "o-\(id)"
+            meta.priceUSD = 1
+            ctx.insert(meta)
+        }
+        try ctx.save()
+        let list = DeckListParser.parse("2 Sol Ring (C21) 263\n1 Lightning Bolt *F*\n")
+        let result = try await CollectionImportView.importText(list, into: "Wants", container: container)
+        #expect(result.copies == 3 && result.unresolved.isEmpty)
+        let rows = try ModelContext(container).fetch(FetchDescriptor<CollectionEntry>())
+        #expect(rows.count == 2 && rows.allSatisfy { $0.collectionName == "Wants" })
+        #expect(rows.first { $0.scryfallID == "b1" }?.finish == .foil)
+        let actions = Set(try ModelContext(container).fetch(FetchDescriptor<AuditRecord>()).map(\.actionID))
+        #expect(actions.count == 1, "one History action")
+    }
+}

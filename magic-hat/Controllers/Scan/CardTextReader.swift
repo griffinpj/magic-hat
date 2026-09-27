@@ -10,7 +10,8 @@
 //  - the printing is the bottom-left info block every card since 2015
 //    carries — "0123/0280 R" (or "0123 R") over "DSK • EN": a collector
 //    number and a set code that must be a real set, so a stray word never
-//    passes for one.
+//    passes for one; the language after it; and between them a dot on a
+//    nonfoil, a star (★) on a foil — the one printed tell of a foil.
 //
 //  Pure and nonisolated, over plain line values, so it is tested without a
 //  camera. Coordinates are Vision's: normalised to the guide, origin at
@@ -33,6 +34,10 @@ nonisolated struct ScanReading: Hashable, Sendable {
     var collectorNumber: String?
     /// The title line's own OCR confidence (0–1).
     var nameConfidence: Float = 0
+    /// Scryfall's code for the language printed in the info block.
+    var language: String?
+    /// The info block's star: true foil, false the nonfoil dot, nil unread.
+    var foil: Bool?
 
     var isEmpty: Bool { name == nil && collectorNumber == nil }
     /// What two frames must agree on to count as the same reading.
@@ -66,7 +71,11 @@ nonisolated enum CardTextReader {
             .sorted { $0.box.maxY > $1.box.maxY }
         for line in info {
             if reading.collectorNumber == nil, let number = collectorNumber(in: line.text) { reading.collectorNumber = number }
-            if reading.setCode == nil, let code = setCode(in: line.text, knownSets: knownSets) { reading.setCode = code }
+            if reading.setCode == nil, let code = setCode(in: line.text, knownSets: knownSets) {
+                reading.setCode = code
+                reading.language = language(in: line.text, after: code)
+                reading.foil = foilMark(in: line.text, after: code)
+            }
         }
         // A set code alone can't find a printing; a number alone can't either.
         if reading.setCode == nil { reading.collectorNumber = nil }
@@ -110,6 +119,30 @@ nonisolated enum CardTextReader {
             let code = word.lowercased()
             if knownSets.contains(code) { return code }
         }
+        return nil
+    }
+
+    /// Printed language codes to Scryfall's ("JP" and "JA" are Japanese).
+    static let languages: [String: String] = [
+        "EN": "en", "JA": "ja", "JP": "ja", "DE": "de", "FR": "fr", "IT": "it", "ES": "es", "SP": "es",
+        "PT": "pt", "RU": "ru", "KO": "ko", "KR": "ko", "CS": "zhs", "CT": "zht", "ZH": "zhs",
+    ]
+
+    /// "DSK • EN" → "en": the first language code after the set code.
+    static func language(in text: String, after code: String) -> String? {
+        let upper = text.uppercased()
+        guard let range = upper.range(of: code.uppercased()) else { return nil }
+        let rest = upper[range.upperBound...].split { !$0.isLetter }
+        return rest.lazy.compactMap { languages[String($0)] }.first
+    }
+
+    /// The mark between set code and language: ★ (or what OCR makes of
+    /// it) is foil, • nonfoil, nothing read is unknown.
+    static func foilMark(in text: String, after code: String) -> Bool? {
+        guard let range = text.range(of: code, options: .caseInsensitive) else { return nil }
+        let between = text[range.upperBound...].prefix { !$0.isLetter }
+        if between.contains(where: { "★☆*✦✧⋆".contains($0) }) { return true }
+        if between.contains(where: { "•·.∙●◦".contains($0) }) { return false }
         return nil
     }
 

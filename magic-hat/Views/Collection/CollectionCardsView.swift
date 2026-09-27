@@ -61,6 +61,7 @@ struct CollectionCardsView: View {
     @State private var confirmRemove = false
     @State private var isWorking = false
     @State private var actionError: String?
+    @State private var importing = false
     @Query(sort: \MTGCollection.name) private var allCollections: [MTGCollection]
     @Environment(\.openURL) private var openURL
 
@@ -80,7 +81,13 @@ struct CollectionCardsView: View {
                 ContentUnavailableView {
                     Text("📭").font(.system(size: 64))
                 } description: {
-                    Text(isList ? "This list is empty.\nAdd cards to it from Search, or from any card's Add." : "This collection has no cards.")
+                    Text(isList ? "This list is empty.\nImport a list, or add cards from Search or any card's Add." : "This collection has no cards.")
+                } actions: {
+                    if !CollectionScope.isAll(collectionName) {
+                        Button("Import Cards…", systemImage: "square.and.arrow.down") { importing = true }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("collection-empty-import")
+                    }
                 }
             } else if visible.isEmpty, !query.isEmpty {
                 ContentUnavailableView {
@@ -125,7 +132,7 @@ struct CollectionCardsView: View {
         // Always shown: a pushed screen with an inline title otherwise hides
         // the field until the user pulls down, and this screen *is* a search.
         .searchable(text: $query.text, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: "Search this collection")
+                    prompt: isList ? "Search this list" : "Search this collection")
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
             if isSelecting {
@@ -155,6 +162,9 @@ struct CollectionCardsView: View {
         .overlay { if isWorking { ProgressView().controlSize(.large).padding(24).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16)) } }
         .sheet(isPresented: $showFilters) {
             SearchFiltersView(query: $query, context: .collection)
+        }
+        .sheet(isPresented: $importing) {
+            CollectionImportView(collectionName: collectionName, isList: isList)
         }
         .onChange(of: query) { _, _ in applyFilter() }
         // Initial load, and again after any write (import/delete).
@@ -191,6 +201,11 @@ struct CollectionCardsView: View {
                     .disabled(visible.isEmpty)
                     .accessibilityIdentifier("collection-select")
                     BuyMenu(title: query.isEmpty ? "Buy All" : "Buy These", lines: buyLines(visible.items))
+                    if !CollectionScope.isAll(collectionName) {
+                        Divider()
+                        Button(isList ? "Import into List…" : "Import Cards…", systemImage: "square.and.arrow.down") { importing = true }
+                            .accessibilityIdentifier("collection-import")
+                    }
                 } label: {
                     Label("More", systemImage: "ellipsis")
                 }
