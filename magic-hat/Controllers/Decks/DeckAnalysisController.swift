@@ -319,6 +319,24 @@ final class DeckAnalysisController {
         }
     }
 
+    /// The planner's verdict on cards the user offers (DeckPlan.propose),
+    /// against the list as last analysed; nil until there is an analysis.
+    /// Copies owned come from the collection read the plan already made.
+    func propose(_ cards: [CardItem]) async -> [DeckProposal]? {
+        guard let snapshot, let analysis else { return nil }
+        let signals = self.signals
+        let readings = self.readings
+        var owned: [String: Int] = [:]
+        for c in collectionCandidates?.cards ?? [] { owned[c.card.oracleID ?? c.card.scryfallID] = c.ownedCopies }
+        let candidates = cards.map { card in
+            DeckCandidate(card: card, ownedCopies: owned[card.oracleID ?? card.scryfallID] ?? 0,
+                          metaScore: card.oracleID.flatMap { signals.meta?[$0] })
+        }
+        return await Task.detached(priority: .userInitiated) {
+            DeckPlan.propose(candidates, snapshot: snapshot, analysis: analysis, signals: signals, readings: readings)
+        }.value
+    }
+
     /// Spare cards in the collection (one per card, copies summed), the
     /// meta's picks and the missing pieces of one-card-away combos, as
     /// CardItems from the catalog. A name the catalog lacks is looked up

@@ -454,3 +454,70 @@ nonisolated struct DeckPlan: Hashable, Sendable {
         return (keep * 100).rounded() / 100
     }
 }
+
+// MARK: - Proposals
+
+/// What the planner makes of a card the user suggests: swap it in for a
+/// card in the list, add it while the list is short, or keep the list as
+/// it is — each with why.
+nonisolated struct DeckProposal: Identifiable, Hashable, Sendable {
+    enum Verdict: Hashable, Sendable {
+        /// In, for `out` (a row of the list), with the deck re-scored.
+        case swap(outRowID: String, out: CardItem, outTag: CardReason, effect: DeckSwapEffect?)
+        /// In, with nothing out: the list is short of its size.
+        case add(effect: DeckSwapEffect?)
+        /// Not clearly better than the weakest card in the list, which is
+        /// named so the user can judge.
+        case notBetter(weakest: CardItem?)
+        case alreadyInDeck
+        case outsideIdentity
+    }
+
+    let card: CardItem
+    let verdict: Verdict
+    /// Why the card would help, strongest first (empty when it wouldn't).
+    let tags: [CardReason]
+    var id: String { card.id }
+    var reason: CardReason? { tags.first }
+}
+
+nonisolated extension DeckPlan {
+    /// Runs the planner with the proposed cards as its only candidates —
+    /// the same scoring the swap table uses, so a proposal is judged the
+    /// way a recommendation is: the strongest proposals claim the weakest
+    /// rows first, a cut never opens a floor, and one card is never cut
+    /// for two proposals. Proposals come back in the order given.
+    static func propose(_ cards: [DeckCandidate], snapshot: DeckSnapshot, analysis: DeckAnalysis,
+                        signals: DeckAnalysisSignals, readings: [String: CardReading]) -> [DeckProposal] {
+        let front = CardReading.frontName
+        let inDeck = Set(snapshot.playedItems.map { front($0.card.name) })
+        let identity = Set(snapshot.identity)
+        let identityKnown = analysis.isCommander
+        var candidateReadings: [String: CardReading] = [:]
+        for c in cards { candidateReadings[c.card.id] = CardReading(c.card, identity: snapshot.identity, tags: signals.tags) }
+        let plan = plan(snapshot: snapshot, analysis: analysis, signals: signals, candidates: cards,
+                        readings: readings, candidateReadings: candidateReadings)
+
+        let weakestRow = plan.keep.min { a, b in a.value.score != b.value.score ? a.value.score < b.value.score : a.key < b.key }?.key
+        let weakest = snapshot.playedItems.first { $0.card.id == weakestRow }?.card
+        let recs = Dictionary(plan.recommendations.map { ($0.card.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        return cards.map { c in
+            let tags = recs[c.card.id]?.tags ?? []
+            if inDeck.contains(front(c.card.name)) {
+                return DeckProposal(card: c.card, verdict: .alreadyInDeck, tags: [])
+            }
+            if identityKnown, !Set(c.card.colorIdentity).isSubset(of: identity) {
+                return DeckProposal(card: c.card, verdict: .outsideIdentity, tags: [])
+            }
+            if let swap = plan.swaps.first(where: { $0.inCard.id == c.card.id }) {
+                return DeckProposal(card: c.card, verdict: .swap(outRowID: swap.outRowID, out: swap.outCard, outTag: swap.outTag, effect: swap.effect),
+                                    tags: swap.inTags)
+            }
+            if let fill = plan.fills.first(where: { $0.inCard.id == c.card.id }) {
+                return DeckProposal(card: c.card, verdict: .add(effect: fill.effect), tags: fill.tags)
+            }
+            return DeckProposal(card: c.card, verdict: .notBetter(weakest: weakest), tags: tags)
+        }
+    }
+}
