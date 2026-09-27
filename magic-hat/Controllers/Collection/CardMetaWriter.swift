@@ -37,8 +37,9 @@ actor CardMetaWriter: ModelActor {
         return writer
     }
 
-    /// Ids whose metadata is missing, failed, or stored before colours were
-    /// kept (colorsRaw == nil) — what a hydration pass must fetch.
+    /// Ids whose metadata is missing, failed, or stored before this build's
+    /// fields were kept (`CardMeta.isComplete`) — what a hydration pass
+    /// must fetch.
     func neededIDs(from ids: Set<String>) -> Set<String> {
         let idList = Array(ids)
         let descriptor = FetchDescriptor<CardMeta>(
@@ -48,7 +49,7 @@ actor CardMetaWriter: ModelActor {
         let byID = Dictionary(metas.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
         return ids.filter { id in
             guard let meta = byID[id] else { return true }
-            return meta.fetchState != .fetched || meta.colorsRaw == nil
+            return !meta.isComplete
         }
     }
 

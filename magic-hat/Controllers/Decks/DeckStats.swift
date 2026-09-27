@@ -153,7 +153,7 @@ nonisolated struct DeckStats: Hashable, Sendable {
             let type = primaryType(of: card.typeLine)
             types[type, default: 0] += qty
             if !card.rarity.isEmpty { rarities[card.rarity.capitalized, default: 0] += qty }
-            let price = card.priceUSD ?? 0
+            let price = card.price ?? 0
             totalValue += price * Double(qty)
             builtValue += price * Double(item.builtQuantity)
             missingValue += price * Double(item.missingQuantity)

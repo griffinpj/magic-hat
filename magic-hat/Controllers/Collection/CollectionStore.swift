@@ -109,15 +109,16 @@ actor CollectionStore: ModelActor {
 
     private static func rows(of entries: [CollectionEntry], labels: [String: String]) -> [Row] {
         let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
+        let currency = AppSettings.currency
         var rows: [Row] = []
         rows.reserveCapacity(entries.count)
         for entry in entries {
             let meta = entry.card
-            var item = CardItem(entry: entry, meta: meta)
+            var item = CardItem(entry: entry, meta: meta, currency: currency)
             if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
             // A row stored before colours were kept counts as pending so the
             // collection filters get their data on the next hydration.
-            let fetched = meta.map { $0.fetchState == .fetched && $0.colorsRaw != nil } ?? false
+            let fetched = meta?.isComplete ?? false
             let stale = fetched && (meta?.pricesUpdatedAt ?? .distantPast) < cutoff
             rows.append(Row(item: item, pending: !fetched, stale: stale))
         }

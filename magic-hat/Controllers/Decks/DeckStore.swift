@@ -348,7 +348,7 @@ actor DeckStore: ModelActor {
 nonisolated extension CardItem {
     /// A catalog card (no owned row behind it): the same shape a search
     /// hit has, keyed by its Scryfall id.
-    init(meta: CardMeta, owned: Bool) {
+    init(meta: CardMeta, owned: Bool, currency: DisplayCurrency = AppSettings.currency) {
         self.id = meta.scryfallID
         self.scryfallID = meta.scryfallID
         self.oracleID = meta.oracleID
@@ -376,8 +376,8 @@ nonisolated extension CardItem {
         self.colors = Self.colors(fromLetters: meta.colorsRaw)
         self.colorIdentity = Self.colors(fromLetters: meta.colorIdentityRaw)
         self.artist = meta.artist
-        self.priceUSD = meta.priceUSD
-        self.priceUSDFoil = meta.priceUSDFoil
+        self.price = meta.price(foil: false, in: currency)
+        self.priceFoil = meta.price(foil: true, in: currency)
         self.sortKey = Self.sortKey(for: meta.name)
         self.collectorNumberValue = Self.collectorValue(meta.collectorNumber)
         self.rarityRankValue = Self.rarityRank(meta.rarity)
@@ -385,5 +385,6 @@ nonisolated extension CardItem {
         self.legalities = meta.legalities
         self.edhrecRank = meta.edhrecRank
         self.purchaseURIs = meta.purchaseURIs
+        self.backImageURL = meta.backImageNormalURL
     }
 }

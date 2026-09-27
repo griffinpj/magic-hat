@@ -101,7 +101,7 @@ final class SearchController {
             do {
                 let page = try await client.search(
                     query: q.scryfallQuery, unique: q.unique,
-                    order: q.sort.rawValue, direction: q.effectiveDirection.rawValue
+                    order: q.sort.scryfallOrder, direction: q.effectiveDirection.rawValue
                 )
                 guard !Task.isCancelled, gen == generation else { return }
                 apply(page, replacing: true, generation: gen)

@@ -286,7 +286,7 @@ nonisolated struct DeckPlan: Hashable, Sendable {
             }
             if let m = c.metaScore { a.score += 6 * m; a.why.append("meta score \(Int((m * 100).rounded()))%"); a.tags.append(.meta(m)) }
             if c.ownedCopies > 0 { a.score += 1; a.ownedBonus = 1; a.why.append("already yours") }
-            if let price = c.card.priceUSD {
+            if let price = c.card.price {
                 if price > 50 { a.score -= 2 } else if price > 20 { a.score -= 1 }
             }
             if r.isLegendaryCreature { a.score -= 0.25 }

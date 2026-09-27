@@ -97,6 +97,8 @@ struct CollectionCardsView: View {
             // with it the grid, on every hydration batch.
             HydrationObserver { scheduleRefresh() }
         }
+        // An Add from this grid's viewer starts on this collection.
+        .environment(\.browsingCollection, CollectionScope.isAll(collectionName) ? nil : collectionName)
         .navigationTitle(CollectionScope.displayName(collectionName))
         .navigationBarTitleDisplayMode(.inline)
         // Always shown: a pushed screen with an inline title otherwise hides

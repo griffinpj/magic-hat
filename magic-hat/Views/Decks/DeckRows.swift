@@ -98,7 +98,7 @@ struct DeckSearchRow: View {
     /// standard reason line instead.
     @ViewBuilder private var detail: some View {
         if let reason {
-            ReasonDetailLine(reason: reason, price: item.priceUSD, owned: (ownedCopies ?? 0) > 0 || item.owned)
+            ReasonDetailLine(reason: reason, price: item.price, owned: (ownedCopies ?? 0) > 0 || item.owned)
         } else {
             plainDetail
         }
@@ -112,7 +112,7 @@ struct DeckSearchRow: View {
             if let type = item.typeLine {
                 Text(type).truncationMode(.tail).layoutPriority(-1)
             }
-            if let price = item.priceUSD {
+            if let price = item.price {
                 Text(PriceFormat.compact(price)).fixedSize()
             }
             if let ownedCopies {
@@ -192,7 +192,7 @@ struct DeckCardRow: View {
                 .fontWeight(.medium)
                 .foregroundStyle(color(for: item.status))
                 .layoutPriority(-1)
-            if let price = item.card.priceUSD {
+            if let price = item.card.price {
                 Text(PriceFormat.compact(price)).fixedSize()
             }
         }

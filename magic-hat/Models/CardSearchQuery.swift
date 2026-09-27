@@ -57,6 +57,12 @@ nonisolated enum SearchSort: String, CaseIterable, Codable, Hashable, Sendable, 
         }
     }
 
+    /// Scryfall's `order` value. Price follows the display currency
+    /// (the raw value stays "usd" so saved searches keep decoding).
+    var scryfallOrder: String {
+        self == .price ? AppSettings.currency.scryfallKey : rawValue
+    }
+
     /// What people expect when they pick the sort: newest first, priciest
     /// first, best-ranked first, otherwise ascending.
     var defaultDirection: SortDirection {
@@ -338,9 +344,10 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
         if !rarities.isEmpty {
             parts.append(CardRarity.allCases.filter { rarities.contains($0) }.map(\.label).joined(separator: ", "))
         }
-        if let min = price.min, let max = price.max { parts.append("$\(Self.number(min))–$\(Self.number(max))") }
-        else if let min = price.min { parts.append("≥ $\(Self.number(min))") }
-        else if let max = price.max { parts.append("≤ $\(Self.number(max))") }
+        let symbol = AppSettings.currency.symbol
+        if let min = price.min, let max = price.max { parts.append("\(symbol)\(Self.number(min))–\(symbol)\(Self.number(max))") }
+        else if let min = price.min { parts.append("≥ \(symbol)\(Self.number(min))") }
+        else if let max = price.max { parts.append("≤ \(symbol)\(Self.number(max))") }
         for c in stats { parts.append("\(c.stat.label) \(c.op.label) \(c.value)") }
         if !finishes.isEmpty {
             parts.append(CardFinishFilter.allCases.filter { finishes.contains($0) }.map(\.label).joined(separator: ", "))
@@ -411,8 +418,9 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
             parts.append(Self.anyOf(ordered.map { "r:\($0.rawValue)" }))
         }
 
-        if let min = price.min { parts.append("usd>=\(Self.number(min))") }
-        if let max = price.max { parts.append("usd<=\(Self.number(max))") }
+        let money = AppSettings.currency.scryfallKey
+        if let min = price.min { parts.append("\(money)>=\(Self.number(min))") }
+        if let max = price.max { parts.append("\(money)<=\(Self.number(max))") }
 
         for c in stats {
             parts.append("\(c.stat.rawValue)\(c.op.rawValue)\(c.value)")

@@ -194,7 +194,7 @@ private struct SynergyRow: View {
         HStack(spacing: 8) {
             Button(action: onOpen) {
                 CardRowLead(item: card, zoom: zoom) {
-                    ReasonDetailLine(reason: reason ?? CardReason(.theme, "Related"), price: card.priceUSD, owned: card.owned)
+                    ReasonDetailLine(reason: reason ?? CardReason(.theme, "Related"), price: card.price, owned: card.owned)
                 }
             }
             .buttonStyle(.plain)

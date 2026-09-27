@@ -55,9 +55,11 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let colorIdentity: [ManaColor]
     let artist: String?
 
-    // Scryfall market prices (USD).
-    let priceUSD: Double?
-    let priceUSDFoil: Double?
+    /// Market prices in the display currency (Settings), read when the
+    /// item was built: the store rebuilds every item when the currency
+    /// changes.
+    let price: Double?
+    let priceFoil: Double?
 
     // Sort keys, computed once. Comparing these is ~50x cheaper than
     // localizedCaseInsensitiveCompare on every comparison, which is what made
@@ -73,6 +75,13 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let legalities: [String: String]?
     let edhrecRank: Int?
     let purchaseURIs: [String: String]?
+
+    /// The back face's image for a double-faced card; the viewer offers a
+    /// flip when there is one.
+    var backImageURL: String? = nil
+    /// The currency the purchase price was paid in (ManaBox writes "USD");
+    /// nil means the display currency.
+    var purchaseCurrency: String? = nil
 
     var powerToughness: String? {
         guard let power, let toughness else { return nil }
@@ -104,12 +113,16 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
 
     /// Current market price for this item's finish.
     var marketPrice: Double? {
-        finish == .normal ? priceUSD : (priceUSDFoil ?? priceUSD)
+        finish == .normal ? price : (priceFoil ?? price)
     }
 
-    /// Change in value against the price paid at import.
+    /// Change in value against the price paid at import — only when both
+    /// are in the same currency; a dollar price against a euro market is
+    /// no change at all.
     var gainLoss: (amount: Double, percent: Double)? {
         guard let market = marketPrice, let paid = purchasePrice, paid > 0 else { return nil }
+        if let paidIn = purchaseCurrency, !paidIn.isEmpty,
+           paidIn.uppercased() != AppSettings.currency.code { return nil }
         let diff = market - paid
         return (diff, diff / paid * 100)
     }
@@ -117,7 +130,7 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
 
 nonisolated extension CardItem {
     /// Owned card built from a collection entry plus its (optional) cached meta.
-    init(entry: CollectionEntry, meta: CardMeta?) {
+    init(entry: CollectionEntry, meta: CardMeta?, currency: DisplayCurrency = AppSettings.currency) {
         self.id = entry.id.uuidString
         self.scryfallID = entry.scryfallID
         self.oracleID = meta?.oracleID
@@ -145,8 +158,8 @@ nonisolated extension CardItem {
         self.colors = Self.colors(fromLetters: meta?.colorsRaw)
         self.colorIdentity = Self.colors(fromLetters: meta?.colorIdentityRaw)
         self.artist = meta?.artist
-        self.priceUSD = meta?.priceUSD
-        self.priceUSDFoil = meta?.priceUSDFoil
+        self.price = meta?.price(foil: false, in: currency)
+        self.priceFoil = meta?.price(foil: true, in: currency)
         self.sortKey = Self.sortKey(for: self.name)
         self.collectorNumberValue = Self.collectorValue(entry.collectorNumber)
         self.rarityRankValue = Self.rarityRank(entry.rarity)
@@ -154,11 +167,13 @@ nonisolated extension CardItem {
         self.legalities = meta?.legalities
         self.edhrecRank = meta?.edhrecRank
         self.purchaseURIs = meta?.purchaseURIs
+        self.backImageURL = meta?.backImageNormalURL
+        self.purchaseCurrency = entry.purchasePriceCurrency
     }
 
     /// A card built straight from a Scryfall result (e.g. a printing or a
     /// search hit). `owned` marks whether it's already in the collection.
-    init(scryfallCard card: ScryfallCard, owned: Bool) {
+    init(scryfallCard card: ScryfallCard, owned: Bool, currency: DisplayCurrency = AppSettings.currency) {
         self.id = card.id
         self.scryfallID = card.id
         self.oracleID = card.bestOracleID
@@ -186,8 +201,8 @@ nonisolated extension CardItem {
         self.colors = Self.colors(fromLetters: CardMeta.letters(card.bestColors))
         self.colorIdentity = Self.colors(fromLetters: CardMeta.letters(card.colorIdentity))
         self.artist = card.artist
-        self.priceUSD = card.prices?.usd.flatMap(Double.init)
-        self.priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+        self.price = card.prices?.price(foil: false, in: currency)
+        self.priceFoil = card.prices?.price(foil: true, in: currency)
         self.sortKey = Self.sortKey(for: card.name)
         self.collectorNumberValue = Self.collectorValue(card.collectorNumber)
         self.rarityRankValue = Self.rarityRank(card.rarity)
@@ -195,6 +210,7 @@ nonisolated extension CardItem {
         self.legalities = card.legalities
         self.edhrecRank = card.edhrecRank
         self.purchaseURIs = card.purchaseURIs
+        self.backImageURL = card.backImageURIs?.normal
     }
 
     /// "WU" -> [.white, .blue].

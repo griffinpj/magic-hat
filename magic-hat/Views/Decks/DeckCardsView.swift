@@ -120,7 +120,7 @@ struct DeckCardsView: View {
                     if !snapshot.stats.violations.isEmpty {
                         issuesRow
                     }
-                    if let plan = analysis?.plan, plan.changeCount > 0 {
+                    if !locked, let plan = analysis?.plan, plan.changeCount > 0 {
                         swapsRow(plan)
                     }
                     if snapshot.format.hasCommander || !snapshot.commanders.isEmpty {

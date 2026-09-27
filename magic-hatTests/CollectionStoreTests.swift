@@ -12,9 +12,10 @@ struct CollectionStoreTests {
 
         func add(_ id: String, name: String, state: CardFetchState, price: Double?, priceAge: TimeInterval) {
             let meta = CardMeta(scryfallID: id, name: name, fetchState: state)
-            // A fetched row also carries colours; without them it counts as
-            // pending (backfill for rows stored before colours were kept).
-            if state == .fetched { meta.colorsRaw = "" }
+            // A fetched row also carries colours and this build's fields;
+            // without them it counts as pending (the backfill for rows
+            // stored before they were kept).
+            if state == .fetched { meta.colorsRaw = ""; meta.metaVersion = CardMeta.currentVersion }
             meta.priceUSD = price
             meta.pricesUpdatedAt = Date().addingTimeInterval(-priceAge)
             ctx.insert(meta)
@@ -91,5 +92,30 @@ struct CollectionStoreTests {
         #expect(all.items.count == 3)
         let owned = try await store.ownedCards(stamp: stamp)
         #expect(owned.map(\.collectionName).sorted() == ["Legacy", "Main"])
+    }
+}
+
+@Suite("CardMeta completeness")
+struct CardMetaCompletenessTests {
+    /// A row written before the back face and euro prices were kept is
+    /// fetched again once, so every collection gets them.
+    @Test func olderRowsArePendingUntilRefetched() {
+        let meta = CardMeta(scryfallID: "x", fetchState: .fetched)
+        meta.colorsRaw = "G"
+        #expect(!meta.isComplete)
+        meta.metaVersion = CardMeta.currentVersion
+        #expect(meta.isComplete)
+    }
+
+    @Test func pricesFollowTheCurrency() {
+        let meta = CardMeta(scryfallID: "x")
+        meta.priceUSD = 2; meta.priceUSDFoil = 5; meta.priceEUR = 1.5; meta.priceEURFoil = 4
+        #expect(meta.price(foil: false, in: .usd) == 2)
+        #expect(meta.price(foil: true, in: .eur) == 4)
+        let entry = CollectionEntry(scryfallID: "x", collectionName: "Main", finish: .foil,
+                                    purchasePrice: 3, purchasePriceCurrency: "USD")
+        let inEuros = CardItem(entry: entry, meta: meta, currency: .eur)
+        #expect(inEuros.marketPrice == 4)
+        #expect(PriceFormat.string(inEuros.marketPrice, currency: .eur) == "€4.00")
     }
 }

@@ -121,7 +121,7 @@ enum TestSupport {
             artCropURL: nil, aspectRatio: 488.0 / 680.0, typeLine: nil,
             manaCost: nil, oracleText: nil, power: nil, toughness: nil,
             loyalty: nil, colors: [], colorIdentity: [], artist: nil,
-            priceUSD: price, priceUSDFoil: nil,
+            price: price, priceFoil: nil,
             sortKey: CardItem.sortKey(for: name),
             collectorNumberValue: CardItem.collectorValue(number),
             rarityRankValue: CardItem.rarityRank(rarity),

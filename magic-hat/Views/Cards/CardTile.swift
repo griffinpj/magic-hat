@@ -95,7 +95,7 @@ struct CardTile: View, Equatable {
                                                     startPoint: .topLeading, endPoint: .bottomTrailing))
                     .accessibilityLabel(item.finish.displayName)
             }
-            Text(item.marketPrice.map(PriceFormat.compact) ?? "—")
+            Text(item.marketPrice.map { PriceFormat.compact($0) } ?? "—")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(item.marketPrice == nil ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
         }

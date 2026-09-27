@@ -205,7 +205,7 @@ private struct SwapRow: View {
             HStack(spacing: 8) {
                 Button(action: onOpen) {
                     CardRowLead(item: inCard, zoom: zoom) {
-                        ReasonDetailLine(reason: inReason, price: inCard.priceUSD, owned: inCard.owned)
+                        ReasonDetailLine(reason: inReason, price: inCard.price, owned: inCard.owned)
                     }
                 }
                 .buttonStyle(.plain)
@@ -251,7 +251,7 @@ private struct FillRow: View {
             HStack(spacing: 8) {
                 Button(action: onOpen) {
                     CardRowLead(item: card, zoom: zoom) {
-                        ReasonDetailLine(reason: reason, price: card.priceUSD, owned: card.owned)
+                        ReasonDetailLine(reason: reason, price: card.price, owned: card.owned)
                     }
                 }
                 .buttonStyle(.plain)
@@ -293,7 +293,7 @@ private struct TrimRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 CardRowLead(item: card) {
-                    ReasonDetailLine(reason: reason, price: card.priceUSD, owned: false)
+                    ReasonDetailLine(reason: reason, price: card.price, owned: false)
                 }
                 if !locked {
                     Button(quantity > 1 ? "Cut \(quantity)" : "Cut", action: onCut)
