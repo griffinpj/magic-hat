@@ -1,0 +1,121 @@
+{
+ "name": "Fun With Fungus",
+ "deckFormat": 3,
+ "categories": [
+  {
+   "id": 4377726,
+   "name": "Commander",
+   "isPremier": true,
+   "includedInDeck": true,
+   "includedInPrice": true
+  },
+  {
+   "name": "Maybeboard",
+   "includedInDeck": false
+  }
+ ],
+ "cards": [
+  {
+   "quantity": 1,
+   "categories": [
+    "Commander"
+   ],
+   "modifier": "Normal",
+   "card": {
+    "collectorNumber": "227",
+    "edition": {
+     "editioncode": "tsp"
+    },
+    "oracleCard": {
+     "name": "Thelon of Havenwood"
+    }
+   }
+  },
+  {
+   "quantity": 1,
+   "categories": null,
+   "modifier": "Foil",
+   "card": {
+    "collectorNumber": "16",
+    "edition": {
+     "editioncode": "mps"
+    },
+    "oracleCard": {
+     "name": "Mana Crypt"
+    }
+   }
+  },
+  {
+   "quantity": 1,
+   "categories": null,
+   "modifier": "Normal",
+   "card": {
+    "collectorNumber": "56",
+    "edition": {
+     "editioncode": "mbs"
+    },
+    "oracleCard": {
+     "name": "Spread the Sickness"
+    }
+   }
+  },
+  {
+   "quantity": 1,
+   "categories": null,
+   "modifier": "Normal",
+   "card": {
+    "collectorNumber": "87",
+    "edition": {
+     "editioncode": "mbs"
+    },
+    "oracleCard": {
+     "name": "Plaguemaw Beast"
+    }
+   }
+  },
+  {
+   "quantity": 1,
+   "categories": null,
+   "modifier": "Normal",
+   "card": {
+    "collectorNumber": "145",
+    "edition": {
+     "editioncode": "som"
+    },
+    "oracleCard": {
+     "name": "Contagion Engine"
+    }
+   }
+  },
+  {
+   "quantity": 1,
+   "categories": null,
+   "modifier": "Normal",
+   "card": {
+    "collectorNumber": "144",
+    "edition": {
+     "editioncode": "som"
+    },
+    "oracleCard": {
+     "name": "Contagion Clasp"
+    }
+   }
+  },
+  {
+   "quantity": 1,
+   "categories": [
+    "Maybeboard"
+   ],
+   "modifier": "Foil",
+   "card": {
+    "collectorNumber": "1",
+    "edition": {
+     "editioncode": "lea"
+    },
+    "oracleCard": {
+     "name": "Black Lotus"
+    }
+   }
+  }
+ ]
+}
