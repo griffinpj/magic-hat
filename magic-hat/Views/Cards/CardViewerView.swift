@@ -445,7 +445,8 @@ private struct FlippableCard: View {
             aspectRatio: item.aspectRatio,
             cornerRadius: 18,
             targetWidth: Self.targetWidth,
-            fallbackTargetWidth: 150,
+            // The grid's decode, already in memory, while this one loads.
+            fallbackTargetWidth: CardTile.targetWidth(for: AppSettings.gridDensity),
             foil: foil,
             // Animated only for the card in the middle; the neighbours
             // stay static so the pager isn't redrawing three cards.

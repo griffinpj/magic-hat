@@ -47,6 +47,8 @@ struct SearchView: View {
     @State private var dismissSearchTrigger = 0
 
     private var tracker: CollectionChangeTracker { .shared }
+    /// Results carry prices in the currency they were fetched in.
+    @AppStorage(AppSettings.currencyKey) private var currencyRaw = DisplayCurrency.usd.rawValue
 
     var body: some View {
         NavigationStack {
@@ -78,6 +80,7 @@ struct SearchView: View {
                     Text(controller.query.summary)
                 }
                 .task(id: tracker.revision) { await refreshOwned() }
+                .onChange(of: currencyRaw) { _, _ in if controller.hasResults { controller.run() } }
         }
     }
 

@@ -154,6 +154,105 @@ final class CatalogSyncController {
         return Date().timeIntervalSince(last) >= interval
     }
 
+    // MARK: Checking by hand (Settings)
+
+    /// What a manual check found. The check compares builds only: the
+    /// weekly interval is for automatic refreshes, and someone who asks
+    /// wants the newest build Scryfall has.
+    enum UpdateCheck: Equatable {
+        case upToDate
+        /// Newer builds of these datasets, and their download size.
+        case available(bytes: Int?, builtAt: Date?)
+        case failed(String)
+    }
+
+    private(set) var lastCheck: UpdateCheck?
+    private(set) var isCheckingForUpdates = false
+
+    /// When `dataset` was last ingested on this device.
+    func lastIngested(_ dataset: BulkDataset) -> Date? {
+        defaults.object(forKey: ingestedAtKey(dataset)) as? Date
+    }
+
+    /// When Scryfall built the copy we have ("2026-09-20T09:02:48.126+00:00").
+    func builtAt(_ dataset: BulkDataset) -> Date? {
+        defaults.string(forKey: versionKey(dataset)).flatMap(Self.parseBuildDate)
+    }
+
+    nonisolated static func parseBuildDate(_ raw: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return withFraction.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+    }
+
+    /// Looks at the manifest and says whether anything newer exists,
+    /// downloading nothing.
+    @discardableResult
+    func checkForUpdates() async -> UpdateCheck {
+        isCheckingForUpdates = true
+        defer { isCheckingForUpdates = false }
+        let result: UpdateCheck
+        do {
+            let manifest = try await ScryfallBulkClient.shared.manifest()
+            lastManifestCheck = Date()
+            let newer = manifestEntries(manifest).filter { entry, dataset in
+                defaults.string(forKey: versionKey(dataset)) != entry.updatedAt
+            }
+            if newer.isEmpty {
+                result = .upToDate
+            } else {
+                let bytes = newer.compactMap(\.entry.compressedSize).reduce(0, +)
+                let catalog = newer.first { $0.dataset == .defaultCards }?.entry ?? newer[0].entry
+                result = .available(bytes: bytes > 0 ? bytes : nil, builtAt: Self.parseBuildDate(catalog.updatedAt))
+            }
+        } catch {
+            result = .failed("Couldn't reach Scryfall.")
+        }
+        lastCheck = result
+        return result
+    }
+
+    /// Downloads and ingests every dataset whose build differs from ours,
+    /// now, in the foreground — the bar narrates it and the app stays
+    /// usable. The cellular rule still applies: it waits for Wi-Fi, and
+    /// says so, unless the user has allowed cellular.
+    func updateNow(container: ModelContainer) async {
+        self.container = container
+        guard !isRunning else { return }
+        isRunning = true
+        defer {
+            isRunning = false
+            if case .failed = phase {} else { phase = .idle }
+        }
+        phase = .checking
+        guard let manifest = try? await ScryfallBulkClient.shared.manifest() else {
+            phase = .failed("Couldn't reach Scryfall.")
+            return
+        }
+        lastManifestCheck = Date()
+        for (entry, dataset) in manifestEntries(manifest)
+            where defaults.string(forKey: versionKey(dataset)) != entry.updatedAt {
+            guard let uri = entry.jsonlDownloadURI.flatMap(URL.init(string:)) else { continue }
+            do {
+                let file = try await download(uri, dataset: dataset, version: entry.updatedAt)
+                try await ingest(file, dataset: dataset, version: entry.updatedAt, container: container)
+            } catch is CancellationError {
+                return
+            } catch {
+                phase = .failed("Couldn't add \(dataset.displayName).")
+                return
+            }
+        }
+        lastCheck = .upToDate
+    }
+
+    /// The manifest's entries for the datasets we keep, rulings first.
+    private func manifestEntries(_ manifest: [ScryfallBulkEntry]) -> [(entry: ScryfallBulkEntry, dataset: BulkDataset)] {
+        [BulkDataset.rulings, .defaultCards].compactMap { dataset in
+            manifest.first { $0.type == dataset.rawValue }.map { ($0, dataset) }
+        }
+    }
+
     // MARK: Launch
 
     func attach(container: ModelContainer) {

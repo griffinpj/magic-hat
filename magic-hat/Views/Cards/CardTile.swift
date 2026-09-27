@@ -32,16 +32,33 @@ struct CardTile: View, Equatable {
     let item: CardItem
     /// The zoom transition's namespace; marks the image as its source.
     var zoom: Namespace.ID? = nil
+    /// The image's decode size, from the grid's density (see `targetWidth(for:)`).
+    var targetWidth: CGFloat = Self.imageTargetWidth
+    /// False in the densest grid, where a caption has no room.
+    var showsCaption = true
 
     /// The tile image's longest edge in points; the grid warms images at
     /// this size so a warmed image is the one the tile then finds in
     /// memory.
     static let imageTargetWidth: CGFloat = 150
 
+    /// Roughly the tile's width on a large phone at each density, so a
+    /// two-wide grid isn't a blown-up thumbnail and a five-wide one
+    /// doesn't decode more than it draws.
+    static func targetWidth(for density: GridDensity) -> CGFloat {
+        switch density {
+        case .large: return 220
+        case .standard: return imageTargetWidth
+        case .compact: return 110
+        case .dense: return 90
+        }
+    }
+
     @ScaledMetric(relativeTo: .caption2) private var symbolSize: CGFloat = 12
 
     static func == (lhs: CardTile, rhs: CardTile) -> Bool {
         let l = lhs.item, r = rhs.item
+        guard lhs.targetWidth == rhs.targetWidth, lhs.showsCaption == rhs.showsCaption else { return false }
         guard l.id == r.id, l.quantity == r.quantity, l.imageURL == r.imageURL,
               l.aspectRatio == r.aspectRatio, l.owned == r.owned, l.finish == r.finish else { return false }
         guard l.marketPrice == r.marketPrice else { return false }
@@ -53,15 +70,17 @@ struct CardTile: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             image
-            caption
-                .padding(.horizontal, 2)
+            if showsCaption {
+                caption
+                    .padding(.horizontal, 2)
+            }
         }
     }
 
     @ViewBuilder private var image: some View {
         // Sheen on foils, static here so the grid never redraws for it.
         let art = CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio,
-                                targetWidth: Self.imageTargetWidth, foil: isFoil)
+                                targetWidth: targetWidth, foil: isFoil)
             .overlay(alignment: .center) { placeholderName }
         if let zoom {
             art.matchedTransitionSource(id: item.id, in: zoom)
