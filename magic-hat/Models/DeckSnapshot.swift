@@ -121,6 +121,8 @@ nonisolated struct DeckSummary: Identifiable, Hashable, Sendable {
     let isLocked: Bool
     let totalValue: Double
     let updatedDate: Date
+    var folderID: UUID? = nil
+    var createdDate: Date = .distantPast
 }
 
 // MARK: - Building

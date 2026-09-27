@@ -80,6 +80,8 @@ nonisolated final class Deck {
     var updatedDate: Date
     /// Art crop for the Decks tab tile: the commander's, else the first card's.
     var coverArtURL: String?
+    /// The folder the deck is filed in (DeckFolder); nil at the top level.
+    var folderID: UUID?
 
     @Relationship(deleteRule: .cascade, inverse: \DeckCard.deck)
     var cards: [DeckCard]
