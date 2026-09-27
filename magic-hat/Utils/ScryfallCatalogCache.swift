@@ -58,6 +58,10 @@ final class ScryfallCatalogCache {
     static let shared = ScryfallCatalogCache()
 
     static let ttl: TimeInterval = 7 * 24 * 3600
+    /// The set list is kept a day, not a week: a set released today should
+    /// be on the Sets page (and in the set suggestions) tomorrow at the
+    /// latest, and pulling the page down fetches it now.
+    static let setsTTL: TimeInterval = 24 * 3600
 
     nonisolated private struct Entry<T: Codable & Sendable>: Codable, Sendable {
         let value: T
@@ -96,9 +100,9 @@ final class ScryfallCatalogCache {
     }
 
     /// Every paper-or-digital set, newest first, as Scryfall orders them.
-    func sets() async throws -> [ScryfallSet] {
-        if let setList, isFresh(setList.fetchedAt) { return setList.value }
-        if let entry: Entry<[ScryfallSet]> = await Self.read(fileURL("sets")), isFresh(entry.fetchedAt) {
+    func sets(forceRefresh: Bool = false) async throws -> [ScryfallSet] {
+        if !forceRefresh, let setList, isFresh(setList.fetchedAt, ttl: Self.setsTTL) { return setList.value }
+        if !forceRefresh, let entry: Entry<[ScryfallSet]> = await Self.read(fileURL("sets")), isFresh(entry.fetchedAt, ttl: Self.setsTTL) {
             setList = entry
             return entry.value
         }
@@ -115,7 +119,7 @@ final class ScryfallCatalogCache {
 
     // MARK: Disk
 
-    private func isFresh(_ date: Date) -> Bool { Date().timeIntervalSince(date) < Self.ttl }
+    private func isFresh(_ date: Date, ttl: TimeInterval = ScryfallCatalogCache.ttl) -> Bool { Date().timeIntervalSince(date) < ttl }
 
     private func fileURL(_ key: String) -> URL { directory.appendingPathComponent("\(key).json") }
 

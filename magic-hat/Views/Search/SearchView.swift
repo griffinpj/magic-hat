@@ -45,6 +45,20 @@ struct SearchView: View {
     @FocusState private var focusedField: FilterField?
     /// Bumped to collapse the search field (see SearchDismisser).
     @State private var dismissSearchTrigger = 0
+    /// Cards (the search) or Sets (browse by set), from the picker under
+    /// the search field. The field filters whichever page is showing.
+    @State private var mode: SearchMode = .cards
+    @State private var setFilter = ""
+
+    enum SearchMode: String, CaseIterable, Identifiable {
+        case cards, sets
+        var id: String { rawValue }
+        var label: String { self == .cards ? "Cards" : "Sets" }
+    }
+
+    /// The picker shows on the landing page and on Sets; a card search in
+    /// progress has its own X back to the landing.
+    private var showsModePicker: Bool { mode == .sets || controller.phase == .idle }
 
     private var tracker: CollectionChangeTracker { .shared }
     /// Results carry prices in the currency they were fetched in.
@@ -52,18 +66,36 @@ struct SearchView: View {
 
     var body: some View {
         NavigationStack {
-            content
+            Group {
+                if mode == .sets {
+                    SetBrowserView(filter: setFilter)
+                } else {
+                    content
+                }
+            }
+                .safeAreaBar(edge: .top) {
+                    if showsModePicker {
+                        Picker("Browse", selection: $mode) {
+                            ForEach(SearchMode.allCases) { Text($0.label).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 6)
+                        .accessibilityIdentifier("search-mode")
+                    }
+                }
+                .navigationDestination(for: ScryfallSet.self) { SetCardsView(set: $0) }
                 .background { SearchDismisser(trigger: dismissSearchTrigger, isEmpty: searchText.isEmpty) }
                 .navigationTitle("Search")
                 // Always shown; with .automatic the drawer starts hidden above a
                 // long Form until the user pulls down.
-                .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
-                            prompt: "Card name, type, rules text")
+                .searchable(text: mode == .cards ? $searchText : $setFilter, placement: .navigationBarDrawer(displayMode: .always),
+                            prompt: mode == .cards ? "Card name, type, rules text" : "Set name or code")
                 // Live results are refined *while* the field is active, so
                 // the title and the Sort/Filters items must stay; by default
                 // an active search hides them and only Cancel remains.
                 .searchPresentationToolbarBehavior(.avoidHidingContent)
-                .onSubmit(of: .search) { submit() }
+                .onSubmit(of: .search) { if mode == .cards { submit() } }
                 .onChange(of: searchText) { _, text in textChanged(text) }
                 .toolbar { toolbar }
                 .sheet(isPresented: $showFilters, onDismiss: { controller.runIfChanged() }) {
@@ -252,6 +284,12 @@ struct SearchView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        if mode == .cards {
+            cardsToolbar
+        }
+    }
+
+    @ToolbarContentBuilder private var cardsToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Menu {
                 Button("Save Search…", systemImage: "bookmark.badge.plus") {
