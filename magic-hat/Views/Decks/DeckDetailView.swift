@@ -62,6 +62,7 @@ struct DeckDetailView: View {
         var id: String { scope.rawValue }
     }
     @State private var showExport = false
+    @State private var showPropose = false
     @State private var filterText = ""
     @State private var searchSessionActive = false
     @State private var confirmDisassemble = false
@@ -178,6 +179,9 @@ struct DeckDetailView: View {
         .sheet(isPresented: $showBuild) {
             if let snapshot { DeckBuildSheet(deckID: snapshot.id, deckName: snapshot.name) }
         }
+        .sheet(isPresented: $showPropose) {
+            DeckProposeView(deckID: deckID, controller: analysis, context: modelContext)
+        }
         .sheet(isPresented: $showExport) {
             if let snapshot { DeckExportView(snapshot: snapshot) }
         }
@@ -220,6 +224,8 @@ struct DeckDetailView: View {
                 if !snapshot.isLocked {
                     Button("Suggested Swaps", systemImage: "arrow.left.arrow.right") { pushed = .swaps }
                         .accessibilityIdentifier("deck-menu-swaps")
+                    Button("Try Cards…", systemImage: "questionmark.circle") { showPropose = true }
+                        .accessibilityIdentifier("deck-menu-propose")
                 }
                 Divider()
                 Button("Build Deck…", systemImage: "hammer") { showBuild = true }

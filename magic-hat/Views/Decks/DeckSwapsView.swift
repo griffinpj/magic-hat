@@ -28,6 +28,7 @@ struct DeckSwapsView: View {
     @State private var snapshot: DeckSnapshot?
     @State private var viewer: CardViewerSession?
     @State private var changes = 0
+    @State private var proposing = false
     @State private var error: String?
 
     private var deckTracker: DeckChangeTracker { .shared }
@@ -53,6 +54,18 @@ struct DeckSwapsView: View {
         .navigationTitle("Swaps")
         .navigationSubtitle(snapshot?.name ?? "")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !locked {
+                ToolbarItem(placement: .primaryAction) {
+                    // Offer cards of your own and see what each would replace.
+                    Button("Try Cards", systemImage: "questionmark.circle") { proposing = true }
+                        .accessibilityIdentifier("swaps-try-cards")
+                }
+            }
+        }
+        .sheet(isPresented: $proposing) {
+            DeckProposeView(deckID: deckID, controller: controller, context: modelContext)
+        }
         .fullScreenCover(item: $viewer) { v in
             CardViewerView(items: v.items, currentID: Bindable(v).currentID, deck: v.deck)
                 .navigationTransition(.zoom(sourceID: v.currentID ?? "", in: zoom))
