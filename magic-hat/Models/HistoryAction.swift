@@ -35,10 +35,13 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
     let deckName: String?
     /// An import that cleared the collection before adding.
     let replaced: Bool
+    /// For a move: where the copies went.
+    var destination: String? = nil
     var id: UUID { actionID }
 
     init(actionID: UUID, timestamp: Date, added: Int, removed: Int, scopes: [String], action: AuditAction,
-         state: HistoryState, cardCount: Int = 0, cardNames: [String] = [], deckName: String? = nil, replaced: Bool = false) {
+         state: HistoryState, cardCount: Int = 0, cardNames: [String] = [], deckName: String? = nil, replaced: Bool = false,
+         destination: String? = nil) {
         self.actionID = actionID
         self.timestamp = timestamp
         self.added = added
@@ -50,6 +53,7 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
         self.cardNames = cardNames
         self.deckName = deckName
         self.replaced = replaced
+        self.destination = destination
     }
 
     var isApplied: Bool { state == .applied }
@@ -67,6 +71,8 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
             return cardCount == 1 && cardNames.count == 1 ? "Removed \(cardNames[0])" : "Removed \(cards)"
         case .deckBuild: return "Built \(deckName ?? "Deck")"
         case .deckDisassemble: return "Disassembled \(deckName ?? "Deck")"
+        case .move:
+            return cardCount == 1 && cardNames.count == 1 ? "Moved \(cardNames[0])" : "Moved \(cards)"
         case .undo: return "Undo"
         case .redo: return "Redo"
         }
@@ -99,6 +105,10 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
         switch action {
         case .deckBuild where !others.isEmpty: return "from \(others.joined(separator: ", "))"
         case .deckDisassemble where !others.isEmpty: return "to \(others.joined(separator: ", "))"
+        case .move:
+            guard let destination else { return scopes.joined(separator: ", ") }
+            let from = scopes.filter { $0 != destination }
+            return from.isEmpty ? "to \(destination)" : "\(from.joined(separator: ", ")) → \(destination)"
         default: return scopes.joined(separator: ", ")
         }
     }

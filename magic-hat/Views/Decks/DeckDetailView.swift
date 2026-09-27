@@ -233,6 +233,8 @@ struct DeckDetailView: View {
                 }
                 Button("Export…", systemImage: "square.and.arrow.up") { showExport = true }
                     .accessibilityIdentifier("deck-menu-export")
+                BuyMenu(title: "Buy Missing Cards", lines: snapshot.missingBuyLines)
+                    .accessibilityIdentifier("deck-menu-buy")
                 Divider()
                 Button("Delete Deck", systemImage: "trash", role: .destructive) { confirmDelete = true }
             }

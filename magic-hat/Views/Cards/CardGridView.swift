@@ -35,6 +35,10 @@ struct CardGridView<Header: View, Accessory: View>: View {
     @ViewBuilder var header: () -> Header
     /// Floating accessory (e.g. a sort button).
     @ViewBuilder var accessory: () -> Accessory
+    /// Set while choosing cards (Photos' Select): a tap toggles the card's
+    /// id in the set instead of opening the viewer, and each tile wears a
+    /// check. Nil when the grid isn't selecting.
+    var selection: Binding<Set<String>>? = nil
 
     @Namespace private var zoom
     @Environment(\.displayScale) private var displayScale
@@ -67,13 +71,31 @@ struct CardGridView<Header: View, Accessory: View>: View {
                             CardTile(item: item, zoom: zoom, targetWidth: CardTile.targetWidth(for: density),
                                      showsCaption: density.showsCaption)
                                 .equatable()
+                                // Outside the equatable tile, so selecting
+                                // redraws a badge, not the art.
+                                .overlay(alignment: .topTrailing) {
+                                    if let selection {
+                                        SelectionBadge(isSelected: selection.wrappedValue.contains(id))
+                                    }
+                                }
                                 .onAppear {
                                     let index = items.index(of: id) ?? 0
                                     onAppearIndex(index)
                                     warmImages(from: index)
                                 }
                                 .contentShape(Rectangle())
-                                .onTapGesture { open(item) }
+                                .onTapGesture {
+                                    if let selection {
+                                        if selection.wrappedValue.contains(id) {
+                                            selection.wrappedValue.remove(id)
+                                        } else {
+                                            selection.wrappedValue.insert(id)
+                                        }
+                                    } else {
+                                        open(item)
+                                    }
+                                }
+                                .accessibilityAddTraits(selection?.wrappedValue.contains(id) == true ? .isSelected : [])
                         }
                     }
                 }
@@ -129,6 +151,31 @@ struct CardGridView<Header: View, Accessory: View>: View {
     }
 }
 
+/// The check on a tile while the grid is selecting: an empty ring, filled
+/// once the card is chosen — the Photos mark.
+private struct SelectionBadge: View {
+    let isSelected: Bool
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.black.opacity(0.25)))
+            Circle()
+                .strokeBorder(.white, lineWidth: 1.5)
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .frame(width: 24, height: 24)
+        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+        .padding(6)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 extension CardGridView where Header == EmptyView, Accessory == EmptyView {
     init(items: CardItemList, onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0) {
         self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
@@ -138,9 +185,10 @@ extension CardGridView where Header == EmptyView, Accessory == EmptyView {
 
 extension CardGridView where Header == EmptyView {
     init(items: CardItemList, onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0,
+         selection: Binding<Set<String>>? = nil,
          @ViewBuilder accessory: @escaping () -> Accessory) {
         self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
-                  header: { EmptyView() }, accessory: accessory)
+                  header: { EmptyView() }, accessory: accessory, selection: selection)
     }
 }
 

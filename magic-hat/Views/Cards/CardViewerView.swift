@@ -19,6 +19,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct CardViewerView: View {
     /// Stamped, not compared card by card — see CardItemList. The viewer
@@ -39,6 +40,10 @@ struct CardViewerView: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.modelContext) private var modelContext
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    /// Where a quick add goes (the long-press menu on Add). Small table.
+    @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
+    @Environment(\.browsingCollection) private var browsingCollection
+    @AppStorage(AddTarget.lastKey) private var lastCollection = ""
 
     @State private var detail: CardItem?
     @State private var synergies: CardItem?
@@ -47,6 +52,9 @@ struct CardViewerView: View {
     @State private var pendingDelete: CardItem?
     @State private var deleteError: String?
     @State private var deckAdds = 0
+    /// "Added Sol Ring to Main" after a quick add, briefly.
+    @State private var quickAdded: String?
+    @State private var quickAddCount = 0
     /// What the pager reports as centred. Separate from `currentID`, which
     /// is the truth until the user swipes: see `pager`.
     @State private var visibleID: String?
@@ -105,9 +113,22 @@ struct CardViewerView: View {
         // Only a deck's viewer steps copies; elsewhere the haptic never
         // fires, so its feedback machinery isn't set up on the first open.
         .modifier(DeckAddFeedback(enabled: deck != nil, trigger: deckAdds))
+        .sensoryFeedback(.success, trigger: quickAddCount)
+        .overlay(alignment: .top) {
+            if let quickAdded {
+                QuickAddToast(text: quickAdded)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: quickAdded)
+        .task(id: quickAddCount) {
+            guard quickAdded != nil else { return }
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled { quickAdded = nil }
+        }
         .sheet(item: $adding) { AddCardView(item: $0) }
         .sheet(item: $editing) { EditEntryView(item: $0) }
-        .alert("Couldn't remove", isPresented: Binding(get: { deleteError != nil },
+        .alert("Couldn't Update", isPresented: Binding(get: { deleteError != nil },
                                                       set: { if !$0 { deleteError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -169,8 +190,7 @@ struct CardViewerView: View {
                 Button("Edit", systemImage: "pencil") { editing = currentItem }
                     .disabled(!canEditCurrent)
                     .accessibilityIdentifier("viewer-edit")
-                Button("Add", systemImage: "plus") { adding = currentItem }
-                    .accessibilityIdentifier("viewer-add")
+                addMenu
             }
         }
         ToolbarSpacer(.flexible, placement: .bottomBar)
@@ -202,6 +222,70 @@ struct CardViewerView: View {
             // Remove acts on an owned row; a deck's add sheet shows none, so
             // it isn't offered there rather than shown disabled.
             ToolbarItem(placement: .bottomBar) { removeItem }
+        }
+    }
+
+    /// Add: a tap opens the full Add sheet; a long press is a menu of
+    /// collections and lists that each take one copy of this printing, as
+    /// shown, in one step — the menu is where the choice is confirmed.
+    private var addMenu: some View {
+        Menu {
+            let targets = quickTargets
+            if !targets.collections.isEmpty {
+                Section("Add 1 to Collection") {
+                    ForEach(targets.collections, id: \.self) { name in
+                        Button(name, systemImage: CollectionKind.collection.systemImage) { quickAdd(to: name) }
+                    }
+                }
+            }
+            if !targets.lists.isEmpty {
+                Section("Add 1 to List") {
+                    ForEach(targets.lists, id: \.self) { name in
+                        Button(name, systemImage: CollectionKind.list.systemImage) { quickAdd(to: name) }
+                    }
+                }
+            }
+            Button("More Options…", systemImage: "slider.horizontal.3") { adding = currentItem }
+        } label: {
+            Label("Add", systemImage: "plus")
+        } primaryAction: {
+            adding = currentItem
+        }
+        .accessibilityIdentifier("viewer-add")
+    }
+
+    /// Collections then lists, each led by where an Add would start (the
+    /// one being browsed, else the last one added to).
+    private var quickTargets: (collections: [String], lists: [String]) {
+        let lead = [browsingCollection, lastCollection.isEmpty ? nil : lastCollection].compactMap { $0 }
+        func ordered(_ kind: CollectionKind) -> [String] {
+            let names = collections.filter { $0.kind == kind }.map(\.name)
+            var seen = Set<String>()
+            return (lead.filter(names.contains) + names).filter { seen.insert($0).inserted }
+        }
+        return (ordered(.collection), ordered(.list))
+    }
+
+    /// One copy of the printing on screen: its finish if it is an owned
+    /// row's, else normal; near mint; the default card language; the
+    /// market price as the price paid, as the Add sheet would fill it.
+    private func quickAdd(to name: String) {
+        guard let item = currentItem else { return }
+        let printing = PrintingSelection(item: item)
+        let finish = item.isEntry ? item.finish : .normal
+        do {
+            try CollectionEditController.add(
+                .init(printing: printing, collectionName: name, quantity: 1, finish: finish,
+                      condition: CardCondition.nearMint.rawValue,
+                      language: item.isEntry && !item.language.isEmpty ? item.language : AppSettings.cardLanguage,
+                      purchasePrice: printing.marketPrice(for: finish)),
+                context: modelContext
+            )
+            lastCollection = name
+            quickAdded = "Added \(item.name) to \(name)"
+            quickAddCount += 1
+        } catch {
+            deleteError = error.localizedDescription
         }
     }
 
@@ -396,6 +480,22 @@ struct CardViewerView: View {
     private static func prefetchArt(for item: CardItem, maxPixel: CGFloat) async {
         guard let url = item.artCropURL else { return }
         _ = try? await ImageLoader.shared.image(for: url, maxPixel: maxPixel)
+    }
+}
+
+/// The confirmation after a quick add: a glass pill under the title bar.
+private struct QuickAddToast: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "checkmark.circle.fill")
+            .font(.subheadline.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .glassEffect(.regular, in: Capsule())
+            .padding(.top, 8)
+            .accessibilityIdentifier("viewer-quick-added")
     }
 }
 

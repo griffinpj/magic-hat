@@ -111,6 +111,124 @@ enum CollectionEditController {
     }
 }
 
+// MARK: - Several rows at once (a selection)
+
+extension CollectionEditController {
+    nonisolated struct BulkSummary: Sendable {
+        let actionID: UUID
+        let rows: Int
+        let copies: Int
+    }
+
+    /// Moves every copy of each row into `destination` (a collection or a
+    /// list), merging by merge key there, as one action: a −n record for
+    /// the row it leaves and +n for the row it joins, like a build. Rows in
+    /// a deck, or already in the destination, are left where they are. On
+    /// the writer's context: a selection can be the whole collection.
+    nonisolated static func move(entryIDs: [UUID], to destination: String, in context: ModelContext) throws -> BulkSummary {
+        let actionID = UUID()
+        let now = Date()
+        let name = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw CollectionEditError.missingCollection }
+        let existing = try context.fetch(FetchDescriptor<MTGCollection>(predicate: #Predicate { $0.name == name }))
+        guard let target = existing.first else { throw CollectionEditError.missingCollection }
+        let targetKind: CollectionKind? = target.kind == .list ? .list : nil
+        let listNames = Set(try context.fetch(FetchDescriptor<MTGCollection>()).filter { $0.kind == .list }.map(\.name))
+
+        var sources: [CollectionEntry] = []
+        for chunk in entryIDs.chunked(into: 500) {
+            sources += try context.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { chunk.contains($0.id) }))
+        }
+        sources = sources.filter { !Deck.isDeckCollection($0.collectionName) && $0.collectionName != name }
+        let ids = Array(Set(sources.map(\.scryfallID)))
+        var targets: [String: CollectionEntry] = [:]
+        for chunk in ids.chunked(into: 500) {
+            for entry in try context.fetch(FetchDescriptor<CollectionEntry>(
+                predicate: #Predicate { $0.collectionName == name && chunk.contains($0.scryfallID) })) {
+                targets[entry.mergeKey] = entry
+            }
+        }
+
+        var copies = 0
+        for source in sources {
+            let quantity = source.quantity
+            copies += quantity
+            context.insert(AuditRecord(
+                actionID: actionID, action: .move, timestamp: now,
+                scryfallID: source.scryfallID, cardName: source.name, collectionName: source.collectionName,
+                finish: source.finish, condition: source.condition, quantityDelta: -quantity,
+                collectionEntryID: source.id, snapshot: EntrySnapshot(source),
+                collectionKind: listNames.contains(source.collectionName) ? .list : nil
+            ))
+            let key = CollectionEntry.mergeKey(scryfallID: source.scryfallID, collectionName: name,
+                                               finish: source.finishRaw, condition: source.condition)
+            let row: CollectionEntry
+            if let merged = targets[key] {
+                merged.quantity += quantity
+                if merged.purchasePrice == nil { merged.purchasePrice = source.purchasePrice }
+                row = merged
+                context.delete(source)
+            } else {
+                // The row itself changes home: same id, dates and price.
+                source.collectionName = name
+                source.sourceCollectionName = nil
+                targets[key] = source
+                row = source
+            }
+            context.insert(AuditRecord(
+                actionID: actionID, action: .move, timestamp: now,
+                scryfallID: row.scryfallID, cardName: row.name, collectionName: name,
+                finish: row.finish, condition: row.condition, quantityDelta: quantity,
+                collectionEntryID: row.id, snapshot: EntrySnapshot(row), collectionKind: targetKind
+            ))
+        }
+        try context.save()
+        return BulkSummary(actionID: actionID, rows: sources.count, copies: copies)
+    }
+
+    /// Removes each row entirely, as one action. Rows in a deck are left:
+    /// those leave by disassembling.
+    nonisolated static func remove(entryIDs: [UUID], in context: ModelContext) throws -> BulkSummary {
+        let actionID = UUID()
+        let now = Date()
+        let listNames = Set(try context.fetch(FetchDescriptor<MTGCollection>()).filter { $0.kind == .list }.map(\.name))
+        var rows: [CollectionEntry] = []
+        for chunk in entryIDs.chunked(into: 500) {
+            rows += try context.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { chunk.contains($0.id) }))
+        }
+        rows = rows.filter { !Deck.isDeckCollection($0.collectionName) }
+        var copies = 0
+        for entry in rows {
+            copies += entry.quantity
+            context.insert(AuditRecord(
+                actionID: actionID, action: .manualRemove, timestamp: now,
+                scryfallID: entry.scryfallID, cardName: entry.name, collectionName: entry.collectionName,
+                finish: entry.finish, condition: entry.condition, quantityDelta: -entry.quantity,
+                collectionEntryID: entry.id, snapshot: EntrySnapshot(entry),
+                collectionKind: listNames.contains(entry.collectionName) ? .list : nil
+            ))
+            context.delete(entry)
+        }
+        try context.save()
+        return BulkSummary(actionID: actionID, rows: rows.count, copies: copies)
+    }
+
+    /// The two above on the background writer, then one tracker bump.
+    @discardableResult
+    static func move(entryIDs: [UUID], to destination: String, context: ModelContext) async throws -> BulkSummary {
+        let summary = try await CardMetaWriter.shared(for: context.container).runMove(entryIDs: entryIDs, to: destination)
+        CollectionChangeTracker.shared.bump()
+        return summary
+    }
+
+    @discardableResult
+    static func remove(entryIDs: [UUID], context: ModelContext) async throws -> BulkSummary {
+        let summary = try await CardMetaWriter.shared(for: context.container).runRemove(entryIDs: entryIDs)
+        CollectionChangeTracker.shared.bump()
+        return summary
+    }
+}
+
 // MARK: - Single-entry edits
 
 nonisolated enum CollectionEditError: Error, LocalizedError {

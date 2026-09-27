@@ -108,6 +108,16 @@ actor CardMetaWriter: ModelActor {
         try await CollectionEditController.delete(collectionName: collectionName, in: modelContext, progress: progress)
     }
 
+    /// A selection moved to another collection or list (see CollectionEditController).
+    func runMove(entryIDs: [UUID], to destination: String) throws -> CollectionEditController.BulkSummary {
+        try CollectionEditController.move(entryIDs: entryIDs, to: destination, in: modelContext)
+    }
+
+    /// A selection removed (see CollectionEditController).
+    func runRemove(entryIDs: [UUID]) throws -> CollectionEditController.BulkSummary {
+        try CollectionEditController.remove(entryIDs: entryIDs, in: modelContext)
+    }
+
     /// Undo or redo of one ledger action, on this context (see LedgerReplay).
     @discardableResult
     func runReplay(actionID: UUID, direction: LedgerReplay.Direction) throws -> UUID {

@@ -239,7 +239,8 @@ actor CollectionStore: ModelActor {
                 cardCount: copies.count,
                 cardNames: Array(cardNames),
                 deckName: deckName,
-                replaced: recs.contains { $0.action == .importReplace }
+                replaced: recs.contains { $0.action == .importReplace },
+                destination: kind == .move ? recs.first { $0.quantityDelta > 0 }?.collectionName : nil
             ))
         }
         actions.sort { $0.timestamp > $1.timestamp }
@@ -302,7 +303,7 @@ actor CollectionStore: ModelActor {
 
         let kind = records.first?.action
         var leftover = merged
-        if kind == .deckBuild || kind == .deckDisassemble {
+        if kind == .deckBuild || kind == .deckDisassemble || kind == .move {
             // A move: the same printing out of one collection and into
             // another by the same count, shown once.
             struct Printing: Hashable { let card: String; let finish: String; let condition: String }

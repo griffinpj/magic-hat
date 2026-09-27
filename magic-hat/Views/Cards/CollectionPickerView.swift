@@ -59,9 +59,9 @@ struct CollectionPickerView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button("New Collection", systemImage: CollectionKind.collection.systemImage) { newName = ""; creatingKind = .collection; showingCreate = true }
+                    Button("New Collection", systemImage: CollectionKind.collection.systemImage) { startCreate(.collection) }
                         .accessibilityIdentifier("new-collection")
-                    Button("New List", systemImage: CollectionKind.list.systemImage) { newName = ""; creatingKind = .list; showingCreate = true }
+                    Button("New List", systemImage: CollectionKind.list.systemImage) { startCreate(.list) }
                         .accessibilityIdentifier("new-list")
                 } label: {
                     Label("New", systemImage: "plus")
@@ -108,6 +108,12 @@ struct CollectionPickerView: View {
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         .accessibilityIdentifier("pick-collection-\(summary.name)")
+    }
+
+    private func startCreate(_ kind: CollectionKind) {
+        newName = ""
+        creatingKind = kind
+        showingCreate = true
     }
 
     private func create() {

@@ -54,6 +54,16 @@ struct CollectionCardsView: View {
     @State private var filterTask: Task<Void, Never>?
     @State private var showFilters = false
 
+    /// Choosing several cards to move, buy or remove at once (Photos'
+    /// Select). The tab bar steps aside for the actions' bottom bar.
+    @State private var isSelecting = false
+    @State private var selection: Set<String> = []
+    @State private var confirmRemove = false
+    @State private var isWorking = false
+    @State private var actionError: String?
+    @Query(sort: \MTGCollection.name) private var allCollections: [MTGCollection]
+    @Environment(\.openURL) private var openURL
+
     /// Remembered across launches and collections.
     @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
     private var sort: CardSort { CardSort(rawValue: sortRaw) ?? .name }
@@ -88,10 +98,13 @@ struct CollectionCardsView: View {
                     items: visible,
                     onAppearIndex: { prefetch(around: $0) },
                     scrollToTop: scrollToTop,
+                    selection: isSelecting ? $selection : nil,
                     accessory: {
-                        VStack(alignment: .trailing, spacing: 10) {
-                            SyncPill()
-                            sortButton
+                        if !isSelecting {
+                            VStack(alignment: .trailing, spacing: 10) {
+                                SyncPill()
+                                sortButton
+                            }
                         }
                     }
                 )
@@ -115,6 +128,45 @@ struct CollectionCardsView: View {
                     prompt: "Search this collection")
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
+            if isSelecting {
+                selectionToolbar
+            } else {
+                browsingToolbar
+            }
+        }
+        .toolbar(isSelecting ? .hidden : .visible, for: .tabBar)
+        .navigationBarBackButtonHidden(isSelecting)
+        .animation(.default, value: isSelecting)
+        .onChange(of: visible) { _, list in
+            // A card that left the grid (removed, moved) leaves the selection.
+            if isSelecting { selection.formIntersection(list.ids) }
+        }
+        .confirmationDialog(removeTitle, isPresented: $confirmRemove, titleVisibility: .visible) {
+            Button("Remove \(selectedRemovable.count == 1 ? "Card" : "\(selectedRemovable.count) Cards")", role: .destructive) {
+                run { try await CollectionEditController.remove(entryIDs: selectedRemovable, context: modelContext) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(hasDeckRowsSelected ? "Cards built into decks stay; take the deck apart to move them. Recorded in History." : "Recorded in History, where it can be undone.")
+        }
+        .alert("Couldn't Do That", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(actionError ?? "") }
+        .overlay { if isWorking { ProgressView().controlSize(.large).padding(24).glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16)) } }
+        .sheet(isPresented: $showFilters) {
+            SearchFiltersView(query: $query, context: .collection)
+        }
+        .onChange(of: query) { _, _ in applyFilter() }
+        // Initial load, and again after any write (import/delete).
+        .task(id: "\(collectionName)|\(tracker.revision)") {
+            await load(thenSync: true)
+        }
+        .onChange(of: sortRaw) { _, _ in applySort() }
+    }
+
+    // MARK: Toolbars
+
+    @ToolbarContentBuilder private var browsingToolbar: some ToolbarContent {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     showFilters = true
@@ -131,17 +183,127 @@ struct CollectionCardsView: View {
                     Button("Clear Search", systemImage: "xmark") { query = CardSearchQuery() }
                         .accessibilityIdentifier("collection-clear")
                 }
+                Menu {
+                    Button("Select Cards", systemImage: "checkmark.circle") {
+                        selection = []
+                        isSelecting = true
+                    }
+                    .disabled(visible.isEmpty)
+                    .accessibilityIdentifier("collection-select")
+                    BuyMenu(title: query.isEmpty ? "Buy All" : "Buy These", lines: buyLines(visible.items))
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+                .accessibilityIdentifier("collection-more")
+            }
+    }
+
+    @ToolbarContentBuilder private var selectionToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            let all = !visible.isEmpty && selection.count == visible.count
+            Button(all ? "Deselect All" : "Select All") {
+                selection = all ? [] : Set(visible.ids)
+            }
+            .accessibilityIdentifier("selection-all")
+        }
+        ToolbarItem(placement: .principal) {
+            Text(selectionTitle)
+                .font(.headline)
+                .monospacedDigit()
+                .accessibilityIdentifier("selection-count")
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done") {
+                isSelecting = false
+                selection = []
+            }
+            .accessibilityIdentifier("selection-done")
+        }
+        ToolbarItemGroup(placement: .bottomBar) {
+            Menu {
+                let destinations = allCollections.filter { $0.name != collectionName }
+                let owned = destinations.filter { $0.kind == .collection }
+                let lists = destinations.filter { $0.kind == .list }
+                if !owned.isEmpty {
+                    Section("Collections") {
+                        ForEach(owned) { c in
+                            Button(c.name, systemImage: CollectionKind.collection.systemImage) { move(to: c.name) }
+                        }
+                    }
+                }
+                if !lists.isEmpty {
+                    Section("Lists") {
+                        ForEach(lists) { c in
+                            Button(c.name, systemImage: CollectionKind.list.systemImage) { move(to: c.name) }
+                        }
+                    }
+                }
+            } label: {
+                Label("Move", systemImage: "arrow.right.circle")
+            }
+            .disabled(selectedRemovable.isEmpty || allCollections.count < 2)
+            .accessibilityIdentifier("selection-move")
+            BuyMenu(title: "Buy", lines: buyLines(selectedItems), iconOnly: true)
+                .disabled(selection.isEmpty)
+                .accessibilityIdentifier("selection-buy")
+        }
+        ToolbarSpacer(.flexible, placement: .bottomBar)
+        ToolbarItem(placement: .bottomBar) {
+            Button("Remove", systemImage: "trash") { confirmRemove = true }
+                .disabled(selectedRemovable.isEmpty)
+                .accessibilityIdentifier("selection-remove")
+        }
+    }
+
+    // MARK: Selection
+
+    private var selectedItems: [CardItem] {
+        visible.items.filter { selection.contains($0.id) }
+    }
+
+    /// Rows a move or removal can take: not a deck's (those leave by
+    /// disassembling).
+    private var selectedRemovable: [UUID] {
+        selectedItems.filter { !Deck.isDeckCollection($0.collectionName) }.compactMap { UUID(uuidString: $0.id) }
+    }
+
+    private var hasDeckRowsSelected: Bool {
+        selectedItems.contains { Deck.isDeckCollection($0.collectionName) }
+    }
+
+    private var selectionTitle: String {
+        guard !selection.isEmpty else { return "Select Cards" }
+        let copies = selectedItems.reduce(0) { $0 + $1.quantity }
+        return selection.count == copies ? "\(copies) Selected" : "\(selection.count) Selected · \(copies) copies"
+    }
+
+    private var removeTitle: String {
+        let count = selectedRemovable.count
+        return count == 1 ? "Remove 1 card?" : "Remove \(count) cards?"
+    }
+
+    private func buyLines(_ items: [CardItem]) -> [BuyLine] {
+        CardStore.lines(items.map { ($0.name, max($0.quantity, 1)) })
+    }
+
+    private func move(to destination: String) {
+        let ids = selectedRemovable
+        run { try await CollectionEditController.move(entryIDs: ids, to: destination, context: modelContext) }
+    }
+
+    /// A bulk write on the writer, then out of selection mode.
+    private func run(_ work: @escaping () async throws -> CollectionEditController.BulkSummary) {
+        isWorking = true
+        Task {
+            defer { isWorking = false }
+            do {
+                _ = try await work()
+                isSelecting = false
+                selection = []
+            } catch {
+                actionError = error.localizedDescription
             }
         }
-        .sheet(isPresented: $showFilters) {
-            SearchFiltersView(query: $query, context: .collection)
-        }
-        .onChange(of: query) { _, _ in applyFilter() }
-        // Initial load, and again after any write (import/delete).
-        .task(id: "\(collectionName)|\(tracker.revision)") {
-            await load(thenSync: true)
-        }
-        .onChange(of: sortRaw) { _, _ in applySort() }
     }
 
     // MARK: Loading
