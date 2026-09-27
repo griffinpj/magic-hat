@@ -378,6 +378,7 @@ private struct HistoryRow: View {
     private var icon: String {
         switch action.action {
         case .deckBuild, .deckDisassemble: return "rectangle.stack"
+        case .move: return "arrow.right.circle"
         case .manualAdd: return "plus.circle"
         case .manualRemove: return "minus.circle"
         case .undo: return "arrow.uturn.backward"

@@ -91,6 +91,17 @@ nonisolated struct DeckSnapshot: Hashable, Sendable {
     var mainCopies: Int { playedItems.reduce(0) { $0 + $1.quantity } }
     var builtCopies: Int { playedItems.reduce(0) { $0 + $1.builtQuantity } }
     var isBuilt: Bool { builtCopies > 0 }
+
+    /// What to buy to finish the deck: each card's copies neither built
+    /// nor in a collection, commander, mainboard and sideboard.
+    var missingBuyLines: [BuyLine] {
+        CardStore.lines((playedItems + sideboard).map { ($0.card.name, $0.missingQuantity) })
+    }
+
+    /// The whole list as a cart, for buying a deck outright.
+    var allBuyLines: [BuyLine] {
+        CardStore.lines((playedItems + sideboard).map { ($0.card.name, $0.quantity) })
+    }
     var subtitle: String {
         var s = format.label
         if let target = format.cardTarget { s += " · \(mainCopies)/\(target)" } else { s += " · \(mainCopies) cards" }

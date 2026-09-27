@@ -107,6 +107,18 @@ struct DeckDetailsView: View {
             }
 
             Section {
+                let missing = snapshot.missingBuyLines
+                BuyMenu(title: missing.isEmpty ? "Nothing Missing" : "Buy Missing Cards", lines: missing)
+                    .accessibilityIdentifier("deck-buy-missing")
+                BuyMenu(title: "Buy the Whole Deck", lines: snapshot.allBuyLines)
+                    .accessibilityIdentifier("deck-buy-all")
+            } header: {
+                Text("Buy")
+            } footer: {
+                Text("Opens TCGplayer or Card Kingdom with the cards in the cart. Missing means neither built nor anywhere in your collections.")
+            }
+
+            Section {
                 Button("Delete Deck", systemImage: "trash", role: .destructive, action: onDelete)
                     .frame(maxWidth: .infinity)
             }

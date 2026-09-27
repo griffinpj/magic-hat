@@ -33,6 +33,9 @@ nonisolated enum AuditAction: String, Codable, Sendable, CaseIterable {
     case deckBuild
     /// Copies moved from a deck back to a collection.
     case deckDisassemble
+    /// Copies moved between collections and lists (pairs of −n / +n), from
+    /// a multi-select.
+    case move
     /// A user action reversed; `undoesActionID` names it.
     case undo
     /// An undone action applied again; `undoesActionID` names it.
