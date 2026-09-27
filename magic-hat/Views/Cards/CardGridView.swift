@@ -45,22 +45,27 @@ struct CardGridView<Header: View, Accessory: View>: View {
     /// The card the viewer is showing right now — it pages, this follows.
     @State private var viewingID: String?
 
-    private let columns = Array(
-        repeating: GridItem(.flexible(), spacing: 10), count: 3
-    )
+    /// Cards across, from Settings (Grid Size).
+    @AppStorage(AppSettings.gridColumnsKey) private var columnsRaw = GridDensity.standard.rawValue
+    private var density: GridDensity { GridDensity(rawValue: columnsRaw) ?? .standard }
+    private var spacing: CGFloat { density.rawValue >= 5 ? 6 : 10 }
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: spacing), count: density.rawValue)
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 header()
-                LazyVGrid(columns: columns, spacing: 10) {
+                LazyVGrid(columns: columns, spacing: spacing) {
                     // Over ids, not cards: SwiftUI compares a ForEach's data
                     // element by element on every update (see CardItemList).
                     ForEach(items.ids, id: \.self) { id in
                         if let item = items.item(for: id) {
                             // The tile marks its image, not its caption, as
                             // the zoom's source.
-                            CardTile(item: item, zoom: zoom)
+                            CardTile(item: item, zoom: zoom, targetWidth: CardTile.targetWidth(for: density),
+                                     showsCaption: density.showsCaption)
                                 .equatable()
                                 .onAppear {
                                     let index = items.index(of: id) ?? 0
@@ -72,7 +77,7 @@ struct CardGridView<Header: View, Accessory: View>: View {
                         }
                     }
                 }
-                .padding(10)
+                .padding(spacing)
             }
             // Search results sit under the keyboard while typing; a scroll
             // should put it away. No-op elsewhere.
@@ -118,7 +123,7 @@ struct CardGridView<Header: View, Accessory: View>: View {
         guard index < upper else { return }
         let urls = items.items[index..<upper].compactMap(\.imageURL)
         guard !urls.isEmpty else { return }
-        let px = CardTile.imageTargetWidth * displayScale
+        let px = CardTile.targetWidth(for: density) * displayScale
         warmTask?.cancel()
         warmTask = Task(priority: .utility) { await ImageLoader.shared.warm(urls, maxPixel: px) }
     }

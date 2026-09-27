@@ -29,6 +29,7 @@ struct CollectionsView: View {
     private var store: CollectionStore { CollectionStore.shared(for: modelContext.container) }
 
     @State private var showingFileImporter = false
+    @State private var showingSettings = false
     @State private var parsedRows: [ManaBoxRow] = []
     @State private var parsedBinders: [ImportWizardView.BinderCount] = []
     @State private var showingWizard = false
@@ -108,6 +109,10 @@ struct CollectionsView: View {
             .navigationTitle("Collections")
             .navigationDestination(for: String.self) { CollectionCardsView(collectionName: $0) }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Settings", systemImage: "gearshape") { showingSettings = true }
+                        .accessibilityIdentifier("open-settings")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button {
@@ -128,6 +133,7 @@ struct CollectionsView: View {
             ) { result in
                 handleFile(result)
             }
+            .sheet(isPresented: $showingSettings) { SettingsView() }
             .sheet(isPresented: $showingWizard) {
                 ImportWizardView(
                     rows: parsedRows,

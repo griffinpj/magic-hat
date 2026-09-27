@@ -43,7 +43,8 @@ struct AddCardView: View {
         _form = State(initialValue: EntryFormState(
             finish: item.finish,
             condition: CardCondition(rawValue: item.condition)?.rawValue ?? CardCondition.nearMint.rawValue,
-            language: item.language.isEmpty ? "en" : item.language,
+            // An owned row's language; otherwise the one Settings names.
+            language: item.isEntry && !item.language.isEmpty ? item.language : AppSettings.cardLanguage,
             price: selection.marketPrice(for: item.finish)
         ))
         _collectionName = State(initialValue: "")
