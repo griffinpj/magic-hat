@@ -494,6 +494,13 @@ actor CollectionStore: ModelActor {
         return all.filter { $0.kind == kind }.map(\.name)
     }
 
+    /// Owned copies per set code (lowercase), for the Sets page.
+    func ownedCopiesBySet(stamp: StoreStamp? = nil) throws -> [String: Int] {
+        var out: [String: Int] = [:]
+        for row in try ownedRows(stamp: stamp) { out[row.item.setCode.lowercased(), default: 0] += row.item.quantity }
+        return out
+    }
+
     /// Every set code on an owned row — what the set-symbol fallback would
     /// have to draw.
     func entrySetCodes() throws -> Set<String> {
