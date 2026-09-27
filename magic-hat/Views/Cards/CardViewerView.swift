@@ -580,9 +580,9 @@ private struct DeckAddFeedback: ViewModifier {
 /// Every row has a fixed height and is always present, so the panel is
 /// the same size for every card and nothing below it moves as the pager
 /// goes from an owned foil with a purchase price to a search hit with
-/// none: name (with the owned marker trailing), set line (with the
+/// none: name (the added date, or the owned marker, trailing), set line (with the
 /// language and condition chips trailing when owned), the cost row (empty
-/// for a land), the price line (the added date trailing).
+/// for a land), the price line (the price, its change since bought).
 private struct InfoPanel: View {
     let item: CardItem
 
@@ -602,6 +602,13 @@ private struct InfoPanel: View {
                         .foregroundStyle(.black)
                 }
                 Spacer(minLength: 0)
+                if item.isEntry, let added = item.addedDate {
+                    Text("Added \(added.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
                 if !item.isEntry, item.owned {
                     Label("In collection", systemImage: "checkmark.seal.fill")
                         .font(.caption.weight(.semibold))
@@ -648,25 +655,35 @@ private struct InfoPanel: View {
             Text("MARKET").font(.caption.weight(.bold)).foregroundStyle(.blue)
             Text(PriceFormat.string(item.marketPrice))
                 .font(.callout.weight(.semibold))
-            if let delta = gainLoss {
-                Text(delta.text)
+                .foregroundStyle(trendColor ?? .primary)
+                .fixedSize()
+            if let change = item.gainLoss, change.amount != 0 {
+                // Since it was bought: the percentage first, as a chip in
+                // the direction's colour, then the amount.
+                let up = change.amount > 0
+                Label(PriceFormat.percent(change.percent), systemImage: up ? "arrow.up.right" : "arrow.down.right")
+                    .font(.caption.weight(.bold))
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(up ? .green : .red)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background((up ? Color.green : Color.red).opacity(0.14), in: Capsule())
+                    .fixedSize()
+                    .accessibilityLabel("\(up ? "Up" : "Down") \(PriceFormat.percent(change.percent)) since bought")
+                    .accessibilityIdentifier("viewer-trend")
+                Text(PriceFormat.signed(change.amount))
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(delta.up ? .green : .red)
+                    .foregroundStyle(up ? .green : .red)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             Spacer(minLength: 0)
-            if let added = item.addedDate {
-                Text("Added \(added.formatted(date: .abbreviated, time: .omitted))")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
         }
     }
 
-    /// Market vs. price paid at import.
-    private var gainLoss: (text: String, up: Bool)? {
-        guard let change = item.gainLoss else { return nil }
-        return (PriceFormat.change(change.amount, change.percent), change.amount >= 0)
+    private var trendColor: Color? {
+        guard let change = item.gainLoss, change.amount != 0 else { return nil }
+        return change.amount > 0 ? .green : .red
     }
 
     private func chip(_ text: String, icon: String? = nil) -> some View {

@@ -81,6 +81,7 @@ enum LaunchPrewarm {
         "arrow.down",
         "arrow.down.circle",
         "arrow.down.doc",
+        "arrow.down.right",
         "arrow.left.arrow.right",
         "arrow.right",
         "arrow.right.circle",
