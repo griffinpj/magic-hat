@@ -6,6 +6,10 @@
 	<array>
 		<string>com.griffin.magic-hat.catalog-refresh</string>
 	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>processing</string>
