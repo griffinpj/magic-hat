@@ -18,6 +18,9 @@ struct CollectionPickerView: View {
 
     @State private var summaries: [CollectionSummary] = []
     @State private var search = ""
+    /// The kind the name alert creates; kept after it closes, since the
+    /// alert's button runs as it dismisses.
+    @State private var creatingKind: CollectionKind = .collection
     @State private var showingCreate = false
     @State private var newName = ""
     @State private var createError: String?
@@ -31,26 +34,16 @@ struct CollectionPickerView: View {
 
     var body: some View {
         List {
-            ForEach(filtered) { summary in
-                Button {
-                    selected = summary.name
-                    dismiss()
-                } label: {
-                    CollectionCard(summary: summary, name: summary.name, showsValue: false)
-                        .overlay(alignment: .topTrailing) {
-                            if summary.name == selected {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.tint)
-                                    .padding(12)
-                            }
-                        }
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .accessibilityIdentifier("pick-collection-\(summary.name)")
+            ForEach(filtered.filter { !$0.isList }) { row($0) }
+            let lists = filtered.filter(\.isList)
+            if !lists.isEmpty {
+                Text("Lists")
+                    .font(.headline)
+                    .listRowInsets(EdgeInsets(top: 14, leading: 20, bottom: 0, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(lists) { row($0) }
             }
         }
         .listStyle(.plain)
@@ -65,19 +58,24 @@ struct CollectionPickerView: View {
         .searchable(text: $search, prompt: "Search collections")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { newName = ""; showingCreate = true } label: {
-                    Label("New Collection", systemImage: "plus")
+                Menu {
+                    Button("New Collection", systemImage: CollectionKind.collection.systemImage) { newName = ""; creatingKind = .collection; showingCreate = true }
+                        .accessibilityIdentifier("new-collection")
+                    Button("New List", systemImage: CollectionKind.list.systemImage) { newName = ""; creatingKind = .list; showingCreate = true }
+                        .accessibilityIdentifier("new-list")
+                } label: {
+                    Label("New", systemImage: "plus")
                 }
-                .accessibilityIdentifier("new-collection")
+                .accessibilityIdentifier("new-collection-or-list")
             }
         }
-        .alert("New Collection", isPresented: $showingCreate) {
+        .alert(creatingKind == .list ? "New List" : "New Collection", isPresented: $showingCreate) {
             TextField("Name", text: $newName)
                 .textInputAutocapitalization(.words)
             Button("Create") { create() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("An empty collection you can add cards to.")
+            Text(creatingKind == .list ? "Cards you want rather than own. They don't count toward your collection." : "An empty collection you can add cards to.")
         }
         .alert("Couldn't create", isPresented: Binding(get: { createError != nil },
                                                      set: { if !$0 { createError = nil } })) {
@@ -90,14 +88,36 @@ struct CollectionPickerView: View {
         }
     }
 
+    private func row(_ summary: CollectionSummary) -> some View {
+        Button {
+            selected = summary.name
+            dismiss()
+        } label: {
+            CollectionCard(summary: summary, name: summary.name, showsValue: false, isList: summary.isList)
+                .overlay(alignment: .topTrailing) {
+                    if summary.name == selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.tint)
+                            .padding(12)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .accessibilityIdentifier("pick-collection-\(summary.name)")
+    }
+
     private func create() {
         let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            if try CollectionEditController.createCollection(named: name, context: modelContext) {
+            if try CollectionEditController.createCollection(named: name, kind: creatingKind, context: modelContext) {
                 selected = name
                 dismiss()
             } else {
-                createError = name.isEmpty ? "Give it a name." : "A collection called “\(name)” already exists."
+                createError = name.isEmpty ? "Give it a name." : "“\(name)” is already taken by a collection or list."
             }
         } catch {
             createError = error.localizedDescription

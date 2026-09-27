@@ -82,6 +82,9 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     /// The currency the purchase price was paid in (ManaBox writes "USD");
     /// nil means the display currency.
     var purchaseCurrency: String? = nil
+    /// A row on a list (a wishlist): browsed and edited like an owned row,
+    /// never counted as owned. Set by the store, which knows the kinds.
+    var inList = false
 
     var powerToughness: String? {
         guard let power, let toughness else { return nil }

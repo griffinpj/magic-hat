@@ -119,6 +119,10 @@ nonisolated final class AuditRecord {
     var manaBoxID: String?
     var addedDate: Date?
     var sourceCollectionName: String?
+    /// "list" when `collectionName` was a list at the time, so an undo that
+    /// brings a deleted list back makes it a list again; nil (a collection
+    /// or a deck) for everything else.
+    var collectionKindRaw: String?
 
     var action: AuditAction {
         get { AuditAction(rawValue: actionRaw) ?? .manualAdd }
@@ -168,7 +172,8 @@ nonisolated final class AuditRecord {
         quantityDelta: Int,
         collectionEntryID: UUID?,
         undoesActionID: UUID? = nil,
-        snapshot: EntrySnapshot? = nil
+        snapshot: EntrySnapshot? = nil,
+        collectionKind: CollectionKind? = nil
     ) {
         self.id = id
         self.actionID = actionID
@@ -184,6 +189,7 @@ nonisolated final class AuditRecord {
         self.collectionEntryID = collectionEntryID
         self.undoesActionID = undoesActionID
         self.snapshot = snapshot
+        self.collectionKindRaw = collectionKind == .list ? CollectionKind.list.rawValue : nil
     }
 }
 

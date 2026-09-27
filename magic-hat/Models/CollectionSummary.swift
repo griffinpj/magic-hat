@@ -11,6 +11,9 @@ import Foundation
 
 nonisolated struct CollectionSummary: Identifiable, Hashable, Sendable, Codable {
     let name: String
+    /// A list's summary (see CollectionKind); decoded as false from an
+    /// overview saved before lists existed.
+    var isList = false
     let uniqueCards: Int
     let totalCopies: Int
     let totalValue: Double

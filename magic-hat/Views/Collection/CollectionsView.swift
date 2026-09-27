@@ -30,6 +30,12 @@ struct CollectionsView: View {
 
     @State private var showingFileImporter = false
     @State private var showingSettings = false
+    /// The kind the name alert creates; kept after it closes, since the
+    /// alert's button runs as it dismisses.
+    @State private var creatingKind: CollectionKind = .collection
+    @State private var showingCreate = false
+    @State private var newName = ""
+    @State private var createError: String?
     @State private var parsedRows: [ManaBoxRow] = []
     @State private var parsedBinders: [ImportWizardView.BinderCount] = []
     @State private var showingWizard = false
@@ -100,7 +106,7 @@ struct CollectionsView: View {
                     ContentUnavailableView {
                         Text("📭").font(.system(size: 64))
                     } description: {
-                        Text("No collections yet.\nImport one from the “…” menu.")
+                        Text("No collections yet.\nImport a ManaBox export, or start a collection or a list, from the “…” menu.")
                     }
                 } else {
                     collectionList
@@ -115,6 +121,11 @@ struct CollectionsView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("New Collection…", systemImage: CollectionKind.collection.systemImage) { startCreate(.collection) }
+                            .accessibilityIdentifier("new-collection-menu")
+                        Button("New List…", systemImage: CollectionKind.list.systemImage) { startCreate(.list) }
+                            .accessibilityIdentifier("new-list-menu")
+                        Divider()
                         Button {
                             showingFileImporter = true
                         } label: {
@@ -123,6 +134,7 @@ struct CollectionsView: View {
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
+                    .accessibilityIdentifier("collections-menu")
                 }
             }
             .overlay { if isParsing || isDeleting { busyOverlay(isDeleting ? "Deleting…" : "Reading file…") } }
@@ -140,6 +152,21 @@ struct CollectionsView: View {
                     binderCounts: parsedBinders,
                     existingCollectionNames: collections.map(\.name)
                 )
+            }
+            .alert(creatingKind == .list ? "New List" : "New Collection", isPresented: $showingCreate) {
+                TextField("Name", text: $newName)
+                    .textInputAutocapitalization(.words)
+                Button("Create") { create() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(creatingKind == .list
+                     ? "Cards you want, not cards you have — a wishlist or a trade list. They don't count toward your collection."
+                     : "An empty collection you can add cards to.")
+            }
+            .alert("Couldn't Create", isPresented: Binding(get: { createError != nil }, set: { if !$0 { createError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(createError ?? "")
             }
             .alert("Import Error", isPresented: errorBinding) {
                 Button("OK", role: .cancel) {}
@@ -176,6 +203,33 @@ struct CollectionsView: View {
         try? modelContext.save()
         return true
     }
+
+    private func startCreate(_ kind: CollectionKind) {
+        newName = ""
+        creatingKind = kind
+        showingCreate = true
+    }
+
+    private func create() {
+        let kind = creatingKind
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            if try CollectionEditController.createCollection(named: name, kind: kind, context: modelContext) {
+                path.append(name)
+            } else {
+                createError = name.isEmpty ? "Give it a name." : "“\(name)” is already taken by a collection or list."
+            }
+        } catch {
+            createError = error.localizedDescription
+        }
+    }
+
+    private var isPendingDeleteList: Bool {
+        collections.first { $0.name == pendingDelete }?.kind == .list
+    }
+
+    private var ownedCollections: [MTGCollection] { collections.filter { $0.kind == .collection } }
+    private var lists: [MTGCollection] { collections.filter { $0.kind == .list } }
 
     private var deleteBinding: Binding<Bool> {
         Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
@@ -220,23 +274,20 @@ struct CollectionsView: View {
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
             .accessibilityIdentifier("collection-all")
-            ForEach(collections) { collection in
-                Button {
-                    path.append(collection.name)
-                } label: {
-                    CollectionCard(summary: summary(for: collection.name), name: collection.name)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("collection-\(collection.name)")
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        pendingDelete = collection.name
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
+            ForEach(ownedCollections) { collection in
+                collectionRow(collection)
+            }
+            if !lists.isEmpty {
+                // Lists: cards wanted, not held. Their own heading, below
+                // everything that counts toward the totals above.
+                Text("Lists")
+                    .font(.title3.weight(.semibold))
+                    .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 2, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .accessibilityAddTraits(.isHeader)
+                ForEach(lists) { list in
+                    collectionRow(list)
                 }
             }
         }
@@ -246,12 +297,33 @@ struct CollectionsView: View {
             isPresented: deleteBinding,
             titleVisibility: .visible
         ) {
-            Button("Delete Collection", role: .destructive) {
+            Button(isPendingDeleteList ? "Delete List" : "Delete Collection", role: .destructive) {
                 if let name = pendingDelete { delete(name) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Removes every card in this collection. The change is recorded in History.")
+            Text("Removes every card in it. The change is recorded in History.")
+        }
+    }
+
+    private func collectionRow(_ collection: MTGCollection) -> some View {
+        Button {
+            path.append(collection.name)
+        } label: {
+            CollectionCard(summary: summary(for: collection.name), name: collection.name,
+                           isList: collection.kind == .list)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("collection-\(collection.name)")
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                pendingDelete = collection.name
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
     }
 

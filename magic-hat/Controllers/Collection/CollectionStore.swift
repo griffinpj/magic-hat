@@ -62,6 +62,8 @@ actor CollectionStore: ModelActor {
 
     nonisolated struct Row: Sendable {
         let item: CardItem
+        /// On a list: shown in that list, never counted as owned.
+        var inList: Bool { item.inList }
         /// No fetched metadata yet (or stored before colours were kept).
         let pending: Bool
         /// Fetched, but the prices are older than DataPolicy.priceTTL.
@@ -96,18 +98,30 @@ actor CollectionStore: ModelActor {
         return Dictionary(decks.map { ($0.collectionKey, $0.name) }, uniquingKeysWith: { a, _ in a })
     }
 
-    /// Every owned row, decks included, each labelled with where it lives.
-    /// Cached for `stamp`; without one (tests) always fresh.
+    /// Names of the collections that are lists.
+    private func listNames() throws -> Set<String> {
+        let list = CollectionKind.list.rawValue
+        return Set(try modelContext.fetch(FetchDescriptor<MTGCollection>(predicate: #Predicate { $0.kindRaw == list })).map(\.name))
+    }
+
+    /// Every row, decks and lists included, each labelled with where it
+    /// lives. Cached for `stamp`; without one (tests) always fresh. What
+    /// counts as *owned* is these minus the lists' rows (`ownedRows`).
     private func allRows(stamp: StoreStamp?) throws -> [Row] {
         if let stamp, let cache = rowsCache, cache.stamp == stamp { return cache.rows }
         var descriptor = FetchDescriptor<CollectionEntry>()
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        let rows = Self.rows(of: try modelContext.fetch(descriptor), labels: try deckLabels())
+        let rows = Self.rows(of: try modelContext.fetch(descriptor), labels: try deckLabels(), lists: try listNames())
         if let stamp { rowsCache = (stamp, rows) }
         return rows
     }
 
-    private static func rows(of entries: [CollectionEntry], labels: [String: String]) -> [Row] {
+    /// Every owned row: collections and built decks, not lists.
+    private func ownedRows(stamp: StoreStamp?) throws -> [Row] {
+        try allRows(stamp: stamp).filter { !$0.inList }
+    }
+
+    private static func rows(of entries: [CollectionEntry], labels: [String: String], lists: Set<String> = []) -> [Row] {
         let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
         let currency = AppSettings.currency
         var rows: [Row] = []
@@ -116,6 +130,7 @@ actor CollectionStore: ModelActor {
             let meta = entry.card
             var item = CardItem(entry: entry, meta: meta, currency: currency)
             if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
+            if lists.contains(entry.collectionName) { item.inList = true }
             // A row stored before colours were kept counts as pending so the
             // collection filters get their data on the next hydration.
             let fetched = meta?.isComplete ?? false
@@ -135,14 +150,14 @@ actor CollectionStore: ModelActor {
         if let hit = cached(key, stamp) { return hit }
         let rows: [Row]
         if CollectionScope.isAll(collectionName) {
-            rows = try allRows(stamp: stamp)
+            rows = try ownedRows(stamp: stamp)
         } else if let stamp, let cache = rowsCache, cache.stamp == stamp {
             rows = cache.rows.filter { $0.item.collectionName == collectionName }
         } else {
             // One collection, nothing shared to reuse: fetch just its rows.
             var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
             descriptor.relationshipKeyPathsForPrefetching = [\.card]
-            rows = Self.rows(of: try modelContext.fetch(descriptor), labels: [:])
+            rows = Self.rows(of: try modelContext.fetch(descriptor), labels: [:], lists: try listNames())
         }
         let snapshot = Self.snapshot(of: rows, sort: sort)
         if let stamp { snapshots[key] = (stamp, snapshot) }
@@ -352,19 +367,25 @@ actor CollectionStore: ModelActor {
         for name in names {
             snapshots["\(name)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: byCollection[name] ?? [], sort: sort))
         }
-        snapshots["\(CollectionScope.allKey)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: rows, sort: sort))
+        snapshots["\(CollectionScope.allKey)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: rows.filter { !$0.inList }, sort: sort))
     }
 
-    /// The Collections tab: every collection, the whole library, the share
-    /// of it built into decks, and the collection names found on rows (for
-    /// the backfill) — one pass over rows shared with the snapshots.
+    /// The Collections tab: every collection and list, the whole library
+    /// (lists left out — they are not owned), the share of it built into
+    /// decks, and the collection names found on rows (for the backfill) —
+    /// one pass over rows shared with the snapshots.
     func overview(stamp: StoreStamp? = nil) throws -> CollectionOverview {
+        let lists = try listNames()
         let names = try collectionNames()
         let rows = try allRows(stamp: stamp)
         let byCollection = Dictionary(grouping: rows, by: \.item.collectionName)
 
-        let perCollection = names.map { Self.summary(name: $0, rows: byCollection[$0] ?? []) }
-        let all = Self.summary(name: CollectionScope.allName, rows: rows)
+        let perCollection = names.map { name in
+            var summary = Self.summary(name: name, rows: byCollection[name] ?? [])
+            summary.isList = lists.contains(name)
+            return summary
+        }
+        let all = Self.summary(name: CollectionScope.allName, rows: rows.filter { !$0.inList })
         var deckCopies = 0
         var deckValue = 0.0
         for (name, rows) in byCollection where Deck.isDeckCollection(name) {
@@ -407,7 +428,7 @@ actor CollectionStore: ModelActor {
     /// tab already built, so a deck's add sheet and its analysis don't read
     /// and fault the whole collection again on DeckStore's queue.
     func ownedCards(stamp: StoreStamp? = nil) throws -> [CardItem] {
-        try allRows(stamp: stamp).compactMap { Deck.isDeckCollection($0.item.collectionName) ? nil : $0.item }
+        try ownedRows(stamp: stamp).compactMap { Deck.isDeckCollection($0.item.collectionName) ? nil : $0.item }
     }
 
     /// The real collections' printings and copies per card key (oracle id,
@@ -417,7 +438,7 @@ actor CollectionStore: ModelActor {
         if let stamp, let cache = ownedIndexCache, cache.stamp == stamp { return cache.index }
         var ids = Set<String>()
         var byKey: [String: Int] = [:]
-        for row in try allRows(stamp: stamp) where !Deck.isDeckCollection(row.item.collectionName) {
+        for row in try ownedRows(stamp: stamp) where !Deck.isDeckCollection(row.item.collectionName) {
             ids.insert(row.item.scryfallID)
             byKey[row.item.oracleID ?? row.item.scryfallID, default: 0] += row.item.quantity
         }
@@ -432,8 +453,12 @@ actor CollectionStore: ModelActor {
     /// one plain fetch (a `propertiesToFetch` fetch measured slower here:
     /// SwiftData faults each partial row in as it is read).
     func ownedScryfallIDs(stamp: StoreStamp? = nil) throws -> Set<String> {
-        if let stamp, let cache = rowsCache, cache.stamp == stamp { return Set(cache.rows.map(\.item.scryfallID)) }
-        return Set(try modelContext.fetch(FetchDescriptor<CollectionEntry>()).map(\.scryfallID))
+        if let stamp, let cache = rowsCache, cache.stamp == stamp {
+            return Set(cache.rows.lazy.filter { !$0.inList }.map(\.item.scryfallID))
+        }
+        let lists = try listNames()
+        return Set(try modelContext.fetch(FetchDescriptor<CollectionEntry>()).lazy
+            .filter { !lists.contains($0.collectionName) }.map(\.scryfallID))
     }
 
     /// Scryfall ids of every printing we know for an oracle id.
@@ -452,16 +477,20 @@ actor CollectionStore: ModelActor {
         )
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
         let labels = try deckLabels()
+        let lists = try listNames()
         return try modelContext.fetch(descriptor).map { entry in
             var item = CardItem(entry: entry, meta: entry.card)
             if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
+            item.inList = lists.contains(entry.collectionName)
             return item
         }
     }
 
-    /// Names of all collections, sorted.
-    func collectionNames() throws -> [String] {
-        try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)])).map(\.name)
+    /// Names of all collections and lists, sorted; with `kind`, only those.
+    func collectionNames(kind: CollectionKind? = nil) throws -> [String] {
+        let all = try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)]))
+        guard let kind else { return all.map(\.name) }
+        return all.filter { $0.kind == kind }.map(\.name)
     }
 
     /// Every set code on an owned row — what the set-symbol fallback would
