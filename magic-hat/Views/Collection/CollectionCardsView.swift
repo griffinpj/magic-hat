@@ -23,6 +23,14 @@ struct CollectionCardsView: View {
     let collectionName: String
 
     @Environment(\.modelContext) private var modelContext
+    /// Small table; says whether this is a list.
+    @Query private var collectionRows: [MTGCollection]
+    private var isList: Bool { collectionRows.first?.kind == .list }
+
+    init(collectionName: String) {
+        self.collectionName = collectionName
+        _collectionRows = Query(filter: #Predicate<MTGCollection> { $0.name == collectionName })
+    }
 
     private var hydrator: CardHydrationController { .shared }
     private var tracker: CollectionChangeTracker { .shared }
@@ -62,7 +70,7 @@ struct CollectionCardsView: View {
                 ContentUnavailableView {
                     Text("📭").font(.system(size: 64))
                 } description: {
-                    Text("This collection has no cards.")
+                    Text(isList ? "This list is empty.\nAdd cards to it from Search, or from any card's Add." : "This collection has no cards.")
                 }
             } else if visible.isEmpty, !query.isEmpty {
                 ContentUnavailableView {

@@ -185,7 +185,7 @@ struct DeckBuildSheet: View {
 
     private func loadCollections() async {
         let store = CollectionStore.shared(for: modelContext.container)
-        if let names = try? await store.collectionNames(), !Task.isCancelled {
+        if let names = try? await store.collectionNames(kind: .collection), !Task.isCancelled {
             collections = names
             chosen = Set(names)
         }

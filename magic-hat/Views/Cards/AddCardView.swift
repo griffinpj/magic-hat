@@ -283,7 +283,7 @@ struct OwnedPrintingRow: View {
                     }
                 }
                 HStack(spacing: 6) {
-                    chip(item.collectionName, icon: "tray.full")
+                    chip(item.collectionName, icon: item.inList ? CollectionKind.list.systemImage : CollectionKind.collection.systemImage)
                     chip(item.language.uppercased())
                     chip(CardCondition.shortLabel(for: item.condition))
                     if item.finish != .normal { chip(item.finish.displayName.uppercased()) }

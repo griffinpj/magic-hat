@@ -15,6 +15,9 @@ struct CollectionCard: View {
     let summary: CollectionSummary?
     let name: String
     var showsValue: Bool = true
+    /// A list reads as a list: its icon before the name, and its value is
+    /// what the cards would cost, not what is held.
+    var isList: Bool = false
 
     private var valueText: String {
         guard let value = summary?.totalValue, value > 0 else { return "—" }
@@ -25,9 +28,17 @@ struct CollectionCard: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(name)
-                        .font(.title3.weight(.semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if isList {
+                            Image(systemName: CollectionKind.list.systemImage)
+                                .font(.headline)
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("List")
+                        }
+                        Text(name)
+                            .font(.title3.weight(.semibold))
+                            .lineLimit(1)
+                    }
                     if let s = summary {
                         Text("\(s.totalCopies) cards · \(s.uniqueCards) unique")
                             .font(.caption)
@@ -48,7 +59,7 @@ struct CollectionCard: View {
                             .font(.title3.weight(.bold))
                             .monospacedDigit()
                             .redacted(reason: summary == nil ? .placeholder : [])
-                        Text("MARKET")
+                        Text(isList ? "TO BUY" : "MARKET")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.secondary)
                     }

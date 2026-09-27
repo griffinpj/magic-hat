@@ -48,6 +48,9 @@ enum CollectionEditController {
     ) async throws -> DeleteSummary {
         let actionID = UUID()
         let now = Date()
+        // A list's records say so, so undoing the delete brings a list back.
+        let isList = try modelContext.fetch(FetchDescriptor<MTGCollection>(predicate: #Predicate { $0.name == collectionName }))
+            .contains { $0.kind == .list }
 
         let entries = try modelContext.fetch(
             FetchDescriptor<CollectionEntry>(
@@ -71,7 +74,8 @@ enum CollectionEditController {
                 condition: entry.condition,
                 quantityDelta: -entry.quantity,
                 collectionEntryID: entry.id,
-                snapshot: EntrySnapshot(entry)
+                snapshot: EntrySnapshot(entry),
+                collectionKind: isList ? .list : nil
             ))
             modelContext.delete(entry)
 
@@ -290,14 +294,15 @@ extension CollectionEditController {
     /// Creates an empty collection. Returns false if the name is taken
     /// (case-insensitively) or blank.
     @discardableResult
-    static func createCollection(named raw: String, context modelContext: ModelContext) throws -> Bool {
+    static func createCollection(named raw: String, kind: CollectionKind = .collection,
+                                 context modelContext: ModelContext) throws -> Bool {
         let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return false }
         let all = try modelContext.fetch(FetchDescriptor<MTGCollection>())
         guard !all.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
             return false
         }
-        modelContext.insert(MTGCollection(name: name))
+        modelContext.insert(MTGCollection(name: name, kind: kind))
         try modelContext.save()
         CollectionChangeTracker.shared.bump()
         return true

@@ -88,11 +88,15 @@ nonisolated enum LedgerReplay {
             if (rows[k]?.quantity ?? 0) + (net[k] ?? 0) < 0 { throw ReplayError.copiesMissing(record.cardName) }
         }
 
-        // 4. Collections that were deleted come back with their rows.
+        // 4. Collections that were deleted come back with their rows — a
+        //    list as a list.
         let plainNames = collectionNames.filter { !Deck.isDeckCollection($0) }
         if !plainNames.isEmpty {
             let existing = Set(try context.fetch(FetchDescriptor<MTGCollection>()).map(\.name))
-            for name in plainNames.subtracting(existing) { context.insert(MTGCollection(name: name)) }
+            let lists = Set(records.filter { $0.collectionKindRaw == CollectionKind.list.rawValue }.map(\.collectionName))
+            for name in plainNames.subtracting(existing) {
+                context.insert(MTGCollection(name: name, kind: lists.contains(name) ? .list : .collection))
+            }
         }
 
         // 5. Apply, recording each change under the new action.
@@ -117,7 +121,8 @@ nonisolated enum LedgerReplay {
                 actionID: newID, action: direction.action, timestamp: now,
                 scryfallID: record.scryfallID, cardName: record.cardName, collectionName: record.collectionName,
                 finish: record.finish, condition: record.condition, quantityDelta: delta,
-                collectionEntryID: row.id, undoesActionID: actionID, snapshot: EntrySnapshot(row)
+                collectionEntryID: row.id, undoesActionID: actionID, snapshot: EntrySnapshot(row),
+                collectionKind: record.collectionKindRaw == CollectionKind.list.rawValue ? .list : nil
             ))
             if row.quantity <= 0 {
                 context.delete(row)

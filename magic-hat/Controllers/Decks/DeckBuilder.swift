@@ -61,11 +61,15 @@ actor DeckBuilder: ModelActor {
             .mapValues { $0.reduce(0) { $0 + $1.quantity } }
 
         // Candidates: real collections (or the chosen ones).
+        // Never a list: its cards are wanted, not owned.
+        let list = CollectionKind.list.rawValue
+        let lists = Set(try modelContext.fetch(FetchDescriptor<MTGCollection>(predicate: #Predicate { $0.kindRaw == list })).map(\.name))
         let sources: [CollectionEntry]
-        if let names = sourceCollections {
+        if let names = sourceCollections?.filter({ !lists.contains($0) }) {
             sources = try modelContext.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { names.contains($0.collectionName) }))
         } else {
             sources = try modelContext.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { !$0.collectionName.starts(with: "deck:") }))
+                .filter { !lists.contains($0.collectionName) }
         }
         var remaining: [UUID: Int] = [:]
         var candidatesByKey: [String: [CollectionEntry]] = [:]
@@ -196,7 +200,9 @@ actor DeckBuilder: ModelActor {
         let deckEntries = try modelContext.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == deckKey }))
         guard !deckEntries.isEmpty else { return DisassembleResult(actionID: actionID, returnedCopies: 0) }
 
+        // Cards go home to a collection, never to a list.
         let collections = try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)]))
+            .filter { $0.kind == .collection }
         var collectionNames = Set(collections.map(\.name))
         let fallback = collections.first?.name ?? "My Collection"
         if collections.isEmpty {
