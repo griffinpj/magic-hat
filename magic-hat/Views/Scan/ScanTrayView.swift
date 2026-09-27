@@ -102,7 +102,7 @@ private struct TrayRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 CardRowLead(item: item.card) {
-                    Text(PriceFormat.string(item.printing.marketPrice(for: item.finish)))
+                    Text(PriceFormat.string(item.price))
                 }
                 Stepper(value: Binding(get: { item.quantity }, set: { var copy = item; copy.quantity = $0; onChange(copy) }), in: 0...99) {
                     Text("×\(item.quantity)").monospacedDigit().font(.headline)
@@ -116,6 +116,7 @@ private struct TrayRow: View {
                     var copy = item
                     copy.printing = picked
                     copy.exactPrinting = true
+                    copy.finishes = CardFinish.allCases
                     onChange(copy)
                 }
             } label: {
@@ -130,10 +131,23 @@ private struct TrayRow: View {
                 }
                 .font(.subheadline)
             }
-            Picker("Finish", selection: Binding(get: { item.finish }, set: { var copy = item; copy.finish = $0; onChange(copy) })) {
-                ForEach(CardFinish.allCases, id: \.self) { Text($0.displayName).tag($0) }
+            HStack(spacing: 10) {
+                Picker("Finish", selection: Binding(get: { item.finish }, set: { var copy = item; copy.finish = $0; onChange(copy) })) {
+                    ForEach(item.finishes, id: \.self) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Menu {
+                    Picker("Language", selection: Binding(get: { item.language }, set: { var copy = item; copy.language = $0; onChange(copy) })) {
+                        ForEach(CardLanguage.codes, id: \.self) { Text(CardLanguage.name($0)).tag($0) }
+                    }
+                } label: {
+                    Text(item.language.uppercased())
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(.fill.tertiary, in: Capsule())
+                }
+                .accessibilityLabel("Language, \(CardLanguage.name(item.language))")
             }
-            .pickerStyle(.segmented)
         }
         .padding(.vertical, 4)
     }

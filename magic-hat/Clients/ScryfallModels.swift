@@ -105,9 +105,14 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     let imageURIs: ScryfallImageURIs?
     let cardFaces: [ScryfallCardFace]?
     let prices: ScryfallPrices?
+    /// "nonfoil", "foil", "etched" — what this printing exists in.
+    let finishes: [String]?
+    let promo: Bool?
+    let lang: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, set, rarity, layout, power, toughness, prices, legalities, loyalty, colors, artist
+        case finishes, promo, lang
         case colorIdentity = "color_identity"
         case oracleID = "oracle_id"
         case setName = "set_name"

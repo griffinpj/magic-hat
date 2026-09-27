@@ -52,10 +52,12 @@ nonisolated struct ScryfallClient: CardSearching {
     /// GET /cards/named?fuzzy= — the card whose name best matches loose
     /// text (a scan's reading of the title). 404 when nothing is close
     /// enough, or the text is ambiguous.
-    func named(fuzzy: String) async throws -> ScryfallCard {
+    /// With `set`, the printing in that set.
+    func named(fuzzy: String, set: String? = nil) async throws -> ScryfallCard {
         var comps = URLComponents(url: baseURL.appendingPathComponent("cards").appendingPathComponent("named"),
                                   resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "fuzzy", value: fuzzy)]
+        if let set { comps.queryItems?.append(URLQueryItem(name: "set", value: set)) }
         guard let url = comps.url else { throw HTTPError.badURL }
         return try await http.request(ScryfallCard.self, url: url, rateLimit: .cardsNamed)
     }

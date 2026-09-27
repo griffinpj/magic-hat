@@ -23,12 +23,21 @@ import AVFoundation
 import Vision
 import UIKit
 
+/// A back camera the scanner can use, for the settings picker.
+nonisolated struct CameraOption: Identifiable, Hashable, Sendable {
+    let id: String
+    let name: String
+}
+
 nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "magic-hat.camera", qos: .userInitiated)
     private let output = AVCaptureVideoDataOutput()
     private var device: AVCaptureDevice?
     private var rotation: AVCaptureDevice.RotationCoordinator?
+    private weak var previewLayer: AVCaptureVideoPreviewLayer?
+    /// The camera asked for (CameraOption.id); nil is the default.
+    private var requestedID: String?
 
     /// Read on the camera queue; written from the main actor.
     private let lock = NSLock()
@@ -43,6 +52,53 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
     static let interval: TimeInterval = 0.22
 
     var isAvailable: Bool { AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) != nil }
+
+    /// The back cameras, the multi-lens ones first: on a Pro phone they
+    /// switch to the ultra wide's macro by themselves when a card is held
+    /// close, which is what a scanner wants.
+    private static let deviceTypes: [AVCaptureDevice.DeviceType] = [
+        .builtInTripleCamera, .builtInDualWideCamera, .builtInDualCamera,
+        .builtInWideAngleCamera, .builtInUltraWideCamera, .builtInTelephotoCamera,
+    ]
+
+    static func cameras() -> [CameraOption] {
+        AVCaptureDevice.DiscoverySession(deviceTypes: deviceTypes, mediaType: .video, position: .back)
+            .devices.map { CameraOption(id: $0.uniqueID, name: displayName($0)) }
+    }
+
+    private static func displayName(_ device: AVCaptureDevice) -> String {
+        switch device.deviceType {
+        case .builtInTripleCamera, .builtInDualWideCamera: return "Automatic (Macro)"
+        case .builtInDualCamera: return "Automatic"
+        case .builtInWideAngleCamera: return "Wide"
+        case .builtInUltraWideCamera: return "Ultra Wide"
+        case .builtInTelephotoCamera: return "Telephoto"
+        default: return device.localizedName
+        }
+    }
+
+    private func chosenDevice() -> AVCaptureDevice? {
+        let devices = AVCaptureDevice.DiscoverySession(deviceTypes: Self.deviceTypes, mediaType: .video, position: .back).devices
+        if let requestedID, let match = devices.first(where: { $0.uniqueID == requestedID }) { return match }
+        return devices.first
+    }
+
+    /// Switches to another camera (nil: the default), keeping the session.
+    func select(cameraID: String?) {
+        queue.async {
+            self.requestedID = cameraID
+            guard !self.session.inputs.isEmpty, let device = self.chosenDevice(), device != self.device else { return }
+            self.session.beginConfiguration()
+            for input in self.session.inputs { self.session.removeInput(input) }
+            if let input = try? AVCaptureDeviceInput(device: device), self.session.canAddInput(input) {
+                self.session.addInput(input)
+                self.device = device
+            }
+            self.session.commitConfiguration()
+            self.configureFocus(device)
+            DispatchQueue.main.async { self.attachRotation() }
+        }
+    }
 
     /// The guide, as a normalised rect in the upright image (Vision's
     /// coordinates, origin bottom-left).
@@ -66,7 +122,8 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
 
     /// Builds the session once; returns the rotation coordinator's preview
     /// layer needs, on the main actor.
-    func configure(previewLayer: AVCaptureVideoPreviewLayer) async throws {
+    func configure(previewLayer: AVCaptureVideoPreviewLayer, cameraID: String?) async throws {
+        requestedID = cameraID
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
                 do {
@@ -79,12 +136,17 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
         }
         await MainActor.run {
             previewLayer.session = session
-            if let device {
-                let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
-                self.rotation = coordinator
-                previewLayer.connection?.videoRotationAngle = coordinator.videoRotationAngleForHorizonLevelPreview
-            }
+            self.previewLayer = previewLayer
+            self.attachRotation()
         }
+    }
+
+    /// A rotation coordinator for the current device and preview.
+    @MainActor private func attachRotation() {
+        guard let device, let previewLayer else { return }
+        let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+        rotation = coordinator
+        previewLayer.connection?.videoRotationAngle = coordinator.videoRotationAngleForHorizonLevelPreview
     }
 
     enum CameraError: Error, LocalizedError {
@@ -94,7 +156,7 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
 
     private func configureSession() throws {
         guard session.inputs.isEmpty else { return }
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        guard let device = chosenDevice() else {
             throw CameraError.unavailable
         }
         self.device = device
@@ -107,7 +169,11 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
         output.setSampleBufferDelegate(self, queue: queue)
         if session.canAddOutput(output) { session.addOutput(output) }
         session.commitConfiguration()
-        // Cards are read close up: focus near, continuously.
+        configureFocus(device)
+    }
+
+    /// Cards are read close up: focus near, continuously.
+    private func configureFocus(_ device: AVCaptureDevice) {
         try? device.lockForConfiguration()
         if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
         if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
