@@ -169,6 +169,7 @@ struct SearchFilterSections: View {
         Section {
             TermTokenRows(
                 terms: $query.typeLine,
+                match: $query.typeLineMatch,
                 placeholder: "Add a type: Creature, Dragon, Legendary…",
                 focus: $focused, field: .types,
                 suggest: { text in
@@ -181,7 +182,9 @@ struct SearchFilterSections: View {
         } header: {
             Text("Type Line")
         } footer: {
-            Text("Tap a chip to switch between is and is not, or remove it.")
+            Text(query.typeLine.included.count > 1
+                 ? "Tap “\(query.typeLineMatch.word)” to switch: and needs every type, or any of them. Tap a chip for is / is not."
+                 : "Tap a chip to switch between is and is not, or remove it.")
         }
     }
 
@@ -191,6 +194,7 @@ struct SearchFilterSections: View {
         Section {
             TermTokenRows(
                 terms: $query.oracle,
+                match: $query.oracleMatch,
                 placeholder: "Add a word or phrase: flying, draw a card…",
                 focus: $focused, field: .oracle,
                 suggest: { text in
@@ -203,7 +207,9 @@ struct SearchFilterSections: View {
         } header: {
             Text("Rules Text")
         } footer: {
-            Text("Each entry must appear in the card's text. Return adds what you typed.")
+            Text(query.oracle.included.count > 1
+                 ? "Tap “\(query.oracleMatch.word)” to switch: and needs every entry in the text, or any one. Return adds what you typed."
+                 : "Each entry must appear in the card's text. Return adds what you typed.")
         }
     }
 
@@ -373,6 +379,8 @@ struct TokenSuggestion: Identifiable, Hashable {
 /// while typing. Return adds the typed text as-is.
 private struct TermTokenRows: View {
     @Binding var terms: [TextTerm]
+    /// And / or between the included terms; shown between their chips.
+    @Binding var match: TermMatch
     let placeholder: String
     @FocusState.Binding var focus: FilterField?
     let field: FilterField
@@ -382,9 +390,22 @@ private struct TermTokenRows: View {
 
     var body: some View {
         if !terms.isEmpty {
+            // Included terms first, joined by the connector; exclusions
+            // after, which always all apply.
+            let included = terms.filter { !$0.negated }.map(\.id)
             FlowLayout {
-                ForEach($terms) { $term in
-                    TermChip(term: $term) { terms.removeAll { $0.id == term.id } }
+                ForEach(included, id: \.self) { id in
+                    if id != included.first {
+                        MatchConnector(match: $match)
+                    }
+                    if let index = terms.firstIndex(where: { $0.id == id }) {
+                        TermChip(term: $terms[index]) { terms.removeAll { $0.id == id } }
+                    }
+                }
+                ForEach(terms.filter(\.negated).map(\.id), id: \.self) { id in
+                    if let index = terms.firstIndex(where: { $0.id == id }) {
+                        TermChip(term: $terms[index]) { terms.removeAll { $0.id == id } }
+                    }
                 }
             }
             .padding(.vertical, 2)
@@ -422,6 +443,29 @@ private struct TermTokenRows: View {
             terms.append(TextTerm(t))
         }
         text = ""
+    }
+}
+
+/// "and" / "or" between two chips: a tap switches the whole group.
+private struct MatchConnector: View {
+    @Binding var match: TermMatch
+
+    var body: some View {
+        Button {
+            match = match.toggled
+        } label: {
+            Text(match.word)
+                .font(.caption.weight(.bold))
+                .textCase(.uppercase)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .foregroundStyle(match == .any ? Color.orange : Color.secondary)
+                .overlay(Capsule().strokeBorder(match == .any ? Color.orange.opacity(0.6) : Color.secondary.opacity(0.4)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(match == .all ? "And, all must match" : "Or, any may match")
+        .accessibilityHint("Switches between and and or")
+        .accessibilityIdentifier("term-match-\(match.rawValue)")
     }
 }
 

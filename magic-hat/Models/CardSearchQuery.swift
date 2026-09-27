@@ -206,6 +206,20 @@ nonisolated struct TextTerm: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+/// How a group of terms combines: every one (and), or any one (or).
+/// Exclusions ("is not") always all apply.
+nonisolated enum TermMatch: String, Codable, Hashable, Sendable {
+    case all, any
+
+    var word: String { self == .all ? "and" : "or" }
+    var toggled: TermMatch { self == .all ? .any : .all }
+}
+
+nonisolated extension Array where Element == TextTerm {
+    var included: [TextTerm] { filter { !$0.negated && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty } }
+    var excluded: [TextTerm] { filter { $0.negated && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty } }
+}
+
 nonisolated struct StatConstraint: Codable, Hashable, Sendable, Identifiable {
     var id = UUID()
     var stat: StatKind
@@ -253,6 +267,18 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
 
     var typeLine: [TextTerm] = []
     var oracle: [TextTerm] = []
+    /// And / or between the type terms and between the rules-text terms.
+    /// Optional so saved searches from before decode (nil is "and").
+    var typeLineMatchValue: TermMatch?
+    var oracleMatchValue: TermMatch?
+    var typeLineMatch: TermMatch {
+        get { typeLineMatchValue ?? .all }
+        set { typeLineMatchValue = newValue == .all ? nil : newValue }
+    }
+    var oracleMatch: TermMatch {
+        get { oracleMatchValue ?? .all }
+        set { oracleMatchValue = newValue == .all ? nil : newValue }
+    }
 
     /// Scryfall cost text, e.g. "{2}{G}{W}". Use `normalizedManaCost(_:)` on user input.
     var manaCost = ""
@@ -307,7 +333,7 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
         formats = []
         colors = []; colorless = false; colorMode = .exactly; useColorIdentity = false
         minColors = nil; maxColors = nil
-        typeLine = []; oracle = []
+        typeLine = []; oracle = []; typeLineMatchValue = nil; oracleMatchValue = nil
         manaCost = ""; manaCostMatch = .contains
         sets = []; rarities = []; price = PriceRange(); stats = []; finishes = []; artist = ""
     }
@@ -333,10 +359,10 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
         else if let minColors { parts.append("≥ \(minColors) colors") }
         else if let maxColors { parts.append("≤ \(maxColors) colors") }
         if !typeLine.isEmpty {
-            parts.append(typeLine.map { ($0.negated ? "not " : "") + $0.text }.joined(separator: ", "))
+            parts.append(Self.summary(typeLine, match: typeLineMatch) { $0 })
         }
         if !oracle.isEmpty {
-            parts.append(oracle.map { ($0.negated ? "not " : "") + "“\($0.text)”" }.joined(separator: ", "))
+            parts.append(Self.summary(oracle, match: oracleMatch) { "“\($0)”" })
         }
         let cost = Self.normalizedManaCost(manaCost)
         if !cost.isEmpty { parts.append(cost) }
@@ -398,12 +424,8 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
             if let maxColors { parts.append("\(colorKey)<=\(maxColors)") }
         }
 
-        for term in typeLine where !term.text.trimmingCharacters(in: .whitespaces).isEmpty {
-            parts.append("\(term.negated ? "-" : "")t:\(Self.quoted(term.text))")
-        }
-        for term in oracle where !term.text.trimmingCharacters(in: .whitespaces).isEmpty {
-            parts.append("\(term.negated ? "-" : "")o:\(Self.quoted(term.text))")
-        }
+        parts += Self.clauses(typeLine, key: "t", match: typeLineMatch)
+        parts += Self.clauses(oracle, key: "o", match: oracleMatch)
 
         let cost = Self.normalizedManaCost(manaCost)
         if !cost.isEmpty {
@@ -434,6 +456,23 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
         if !a.isEmpty { parts.append("a:\(Self.quoted(a))") }
 
         return parts.joined(separator: " ")
+    }
+
+    /// "t:dragon t:elder", "(t:dragon or t:elder)", exclusions after.
+    static func clauses(_ terms: [TextTerm], key: String, match: TermMatch) -> [String] {
+        let positive = terms.included.map { "\(key):\(quoted($0.text))" }
+        var out = match == .any && positive.count > 1 ? [anyOf(positive)] : positive
+        out += terms.excluded.map { "-\(key):\(quoted($0.text))" }
+        return out
+    }
+
+    /// "Dragon or Elder, not Legendary".
+    static func summary(_ terms: [TextTerm], match: TermMatch, _ show: (String) -> String) -> String {
+        let positive = terms.included.map { show($0.text) }
+        var parts: [String] = []
+        if !positive.isEmpty { parts.append(match == .any ? positive.joined(separator: " or ") : positive.joined(separator: ", ")) }
+        parts += terms.excluded.map { "not " + show($0.text) }
+        return parts.joined(separator: ", ")
     }
 
     /// Quotes a term when it has spaces or quote characters.
@@ -521,12 +560,8 @@ nonisolated extension CardSearchQuery {
         if let minColors, cardColors.count < minColors { return false }
         if let maxColors, cardColors.count > maxColors { return false }
 
-        for term in typeLine where !term.text.isEmpty {
-            if Self.contains(item.typeLine ?? "", term.text) == term.negated { return false }
-        }
-        for term in oracle where !term.text.isEmpty {
-            if Self.contains(item.oracleText ?? "", term.text) == term.negated { return false }
-        }
+        if !Self.matches(item.typeLine ?? "", typeLine, match: typeLineMatch) { return false }
+        if !Self.matches(item.oracleText ?? "", oracle, match: oracleMatch) { return false }
 
         let cost = Self.normalizedManaCost(manaCost)
         if !cost.isEmpty {
@@ -574,6 +609,20 @@ nonisolated extension CardSearchQuery {
         let a = artist.trimmingCharacters(in: .whitespaces)
         if !a.isEmpty, !Self.contains(item.artist ?? "", a) { return false }
         return true
+    }
+
+    /// Every included term (or any, with `.any`) in `text`, no excluded one.
+    static func matches(_ text: String, _ terms: [TextTerm], match: TermMatch) -> Bool {
+        let included = terms.included
+        if !included.isEmpty {
+            let hit: Bool
+            switch match {
+            case .all: hit = included.allSatisfy { contains(text, $0.text) }
+            case .any: hit = included.contains { contains(text, $0.text) }
+            }
+            if !hit { return false }
+        }
+        return !terms.excluded.contains { contains(text, $0.text) }
     }
 
     static func contains(_ haystack: String, _ needle: String) -> Bool {
