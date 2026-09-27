@@ -29,7 +29,7 @@ The project uses file-system-synchronized groups, so new files added under
 
 Layered so responsibilities stay isolated. Views and controllers are kept in
 separate top-level folders, each sub-sorted by feature (Collection, Decks,
-History, Search). Shared layers (Models/Clients/Utils) stay flat because they
+History, Search, Scan, Settings, Backup). Shared layers (Models/Clients/Utils) stay flat because they
 are cross-cutting, not owned by one feature.
 
 - `App/` — app entry, `ModelContainer` schema.
@@ -46,6 +46,18 @@ are cross-cutting, not owned by one feature.
     and identical printings from different binders merge into one row.
   - `MTGCollection` — a named collection (unique name). Import targets one
     collection: a new one, or an existing one to merge into.
+  - **Lists** are `MTGCollection` rows with `kind == .list` (a wishlist, a
+    trade list): the same rows, grid, sheets and History, but *not owned*.
+    `CollectionStore` builds `allRows` with `CardItem.inList` set and every
+    owned read goes through `ownedRows` (lists left out): the overview's
+    totals, All Collection, `ownedCards`, `ownedIndex`,
+    `ownedScryfallIDs`. `DeckBuilder` never takes from a list or returns
+    to one. A deleted list's records carry `AuditRecord.collectionKindRaw`
+    = "list" so an undo brings back a list, not a collection.
+  - `DeckFolder` — Files-style folders on the Decks tab (`Deck.folderID`,
+    `DeckFolder.parentID`, nil at the top). Deleting a folder moves its
+    contents up; `DeckFolderTree` (pure) does paths and the no-move-into-
+    itself rule.
   - `CardMeta` — cached Scryfall metadata (image URLs, dims), keyed by
     Scryfall ID; one per card, shared across collections.
   - `CollectionEntry` — one owned row (collection + finish + condition +
@@ -1365,6 +1377,157 @@ ids (the synergy rows lost `deck-search-row-…` that way) — identify the
 header text instead. When a run fails, the reason is in the
 xcresult, not xcodebuild's output: `xcrun xcresulttool get test-results
 tests --path <bundle>` and read the `Failure Message` nodes.
+
+## Settings
+
+A gear on the Collections tab opens `SettingsView` (Views/Settings). Every
+preference is a UserDefaults key in `AppSettings` (Utils), bound with
+`@AppStorage` and read nonisolated wherever it is needed:
+
+- **Currency** (`DisplayCurrency`: USD = TCGplayer, EUR = Cardmarket, both
+  from Scryfall's `prices`). `CardMeta` keeps `priceEUR`/`priceEURFoil`;
+  `CardItem.price`/`priceFoil` are in the display currency *at the time the
+  item was built*, so changing it bumps both trackers and every screen
+  refetches (the store maps once per stamp and passes the currency down
+  rather than reading defaults per card). `PriceFormat` prefixes the
+  symbol; Scryfall's `order=`/`usd>=` become `eur` (`SearchSort.scryfallOrder`).
+  A purchase price in another currency shows no gain/loss.
+- **Grid size** (`GridDensity`, 2–5 across): `CardTile` decodes at
+  `targetWidth(for:)`, the grid warms at the same size, the viewer's
+  fallback matches, and the densest drops the caption.
+- **Card language** — what new cards are added in (Add sheet, quick add,
+  scan tray).
+- **Card Data** — the catalog's build date, `CatalogSyncController
+  .checkForUpdates()` (manifest only, compares builds and ignores the
+  weekly interval) and `updateNow` (downloads what differs, in place with
+  the sync bar — never the first-launch screen), cellular, and a price
+  refresh of every owned card.
+- **Backup & Restore** and **About** (version, contact —
+  `AboutInfo.contactEmail` is a placeholder to replace — privacy policy,
+  disclaimer, acknowledgements, all in-app text).
+
+`CardMeta.metaVersion` below `currentVersion` counts as pending (like
+`colorsRaw == nil` before it), so fields added to `apply` (the back face,
+euro prices) backfill in one hydration pass. `isComplete` is the one test.
+
+## Backup and restore
+
+`AppBackup` (Models) is every user table as Codable records; a backup is a
+zip (`ZipWriter`/`ZipReader`, Utils — raw DEFLATE via Compression, CRC-32,
+no zip64) of one JSON file per table, a manifest (format version, counts)
+and the collection as a ManaBox CSV. Dates are encoded exactly
+(`deferredToDate`): History orders by timestamp, and ISO-8601 dropped the
+sub-second part that keeps two same-second actions in order. Not included:
+CardMeta, rulings, images — restored rows link to the phone's catalog and
+anything missing is pending.
+
+`BackupController` snapshots and restores on `CardMetaWriter` (a restore is
+`delete(model:)` per table, then inserts); JSON and zip work is detached.
+Restore **replaces** (merging two ledgers would break History's account)
+and first writes "Magic Hat Before Restore …". `BackupScheduler` runs
+daily/weekly backups when the app comes to the foreground (8s after), into
+a folder picked with the document picker and kept as a security-scoped
+bookmark — iCloud Drive with no entitlement — else `Documents/Backups`
+(visible in Files: `UIFileSharingEnabled`, `LSSupportsOpeningDocumentsInPlace`).
+The newest ten automatic backups are kept. `BackupTests` round-trips a
+world through zip and restore and undoes afterwards.
+
+## Collections: selection, moving, buying
+
+`CardGridView(selection:)` puts the grid in Photos-style selection (a tap
+toggles; badges are outside the equatable tile). `CollectionCardsView`'s
+"…" menu has Select Cards and Buy; selecting hides the tab bar for a
+bottom bar of Move (any other collection or list), Buy and Remove. Moves
+and removals of a selection run on the writer
+(`CollectionEditController.move/remove(entryIDs:)`) as one action; `.move`
+is its own `AuditAction` ("Moved 3 Cards · Main → Trade", detail grouped
+as moves). Deck rows are never moved or removed this way.
+
+`CardStore` (Models/BuyLink) builds TCGplayer Mass Entry
+(`massentry?productline=Magic&c=4 Name||…`) and Card Kingdom builder
+(`builder?c=4 Name\n…`) links, values escaped by hand (URLComponents
+leaves `&` and `+`). `BuyMenu` offers both; decks buy their missing cards
+(`DeckSnapshot.missingBuyLines`) or the whole list.
+
+The viewer's Add is a `Menu` with a primary action: tap opens the sheet, a
+long press lists collections and lists that each take one copy of the
+printing shown (`quickAdd`), confirmed with a toast. The Add sheet opens on
+a collection (`AddTarget.resolve`: the one being browsed, through the
+`browsingCollection` environment value; the row's own; the last used; the
+only one).
+
+## Scan
+
+The Scan tab (Views/Scan, Controllers/Scan, `Utils/CardCamera`). The camera
+session and Vision (`VNRecognizeTextRequest`, accurate, no language
+correction) run on the camera's own queue, ~4 frames a second, one at a
+time, inside the guide only (`regionOfInterest` from
+`CardCamera.guideRegion`, which maps the guide through the preview's
+aspect-fill; the rotation coordinator gives Vision the orientation, so
+landscape works). `CardTextReader` (pure) reads the title band and the
+bottom-left info block (collector number + a set code that must be a known
+set). `ScanSession` acts only when two of three frames agree, ignores the
+card just added until it leaves the guide, and keeps the tray.
+`ScanMatcher` tries `GET /cards/:set/:number` then `/cards/named?fuzzy=`;
+sure only when the found name is ≥ 0.88 similar to the read title,
+otherwise it asks ("Is this…?" with autocomplete alternatives). Nothing is
+added on a guess. The tray adds everything as one action
+(`CollectionEditController.addMany`). A photo runs the same reader — the
+simulator has no camera. `ScanTests.visionReadsADrawnCard` runs Vision on
+a rendered card.
+
+## Search: Sets, and/or
+
+The Search tab has a Cards | Sets picker in a top `safeAreaBar` (on the
+landing page and on Sets). `SetBrowserView` groups `/sets` by year
+(`SetBrowsing`, pure; `SetKind` folds Scryfall's `set_type`), with owned
+copies per set (`CollectionStore.ownedCopiesBySet`); a set pushes
+`SetCardsView`, a `s:code` search in collector-number order. The set list
+is cached a **day** (`ScryfallCatalogCache.setsTTL`), not a week, and pull
+to refresh forces it — so a new set shows the day it is out. Search itself
+is always live against Scryfall, so new cards appear there immediately;
+only the on-device catalog waits for its weekly refresh (or Settings'
+Check for Updates).
+
+Type Line and Rules Text terms combine with `TermMatch` (and / or), a
+connector chip between the included terms; exclusions always apply. Stored
+as optional `typeLineMatchValue`/`oracleMatchValue` so saved searches
+decode. `clauses(_:key:match:)` → `(t:dragon or t:elder) -t:legendary`;
+`matches(_:_:match:)` is the in-memory twin.
+
+## Decks: folders, link import, proposals
+
+The Decks tab is `DeckBrowser(folderID:)` per level in a
+`NavigationStack(path: [DeckRoute])`: folders first (tiles with their
+decks' covers, or list rows), then decks; icons or list and a sort
+(`decks.layout`, `decks.sort`); drag and drop (`DeckDragItem` payload
+strings) or Move (`DeckMoveSheet`); search is flat across folders and says
+where each result lives.
+
+`DeckSiteClient` turns a link into parser text: Archidekt's deck API,
+Moxfield's v3 API (refused for apps behind its bot check — the error says
+to Export and paste), MTGGoldfish's download (sideboard after the blank
+line), or any plain-text URL. The import sheet has a link field; a link
+pasted into the list is fetched. `DeckSiteTests` use trimmed real
+responses.
+
+`DeckPlan.propose` answers "what would I cut for these?": the swap
+planner run with the user's picks as its only candidates, so a proposal is
+judged exactly as a recommendation (swap for a named card with the
+re-score, add while short, not clearly better than the weakest — named —
+already in, outside identity). `DeckProposeView` (Try Cards, from Swaps and
+the menu) re-judges as picks change. Swaps are hidden when a deck is
+locked.
+
+## Viewer: flip, smoothness, landscape
+
+A double-faced card (`CardMeta.backImageNormalURL`, `ScryfallCard
+.backImageURIs`) shows a flip button on the centred card; the back is only
+built once asked for. Each page's shadow is a shape's behind the card
+(inside the rotation), not the image's, which was an offscreen pass per
+page per frame. The neighbours (±2) and the back are decoded at the
+pager's size when the current card changes. Every size change re-pins the
+current card, which fixed an off-centre card after rotating mid-swipe.
 
 ## Sorting
 
