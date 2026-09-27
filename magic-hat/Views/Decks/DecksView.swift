@@ -368,6 +368,10 @@ struct DeckBrowser: View {
             Divider()
             Button("Paste a Deck List…", systemImage: "doc.on.clipboard") { importClipboard() }
                 .accessibilityIdentifier("decks-menu-clipboard")
+            Button("Import from Link…", systemImage: "link") {
+                importSource = DeckImportSource(text: "", suggestedName: nil, focusesLink: true)
+            }
+            .accessibilityIdentifier("decks-menu-link")
             Button("Import from File…", systemImage: "doc") { showFileImporter = true }
                 .accessibilityIdentifier("decks-menu-file")
         } label: {
@@ -763,4 +767,6 @@ struct DeckImportSource: Identifiable {
     let id = UUID()
     let text: String
     let suggestedName: String?
+    /// Opened from "Import from Link…": the link field has the focus.
+    var focusesLink = false
 }
