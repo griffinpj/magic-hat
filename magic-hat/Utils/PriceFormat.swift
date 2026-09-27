@@ -18,6 +18,13 @@ nonisolated enum PriceFormat {
         currency.symbol + (value >= 100 ? String(format: "%.0f", value) : String(format: "%.2f", value))
     }
 
+    /// The grid's caption, one line in a narrow cell: whole units from 10
+    /// up ("$82", "$1,240"), cents below ("$4.50").
+    static func tile(_ value: Double, currency: DisplayCurrency = AppSettings.currency) -> String {
+        guard value >= 10 else { return currency.symbol + String(format: "%.2f", value) }
+        return currency.symbol + value.rounded().formatted(.number.precision(.fractionLength(0)))
+    }
+
     /// Totals: grouped, and no cents once it is in the thousands ("$55,350").
     static func whole(_ value: Double, currency: DisplayCurrency = AppSettings.currency) -> String {
         value.formatted(.currency(code: currency.code).precision(.fractionLength(value >= 1000 ? 0 : 2)))
@@ -29,6 +36,11 @@ nonisolated enum PriceFormat {
         let sign = percent >= 0 ? "+" : "\u{2212}"
         let magnitude = abs(percent)
         return sign + String(format: magnitude < 10 ? "%.1f%%" : "%.0f%%", magnitude)
+    }
+
+    /// "+$2.03" / "−$20.00": an amount with its sign and the currency.
+    static func signed(_ amount: Double, currency: DisplayCurrency = AppSettings.currency) -> String {
+        (amount >= 0 ? "+" : "\u{2212}") + currency.symbol + String(format: "%.2f", abs(amount))
     }
 
     /// "+2.03 (+5.61%)" — signed, for value change since purchase.

@@ -413,15 +413,19 @@ detail screen and actions as an owned card:
   is the one thing SwiftUI hands the closure fresh.
 - Owned vs not: `CardItem.isEntry` (an owned row with a quantity) vs
   `CardItem.owned` (a search hit/printing we hold somewhere). The tile is
-  the art, clean, over a two-line caption (Photos/App Store register):
-  the price in primary (a gradient ✦ first for foil/etched, a tertiary
-  dash until prices arrive) with the copies as a small "×2" count at the
-  trailing end *only when more than one* (a green check for an owned
-  hit) — the common case stays clean — and "◆ #123" in secondary: the set
-  symbol in its rarity's colour (a set neither Keyrune nor the bundled
-  icons draw shows its code — no WebKit from the grid) and the collector
-  number. No gain/loss on the tile; the viewer's price line has it. The
-  zoom's source is the image, not the caption (`CardTile(zoom:)`). No dimming, so results look like the
+  the card in a Liquid Glass cell that underlaps it — a few points of
+  margin, corners concentric with the card's — and carries on below it
+  with one line: the set symbol in its rarity's colour (a set neither
+  Keyrune nor the bundled icons draw shows its code — no WebKit from the
+  grid), "#123", then the price (a gradient ✦ first for foil/etched; green
+  above the price paid, red below; `PriceFormat.tile`, whole units from
+  $10 so the line fits a third of a phone) and "×2" only when more than
+  one (a green check for an owned hit). The number and count never
+  truncate; the price scales first. The viewer's price line has the
+  change as a ▲/▼ % chip and the amount, with the added date moved up
+  to the name row. The zoom's source is the image, not the cell
+  (`CardTile(zoom:)`). The glass cell passed `testGridScrollDoesNotHitch`.
+  No dimming, so results look like the
   collection. Edit/Remove need an entry; a hit's rows are edited from the
   Add sheet's owned list.
 

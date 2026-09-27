@@ -119,3 +119,13 @@ struct CardMetaCompletenessTests {
         #expect(PriceFormat.string(inEuros.marketPrice, currency: .eur) == "€4.00")
     }
 }
+
+@Suite("Tile price")
+struct TilePriceTests {
+    @Test func wholeUnitsFromTen() {
+        #expect(PriceFormat.tile(4.5, currency: .usd) == "$4.50")
+        #expect(PriceFormat.tile(82.01, currency: .usd) == "$82")
+        #expect(PriceFormat.tile(1240.4, currency: .eur).hasPrefix("€1"))
+        #expect(PriceFormat.signed(-20, currency: .usd) == "\u{2212}$20.00")
+    }
+}
