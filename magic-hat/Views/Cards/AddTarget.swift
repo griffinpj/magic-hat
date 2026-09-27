@@ -23,11 +23,11 @@ nonisolated enum AddTarget {
     /// Remembered across launches; written on each successful add.
     static let lastKey = "add.lastCollection"
 
-    static func resolve(browsing: String?, item: CardItem, last: String?, existing: [String]) -> String {
+    static func resolve(browsing: String?, item: CardItem?, last: String?, existing: [String]) -> String {
         let names = Set(existing)
         let candidates: [String?] = [
             browsing,
-            item.isEntry ? item.collectionName : nil,
+            item?.isEntry == true ? item?.collectionName : nil,
             last,
             existing.count == 1 ? existing.first : nil,
         ]

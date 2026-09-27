@@ -41,6 +41,10 @@ struct MainTabView: View {
             Tab("Search", systemImage: "magnifyingglass") {
                 SearchView().catalogSyncBar()
             }
+
+            Tab("Scan", systemImage: "camera.viewfinder") {
+                ScanView()
+            }
         }
     }
 }
