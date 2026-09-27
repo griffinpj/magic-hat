@@ -184,7 +184,7 @@ extension CollectionEditController {
                 condition: request.condition,
                 language: request.language,
                 purchasePrice: request.purchasePrice,
-                purchasePriceCurrency: request.purchasePrice == nil ? nil : "USD",
+                purchasePriceCurrency: request.purchasePrice == nil ? nil : AppSettings.currency.code,
                 addedDate: now
             )
             modelContext.insert(entry)
@@ -222,7 +222,7 @@ extension CollectionEditController {
         entry.condition = edits.condition
         entry.language = edits.language
         entry.purchasePrice = edits.purchasePrice
-        if edits.purchasePrice != nil, entry.purchasePriceCurrency == nil { entry.purchasePriceCurrency = "USD" }
+        if edits.purchasePrice != nil, entry.purchasePriceCurrency == nil { entry.purchasePriceCurrency = AppSettings.currency.code }
 
         let identityChanged = entry.mergeKey != oldKey
         if identityChanged {
@@ -332,8 +332,14 @@ extension CollectionEditController {
         meta.oracleID = printing.oracleID
         meta.imageNormalURL = printing.imageURL
         meta.artCropURL = printing.artCropURL
-        meta.priceUSD = printing.priceUSD
-        meta.priceUSDFoil = printing.priceUSDFoil
+        switch AppSettings.currency {
+        case .usd:
+            meta.priceUSD = printing.price
+            meta.priceUSDFoil = printing.priceFoil
+        case .eur:
+            meta.priceEUR = printing.price
+            meta.priceEURFoil = printing.priceFoil
+        }
         context.insert(meta)
         return meta
     }

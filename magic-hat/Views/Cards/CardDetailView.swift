@@ -415,17 +415,17 @@ private struct PrintingRow: View {
 
     private var priceGrid: some View {
         HStack(spacing: 20) {
-            priceColumn(title: "Normal", market: card.prices?.usd, foil: false)
-            priceColumn(title: "Foil", market: card.prices?.usdFoil, foil: true)
+            priceColumn(title: "Normal", market: card.prices?.price(foil: false, in: AppSettings.currency), foil: false)
+            priceColumn(title: "Foil", market: card.prices?.price(foil: true, in: AppSettings.currency), foil: true)
         }
     }
 
-    private func priceColumn(title: String, market: String?, foil: Bool) -> some View {
+    private func priceColumn(title: String, market: Double?, foil: Bool) -> some View {
         HStack(spacing: 6) {
             Text(title)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(foil ? .orange : .secondary)
-            Text(PriceFormat.string(market.flatMap(Double.init)))
+            Text(PriceFormat.string(market))
                 .font(.caption.weight(.medium))
         }
     }

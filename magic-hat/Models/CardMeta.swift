@@ -38,6 +38,9 @@ nonisolated final class CardMeta {
     var imageNormalURL: String?
     var imageLargeURL: String?
     var artCropURL: String?
+    /// The back face's `normal` image for a double-faced card (transform,
+    /// modal DFC, reversible); nil for a card with one image.
+    var backImageNormalURL: String?
 
     /// Gameplay text (cached so the overlay/detail hero renders from cache).
     var oracleID: String?
@@ -57,6 +60,10 @@ nonisolated final class CardMeta {
     /// Scryfall (TCGplayer only) and are mocked in the UI.
     var priceUSD: Double?
     var priceUSDFoil: Double?
+    /// Cardmarket's trend price, which Scryfall reports in euros — the
+    /// other currency Settings offers.
+    var priceEUR: Double?
+    var priceEURFoil: Double?
     /// When prices were last refreshed, so they can go stale independently of
     /// the (immutable) card metadata.
     var pricesUpdatedAt: Date?
@@ -77,10 +84,30 @@ nonisolated final class CardMeta {
 
     var fetchStateRaw: Int
     var lastFetched: Date?
+    /// Which `apply` wrote this row. A row written before a field was kept
+    /// (the back face, euro prices) is below `currentVersion` and counts as
+    /// pending, so one hydration pass backfills it — the way `colorsRaw ==
+    /// nil` backfilled colours.
+    var metaVersion: Int = 0
+    static let currentVersion = 1
+
+    /// Fetched with every field this build keeps. False sends the card
+    /// through hydration again.
+    var isComplete: Bool {
+        fetchState == .fetched && colorsRaw != nil && metaVersion >= Self.currentVersion
+    }
 
     var fetchState: CardFetchState {
         get { CardFetchState(rawValue: fetchStateRaw) ?? .pending }
         set { fetchStateRaw = newValue.rawValue }
+    }
+
+    /// The market price in `currency`, nil when Scryfall has none.
+    func price(foil: Bool, in currency: DisplayCurrency) -> Double? {
+        switch currency {
+        case .usd: return foil ? priceUSDFoil : priceUSD
+        case .eur: return foil ? priceEURFoil : priceEUR
+        }
     }
 
     /// Aspect ratio (width / height) for laying out tiles.
@@ -110,6 +137,8 @@ nonisolated final class CardMeta {
         artist = card.artist
         priceUSD = card.prices?.usd.flatMap(Double.init)
         priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+        priceEUR = card.prices?.eur.flatMap(Double.init)
+        priceEURFoil = card.prices?.eurFoil.flatMap(Double.init)
         pricesUpdatedAt = Date()
         legalities = card.legalities
         edhrecRank = card.edhrecRank
@@ -120,12 +149,14 @@ nonisolated final class CardMeta {
         imageNormalURL = uris?.normal
         imageLargeURL = uris?.large
         artCropURL = uris?.artCrop
+        backImageNormalURL = card.backImageURIs?.normal
         // Scryfall doesn't return pixel dims; use known constants per
         // orientation so tiles get the right aspect ratio.
         imageWidth = card.isLandscape ? 680 : 488
         imageHeight = card.isLandscape ? 488 : 680
         fetchState = .fetched
         lastFetched = Date()
+        metaVersion = Self.currentVersion
     }
 
     /// ["U", "W"] -> "WU": canonical order, unknown letters dropped, nil

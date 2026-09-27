@@ -39,6 +39,7 @@ struct HistoryView: View {
     private var undo: UndoController { .shared(for: modelContext.container) }
     @State private var renaming: HistoryLine?
     @State private var renameText = ""
+    @State private var showGuide = false
 
     var body: some View {
         NavigationStack {
@@ -59,6 +60,7 @@ struct HistoryView: View {
             .navigationTitle("History")
             .navigationDestination(for: UUID.self) { HistoryDetailView(actionID: $0) }
             .toolbar { toolbar }
+            .sheet(isPresented: $showGuide) { HistoryGuideView() }
             .task(id: "\(tracker.revision)|\(deckTracker.revision)") { await undo.refresh() }
             .sensoryFeedback(.success, trigger: undo.completed)
             .alert("Couldn't Change That", isPresented: Binding(get: { undo.error != nil }, set: { if !$0 { undo.error = nil } })) {
@@ -266,6 +268,11 @@ struct HistoryView: View {
     /// Undo and Redo together at the trailing end: one glass group, the
     /// way every editor puts them, each disabled when it has nothing to do.
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        // How undo, redo and branches work; information only.
+        ToolbarItem(placement: .topBarLeading) {
+            Button("About History", systemImage: "info.circle") { showGuide = true }
+                .accessibilityIdentifier("history-info")
+        }
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button {
                 Task { await undo.undo() }

@@ -21,8 +21,9 @@ nonisolated struct PrintingSelection: Hashable, Sendable, Identifiable {
     let imageURL: String?
     let artCropURL: String?
     let aspectRatio: Double
-    let priceUSD: Double?
-    let priceUSDFoil: Double?
+    /// Market prices in the display currency (see CardItem.price).
+    let price: Double?
+    let priceFoil: Double?
 
     var id: String { scryfallID }
 
@@ -37,8 +38,8 @@ nonisolated struct PrintingSelection: Hashable, Sendable, Identifiable {
         imageURL = item.imageURL
         artCropURL = item.artCropURL
         aspectRatio = item.aspectRatio
-        priceUSD = item.priceUSD
-        priceUSDFoil = item.priceUSDFoil
+        price = item.price
+        priceFoil = item.priceFoil
     }
 
     init(card: ScryfallCard) {
@@ -52,12 +53,12 @@ nonisolated struct PrintingSelection: Hashable, Sendable, Identifiable {
         imageURL = card.bestImageURIs?.normal
         artCropURL = card.bestImageURIs?.artCrop
         aspectRatio = card.isLandscape ? 680.0 / 488.0 : 488.0 / 680.0
-        priceUSD = card.prices?.usd.flatMap(Double.init)
-        priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
+        price = card.prices?.price(foil: false, in: AppSettings.currency)
+        priceFoil = card.prices?.price(foil: true, in: AppSettings.currency)
     }
 
     /// Scryfall market price for a finish (foil falls back to non-foil).
     func marketPrice(for finish: CardFinish) -> Double? {
-        finish == .normal ? priceUSD : (priceUSDFoil ?? priceUSD)
+        finish == .normal ? price : (priceFoil ?? price)
     }
 }

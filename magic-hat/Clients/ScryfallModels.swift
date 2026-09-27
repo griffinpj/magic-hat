@@ -53,11 +53,27 @@ nonisolated struct ScryfallPrices: Codable, Sendable {
     let usd: String?
     let usdFoil: String?
     let usdEtched: String?
+    let eur: String?
+    let eurFoil: String?
+    let tix: String?
 
     enum CodingKeys: String, CodingKey {
-        case usd
+        case usd, eur, tix
         case usdFoil = "usd_foil"
         case usdEtched = "usd_etched"
+        case eurFoil = "eur_foil"
+    }
+}
+
+nonisolated extension ScryfallPrices {
+    /// The market price in `currency` as a number.
+    func price(foil: Bool, in currency: DisplayCurrency) -> Double? {
+        let raw: String?
+        switch currency {
+        case .usd: raw = foil ? usdFoil : usd
+        case .eur: raw = foil ? eurFoil : eur
+        }
+        return raw.flatMap(Double.init)
     }
 }
 
@@ -110,6 +126,14 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     /// Best available image URIs: top-level, else the first face's.
     var bestImageURIs: ScryfallImageURIs? {
         imageURIs ?? cardFaces?.first?.imageURIs
+    }
+
+    /// The back face's images, for a card whose faces each have one
+    /// (transform, modal DFC, reversible). Split and adventure cards keep
+    /// one image at the top level and have no back.
+    var backImageURIs: ScryfallImageURIs? {
+        guard imageURIs == nil, let faces = cardFaces, faces.count > 1 else { return nil }
+        return faces[1].imageURIs
     }
 
     /// Oracle text, falling back to joined face texts for multi-faced cards.

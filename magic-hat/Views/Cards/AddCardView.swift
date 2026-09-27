@@ -20,6 +20,10 @@ struct AddCardView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.browsingCollection) private var browsingCollection
+    /// Small table; what the default collection is checked against.
+    @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
+    @AppStorage(AddTarget.lastKey) private var lastCollection = ""
 
     @State private var printing: PrintingSelection
     @State private var form: EntryFormState
@@ -42,7 +46,15 @@ struct AddCardView: View {
             language: item.language.isEmpty ? "en" : item.language,
             price: selection.marketPrice(for: item.finish)
         ))
-        _collectionName = State(initialValue: item.owned ? item.collectionName : "")
+        _collectionName = State(initialValue: "")
+    }
+
+    /// Opens on a collection rather than an empty picker; see AddTarget.
+    private func chooseDefaultCollection() {
+        guard collectionName.isEmpty else { return }
+        collectionName = AddTarget.resolve(browsing: browsingCollection, item: item,
+                                           last: lastCollection.isEmpty ? nil : lastCollection,
+                                           existing: collections.map(\.name))
     }
 
     private var errorBinding: Binding<Bool> {
@@ -102,6 +114,7 @@ struct AddCardView: View {
             } message: { row in
                 Text("\(row.setName) #\(row.collectorNumber) · \(row.finish.displayName). Recorded in History.")
             }
+            .onAppear(perform: chooseDefaultCollection)
             .task(id: CollectionChangeTracker.shared.revision) { await loadOwned() }
             .sensoryFeedback(.success, trigger: addCount)
         }
@@ -217,6 +230,7 @@ struct AddCardView: View {
                 ),
                 context: modelContext
             )
+            lastCollection = collectionName
             addCount += 1
         } catch {
             errorMessage = error.localizedDescription

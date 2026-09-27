@@ -5,22 +5,22 @@
 
 import Foundation
 
-/// Formats Scryfall USD prices.
+/// Formats Scryfall market prices in the display currency (Settings).
 nonisolated enum PriceFormat {
-    /// "$12.34"; nil shows a dash.
-    static func string(_ value: Double?) -> String {
+    /// "$12.34" / "€12.34"; nil shows a dash.
+    static func string(_ value: Double?, currency: DisplayCurrency = AppSettings.currency) -> String {
         guard let value else { return "—" }
-        return String(format: "$%.2f", value)
+        return currency.symbol + String(format: "%.2f", value)
     }
 
     /// Tight form for the grid, where cents on a $140 card are noise.
-    static func compact(_ value: Double) -> String {
-        value >= 100 ? String(format: "$%.0f", value) : String(format: "$%.2f", value)
+    static func compact(_ value: Double, currency: DisplayCurrency = AppSettings.currency) -> String {
+        currency.symbol + (value >= 100 ? String(format: "%.0f", value) : String(format: "%.2f", value))
     }
 
     /// Totals: grouped, and no cents once it is in the thousands ("$55,350").
-    static func whole(_ value: Double) -> String {
-        value.formatted(.currency(code: "USD").precision(.fractionLength(value >= 1000 ? 0 : 2)))
+    static func whole(_ value: Double, currency: DisplayCurrency = AppSettings.currency) -> String {
+        value.formatted(.currency(code: currency.code).precision(.fractionLength(value >= 1000 ? 0 : 2)))
     }
 
     /// "+87%" / "−5.7%" — the change since purchase as a percentage alone,

@@ -365,6 +365,8 @@ struct DeckAnalysisView: View {
                 .disabled(snapshot.isLocked)
                 .accessibilityIdentifier("analysis-recommendations")
             }
+            // A locked deck edits nothing, so there is nothing to swap.
+            if !snapshot.isLocked {
             NavigationLink {
                 DeckSwapsView(deckID: snapshot.id, controller: controller, context: modelContext)
             } label: {
@@ -379,6 +381,7 @@ struct DeckAnalysisView: View {
                 }
             }
             .accessibilityIdentifier("analysis-swaps")
+            }
         } footer: {
             Text(controller.sourcesLine)
         }

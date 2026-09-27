@@ -163,7 +163,7 @@ nonisolated enum DeckListParser {
                 case .name:
                     break
                 case .price:
-                    let pa = a.card.priceUSD ?? 0, pb = b.card.priceUSD ?? 0
+                    let pa = a.card.price ?? 0, pb = b.card.price ?? 0
                     if pa != pb { return pa > pb }
                 case .manaValue:
                     let ma = ManaSymbol.manaValue(of: a.card.manaCost ?? ""), mb = ManaSymbol.manaValue(of: b.card.manaCost ?? "")

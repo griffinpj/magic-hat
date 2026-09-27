@@ -48,6 +48,7 @@ enum UITestSeed {
             // Something for every collection filter to bite on.
             meta.colorsRaw = ["W", "U", "B", "R", "G", ""][i % 6]
             meta.colorIdentityRaw = meta.colorsRaw
+            meta.metaVersion = CardMeta.currentVersion
             meta.typeLine = i % 3 == 0 ? "Creature — Dragon" : "Instant"
             meta.oracleText = i % 2 == 0 ? "Flying" : "Draw a card."
             meta.manaCost = "{\(i % 5)}{\(["W", "U", "B", "R", "G", "C"][i % 6])}"

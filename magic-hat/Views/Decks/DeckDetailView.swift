@@ -217,8 +217,10 @@ struct DeckDetailView: View {
                 Button("Recommended Cards", systemImage: "wand.and.stars") { openAdd(.recommended) }
                     .disabled(snapshot.isLocked)
                     .accessibilityIdentifier("deck-menu-recommend")
-                Button("Suggested Swaps", systemImage: "arrow.left.arrow.right") { pushed = .swaps }
-                    .accessibilityIdentifier("deck-menu-swaps")
+                if !snapshot.isLocked {
+                    Button("Suggested Swaps", systemImage: "arrow.left.arrow.right") { pushed = .swaps }
+                        .accessibilityIdentifier("deck-menu-swaps")
+                }
                 Divider()
                 Button("Build Deck…", systemImage: "hammer") { showBuild = true }
                     .disabled(snapshot.mainCopies == 0)

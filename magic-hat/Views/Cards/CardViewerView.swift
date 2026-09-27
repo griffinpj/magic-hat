@@ -51,6 +51,9 @@ struct CardViewerView: View {
     /// is the truth until the user swipes: see `pager`.
     @State private var visibleID: String?
     @State private var userScrolled = false
+    /// The card showing its back face. One at a time, and it flips back
+    /// when the pager moves on, as a card in the hand would.
+    @State private var flippedID: String?
 
     /// Portrait card proportions. Every page is sized the same so the pager
     /// doesn't re-lay out when a landscape (split/battle) card is current.
@@ -86,6 +89,10 @@ struct CardViewerView: View {
         // middle. .task(id:) cancels on swipe and the sleep debounces it —
         // /cards/search is 2/sec, so firing per swipe would queue dozens.
         .task(id: currentID) {
+            // The neighbours at the pager's size first, so the next swipe
+            // lands on a sharp card rather than the grid's small image
+            // swapping to the large one mid-settle.
+            await warmNeighbours()
             guard showsDetail, let item = currentItem else { return }
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled else { return }
@@ -238,15 +245,18 @@ struct CardViewerView: View {
             ScrollViewReader { proxy in
                 pagerContent(cardWidth: cardWidth, height: geo.size.height, sideInset: sideInset)
                     .onAppear { pin(proxy) }
-                    .onChange(of: geo.size) { _, _ in
-                        if !userScrolled { pin(proxy) }
-                    }
+                    // Every size change re-centres the current card: before
+                    // the user swipes the zoom is still growing the pager,
+                    // and after it a rotation changes the card width and the
+                    // margins, which left the card off-centre in landscape.
+                    .onChange(of: geo.size) { _, _ in pin(proxy) }
                     .onScrollPhaseChange { _, phase in
                         if phase == .interacting { userScrolled = true }
                     }
                     .onChange(of: visibleID) { _, id in
                         guard userScrolled, let id, id != currentID else { return }
                         currentID = id
+                        flippedID = nil
                     }
                     .onChange(of: currentID) { _, id in
                         // Programmatic moves: a tapped neighbour, the step
@@ -274,21 +284,15 @@ struct CardViewerView: View {
                     ForEach(items.ids, id: \.self) { id in
                         if let item = items.item(for: id) {
                         let isCurrent = item.id == currentID
-                        CardImageView(
-                            urlString: item.imageURL,
-                            aspectRatio: item.aspectRatio,
-                            cornerRadius: 18,
-                            targetWidth: 480,
-                            fallbackTargetWidth: 150,
-                            foil: item.finish != .normal,
-                            // Animated only for the card in the middle; the
-                            // neighbours stay static so the pager isn't
-                            // redrawing three cards.
-                            foilAnimated: isCurrent,
-                            foilIntensity: 0.21
-                        )
+                        FlippableCard(item: item, showsBack: flippedID == item.id, isCurrent: isCurrent)
                         .frame(width: cardWidth)
-                        .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
+                        // Tapping the card flips nothing: the button does,
+                        // so a tap keeps meaning Details.
+                        .overlay(alignment: .topTrailing) {
+                            if isCurrent, item.backImageURL != nil {
+                                flipButton(for: item)
+                            }
+                        }
                         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .onTapGesture {
                             if isCurrent {
@@ -297,6 +301,7 @@ struct CardViewerView: View {
                                 // A peeking neighbour: bring it to the middle
                                 // rather than acting on the wrong card.
                                 currentID = item.id
+                                flippedID = nil
                             }
                         }
                         .id(item.id)
@@ -310,6 +315,43 @@ struct CardViewerView: View {
             .scrollPosition(id: $visibleID, anchor: .center)
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollIndicators(.hidden)
+    }
+
+    /// Turns a double-faced card over: a glass button in the card's corner,
+    /// where the printed card has its transform mark.
+    private func flipButton(for item: CardItem) -> some View {
+        Button {
+            withAnimation(.spring(duration: 0.45, bounce: 0.15)) {
+                flippedID = flippedID == item.id ? nil : item.id
+            }
+        } label: {
+            Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 40, height: 40)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .padding(10)
+        .accessibilityLabel(flippedID == item.id ? "Show front face" : "Show back face")
+        .accessibilityIdentifier("viewer-flip")
+    }
+
+    /// Decodes the cards either side of the current one at the pager's
+    /// size (and the current card's back), a few at a time off the main
+    /// actor; cancelled with the task when the pager moves again.
+    private func warmNeighbours() async {
+        guard let currentID, let index = items.index(of: currentID) else { return }
+        let px = FlippableCard.targetWidth * displayScale
+        var urls: [String] = []
+        for offset in [1, -1, 2, -2] {
+            let i = index + offset
+            guard i >= 0, i < items.count, let url = items.items[i].imageURL else { continue }
+            urls.append(url)
+        }
+        if let back = items.items[index].backImageURL { urls.insert(back, at: 0) }
+        guard !urls.isEmpty else { return }
+        await ImageLoader.shared.warm(urls, maxPixel: px)
     }
 
     // MARK: Actions
@@ -354,6 +396,62 @@ struct CardViewerView: View {
     private static func prefetchArt(for item: CardItem, maxPixel: CGFloat) async {
         guard let url = item.artCropURL else { return }
         _ = try? await ImageLoader.shared.image(for: url, maxPixel: maxPixel)
+    }
+}
+
+/// One page of the pager: the card, and for a double-faced card its back,
+/// turned about the vertical axis. The back is only built once it has been
+/// asked for, so a pager of single-faced cards draws one image a page.
+private struct FlippableCard: View {
+    let item: CardItem
+    let showsBack: Bool
+    let isCurrent: Bool
+
+    static let targetWidth: CGFloat = 480
+    @State private var backRequested = false
+
+    var body: some View {
+        ZStack {
+            face(item.imageURL, foil: item.finish != .normal)
+                .opacity(showsBack ? 0 : 1)
+            if backRequested, let back = item.backImageURL {
+                face(back, foil: item.finish != .normal)
+                    // Pre-turned, so it reads the right way round once the
+                    // stack has rotated half a turn.
+                    .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
+                    .opacity(showsBack ? 1 : 0)
+            }
+        }
+        // The shadow is a shape's, behind the card, not the image's: a
+        // shadow on the image is drawn from the art's alpha (and the foil
+        // layer) for every page on every frame of a swipe. Inside the
+        // rotation, so it turns edge-on with the card.
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black)
+                .padding(1)
+                .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
+        }
+        .rotation3DEffect(.degrees(showsBack ? 180 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
+        .onChange(of: showsBack, initial: true) { _, back in if back { backRequested = true } }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.name)
+        .accessibilityValue(showsBack ? "Back face" : "")
+    }
+
+    private func face(_ url: String?, foil: Bool) -> some View {
+        CardImageView(
+            urlString: url,
+            aspectRatio: item.aspectRatio,
+            cornerRadius: 18,
+            targetWidth: Self.targetWidth,
+            fallbackTargetWidth: 150,
+            foil: foil,
+            // Animated only for the card in the middle; the neighbours
+            // stay static so the pager isn't redrawing three cards.
+            foilAnimated: isCurrent,
+            foilIntensity: 0.21
+        )
     }
 }
 

@@ -22,7 +22,7 @@ nonisolated struct DeckCardItem: Identifiable, Hashable, Sendable {
 
     var stillNeeded: Int { max(0, quantity - builtQuantity) }
     var missingQuantity: Int { max(0, stillNeeded - availableQuantity) }
-    var value: Double { (card.priceUSD ?? 0) * Double(quantity) }
+    var value: Double { (card.price ?? 0) * Double(quantity) }
 
     var status: DeckCardStatus {
         if builtQuantity >= quantity { return .built }
@@ -171,7 +171,7 @@ nonisolated extension CardItem {
     /// A deck list row for display. `id` is the deck row's, so the viewer
     /// and lists key on the row, not the printing (a deck may list the same
     /// printing on two boards).
-    init(deckCard: DeckCard, meta: CardMeta?, quantity: Int, owned: Bool) {
+    init(deckCard: DeckCard, meta: CardMeta?, quantity: Int, owned: Bool, currency: DisplayCurrency = AppSettings.currency) {
         self.id = deckCard.id.uuidString
         self.scryfallID = deckCard.scryfallID
         self.oracleID = deckCard.oracleID ?? meta?.oracleID
@@ -199,8 +199,8 @@ nonisolated extension CardItem {
         self.colors = Self.colors(fromLetters: meta?.colorsRaw)
         self.colorIdentity = Self.colors(fromLetters: meta?.colorIdentityRaw)
         self.artist = meta?.artist
-        self.priceUSD = meta?.priceUSD
-        self.priceUSDFoil = meta?.priceUSDFoil
+        self.price = meta?.price(foil: false, in: currency)
+        self.priceFoil = meta?.price(foil: true, in: currency)
         self.sortKey = Self.sortKey(for: self.name)
         self.collectorNumberValue = Self.collectorValue(self.collectorNumber)
         self.rarityRankValue = Self.rarityRank(self.rarity)
@@ -208,5 +208,6 @@ nonisolated extension CardItem {
         self.legalities = meta?.legalities
         self.edhrecRank = meta?.edhrecRank
         self.purchaseURIs = meta?.purchaseURIs
+        self.backImageURL = meta?.backImageNormalURL
     }
 }
