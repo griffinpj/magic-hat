@@ -325,6 +325,53 @@ extension CollectionEditController {
         return actionID
     }
 
+    /// Several adds as one action (a scan's tray): the same merging as
+    /// `add`, one History row. Returns the action's id.
+    @discardableResult
+    static func addMany(_ requests: [AddRequest], context modelContext: ModelContext) throws -> UUID {
+        let actionID = UUID()
+        let now = Date()
+        for request in requests where request.quantity > 0 {
+            let collectionName = request.collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !collectionName.isEmpty else { throw CollectionEditError.missingCollection }
+            try ensureCollection(named: collectionName, context: modelContext)
+            let meta = try ensureMeta(for: request.printing, context: modelContext)
+            let scryfallID = request.printing.scryfallID
+            let key = CollectionEntry.mergeKey(scryfallID: scryfallID, collectionName: collectionName,
+                                               finish: request.finish.rawValue, condition: request.condition)
+            let candidates = try modelContext.fetch(FetchDescriptor<CollectionEntry>(
+                predicate: #Predicate { $0.collectionName == collectionName && $0.scryfallID == scryfallID }
+            ))
+            let entry: CollectionEntry
+            if let existing = candidates.first(where: { $0.mergeKey == key }) {
+                existing.quantity += request.quantity
+                if existing.purchasePrice == nil { existing.purchasePrice = request.purchasePrice }
+                entry = existing
+            } else {
+                entry = CollectionEntry(
+                    scryfallID: scryfallID, collectionName: collectionName, name: request.printing.name,
+                    setCode: request.printing.setCode, setName: request.printing.setName,
+                    collectorNumber: request.printing.collectorNumber, rarity: request.printing.rarity,
+                    finish: request.finish, quantity: request.quantity, condition: request.condition,
+                    language: request.language, purchasePrice: request.purchasePrice,
+                    purchasePriceCurrency: request.purchasePrice == nil ? nil : AppSettings.currency.code, addedDate: now
+                )
+                modelContext.insert(entry)
+            }
+            if entry.card == nil { entry.card = meta }
+            modelContext.insert(AuditRecord(
+                actionID: actionID, action: .manualAdd, timestamp: now,
+                scryfallID: scryfallID, cardName: request.printing.name,
+                collectionName: collectionName, finish: request.finish,
+                condition: request.condition, quantityDelta: request.quantity,
+                collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
+            ))
+        }
+        try modelContext.save()
+        CollectionChangeTracker.shared.bump()
+        return actionID
+    }
+
     /// Applies edits to one entry. If the edits change its identity to match
     /// another row in the same collection, the two merge.
     static func update(entryID: UUID, edits: EntryEdits, context modelContext: ModelContext) throws {

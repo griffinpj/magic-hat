@@ -39,6 +39,27 @@ nonisolated struct ScryfallClient: CardSearching {
         )
     }
 
+    /// GET /cards/:code/:number — one printing by set and collector
+    /// number, what a scan reads off a card's bottom line. 404 when there
+    /// is no such printing.
+    func card(setCode: String, collectorNumber: String) async throws -> ScryfallCard {
+        let url = baseURL.appendingPathComponent("cards")
+            .appendingPathComponent(setCode.lowercased())
+            .appendingPathComponent(collectorNumber)
+        return try await http.request(ScryfallCard.self, url: url, rateLimit: .other)
+    }
+
+    /// GET /cards/named?fuzzy= — the card whose name best matches loose
+    /// text (a scan's reading of the title). 404 when nothing is close
+    /// enough, or the text is ambiguous.
+    func named(fuzzy: String) async throws -> ScryfallCard {
+        var comps = URLComponents(url: baseURL.appendingPathComponent("cards").appendingPathComponent("named"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "fuzzy", value: fuzzy)]
+        guard let url = comps.url else { throw HTTPError.badURL }
+        return try await http.request(ScryfallCard.self, url: url, rateLimit: .cardsNamed)
+    }
+
     /// GET /sets/:code — set metadata, including the SVG set-symbol URI.
     func set(code: String) async throws -> ScryfallSet {
         let url = baseURL.appendingPathComponent("sets")

@@ -6,6 +6,10 @@
 	<array>
 		<string>com.griffin.magic-hat.catalog-refresh</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera reads a card's name and set so you can add it to a collection. Nothing is recorded or uploaded.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose a photo of a card to scan it.</string>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
