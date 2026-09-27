@@ -118,6 +118,16 @@ actor CardMetaWriter: ModelActor {
         try CollectionEditController.remove(entryIDs: entryIDs, in: modelContext)
     }
 
+    /// Everything the user entered, as records (see BackupController).
+    func runBackupSnapshot(settings: [String: String], appVersion: String) throws -> AppBackup {
+        try BackupController.snapshot(in: modelContext, settings: settings, appVersion: appVersion)
+    }
+
+    /// Replaces every user table with a backup's (see BackupController).
+    func runRestore(_ backup: AppBackup) throws {
+        try BackupController.restore(backup, in: modelContext)
+    }
+
     /// Undo or redo of one ledger action, on this context (see LedgerReplay).
     @discardableResult
     func runReplay(actionID: UUID, direction: LedgerReplay.Direction) throws -> UUID {

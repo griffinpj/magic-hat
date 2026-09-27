@@ -89,6 +89,12 @@ struct RootView: View {
             let arguments = ProcessInfo.processInfo.arguments
             guard phase == .active, !arguments.contains("-uitest-seed"), !arguments.contains("-uitest-real") else { return }
             Task { await sync.resumeIfNeeded(container: modelContext.container) }
+            // An automatic backup, if one is due, well after the first frames.
+            let container = modelContext.container
+            Task {
+                try? await Task.sleep(for: .seconds(8))
+                await BackupScheduler.shared.runIfDue(container: container)
+            }
         }
     }
 }
