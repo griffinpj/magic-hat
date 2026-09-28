@@ -218,7 +218,7 @@ struct CollectionImportView: View {
                                   condition: CardCondition.nearMint.rawValue, language: AppSettings.cardLanguage,
                                   purchasePrice: printing.marketPrice(for: finish)))
         }
-        if !requests.isEmpty { try CollectionEditController.addMany(requests, context: context) }
+        if !requests.isEmpty { try await CollectionEditController.addMany(requests, context: context) }
         return Result(copies: requests.reduce(0) { $0 + $1.quantity }, unresolved: unresolved)
     }
 }

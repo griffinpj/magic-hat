@@ -31,7 +31,7 @@ import AudioToolbox
 struct ScanView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
-    @State private var session = ScanSession()
+    @State private var session = ScanSession(settings: .shared)
     @State private var camera = CardCamera()
     @State private var access: Access = .unknown
     @State private var torch = false

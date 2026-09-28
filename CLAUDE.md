@@ -240,7 +240,9 @@ screen. Instead:
   checked against the source by `LaunchPrewarmTests` — every literal on a
   symbol line, ternaries and `.symbolVariant` forms included, after
   "lock" in the deck menu cost 0.22s opening a deck; and no `""` names,
-  which are looked up and fail like any other) is resolved on a
+  which are looked up and fail like any other; and every name a real
+  symbol, since a missing one draws nothing and logs a SwiftUI fault per
+  draw — "bookmark.badge.plus" did) is resolved on a
   background queue, because the first lookup of a name in CoreUI's
   catalog is disk-bound — 0.44s on the first tap of the Search tab, two
   0.3s stalls opening a deck; and the foil sheen's Metal pipeline is
@@ -368,7 +370,13 @@ bulk data writes — belongs off the main thread.
   catalog ingest ran for minutes, and a 3,900-row import on the main
   context left every row registered there, taxing every background save
   that followed. Only small user-initiated writes (add/edit/remove, deck
-  list edits) stay on the main context. The main actor learns of
+  list edits) stay on the main context. A *bulk* add is not small: Add
+  from a selection, the scan tray and a list import go through
+  `CollectionEditController.addMany` / `DeckEditController.addMany`,
+  which run on the writer (`runAddMany`, `runDeckAddMany`) with the
+  metas and existing rows fetched by `IN` queries of 500 and one save.
+  Adding 3,800 selected cards per row on the main context froze the app
+  for 27.6s on the real export. The main actor learns of
   background writes through `CardHydrationController.revision` and
   `CollectionChangeTracker`, never by observing the models.
 - Long-running user actions should show progress and keep the UI interactive
@@ -1454,6 +1462,15 @@ a collection's Move and Remove (never deck rows; on the writer, one History
 action, `.move` is its own `AuditAction`), a deck's Move to board and Remove.
 Every finished action says what it did in a toast and a VoiceOver
 announcement (the overlay isn't reachable to VoiceOver).
+
+The bar's body runs on every toggle, so it reads nothing per card: the
+copies each row adds are a `[id: count]` map built off-main when
+selection starts, an action's `isEnabled` is a closure evaluated by the
+button, and the chosen `CardItem`s are gathered only when an action
+runs (copying them in the title cost 0.2s with the whole collection
+selected). Buy is a button opening a dialog, not a `Menu` whose content
+is built with the bar. One `.sensoryFeedback` on the grid keyed on the
+count, never one per tile: 3,800 tiles each observing the selection.
 
 ## Sorting, the same everywhere
 

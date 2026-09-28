@@ -106,7 +106,6 @@ struct CardGridView<Header: View, Accessory: View>: View {
                                     guard let selection else { return }
                                     if selection.isActive { selection.toggle(id) } else { selection.begin(with: id) }
                                 }
-                                .sensoryFeedback(.selection, trigger: selection?.contains(id) ?? false)
                                 .accessibilityAddTraits(selection?.contains(id) == true ? .isSelected : [])
                                 .accessibilityAction(named: "Select") {
                                     guard let selection else { return }
@@ -121,6 +120,8 @@ struct CardGridView<Header: View, Accessory: View>: View {
             // Search results sit under the keyboard while typing; a scroll
             // should put it away. No-op elsewhere.
             .scrollDismissesKeyboard(.immediately)
+            // One haptic for the grid as cards are chosen, not one per tile.
+            .sensoryFeedback(.selection, trigger: selection?.count ?? 0)
             .onChange(of: scrollToTop) { _, _ in
                 guard let first = items.first?.id else { return }
                 var t = Transaction(); t.disablesAnimations = true

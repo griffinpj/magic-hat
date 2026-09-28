@@ -167,6 +167,46 @@ enum DeckEditController {
 
     /// Adds copies to a board, merging with the same card (by oracle id)
     /// already on that board.
+    nonisolated struct AddLine: Sendable {
+        let printing: PrintingSelection
+        let quantity: Int
+    }
+
+    /// Many cards onto one board as one write — a selection's Add. On the
+    /// background writer: one deck fetch, the list's rows by card, one save
+    /// (adding one at a time saved and bumped once per card). Returns the
+    /// copies added.
+    @discardableResult
+    static func addMany(_ lines: [AddLine], to deckID: UUID, board: DeckBoard, context: ModelContext) async throws -> Int {
+        let added = try await CardMetaWriter.shared(for: context.container).runDeckAddMany(lines, to: deckID, board: board)
+        DeckChangeTracker.shared.bump()
+        return added
+    }
+
+    nonisolated static func addMany(_ lines: [AddLine], to deckID: UUID, board: DeckBoard, in context: ModelContext) throws -> Int {
+        guard let deck = try context.fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == deckID })).first else { return 0 }
+        var byKey: [String: DeckCard] = [:]
+        for card in deck.cards where card.board == board { byKey[card.matchKey] = card }
+        var added = 0
+        for line in lines where line.quantity > 0 {
+            let key = line.printing.oracleID ?? line.printing.scryfallID
+            if let existing = byKey[key] {
+                existing.quantity += line.quantity
+            } else {
+                let card = DeckCard(scryfallID: line.printing.scryfallID, oracleID: line.printing.oracleID,
+                                    name: line.printing.name, board: board, quantity: line.quantity)
+                card.deck = deck
+                context.insert(card)
+                byKey[key] = card
+                if deck.coverArtURL == nil { deck.coverArtURL = line.printing.artCropURL }
+            }
+            added += line.quantity
+        }
+        deck.updatedDate = Date()
+        try context.save()
+        return added
+    }
+
     @discardableResult
     static func add(_ printing: PrintingSelection, to deckID: UUID, board: DeckBoard, quantity: Int = 1, context: ModelContext) throws -> UUID? {
         guard quantity > 0, let deck = try fetch(deckID, context: context) else { return nil }

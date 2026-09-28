@@ -222,9 +222,15 @@ struct CollectionCardsView: View {
         }
         return [
             SelectionAction(id: "move", title: "Move", systemImage: "arrow.right.circle", choices: choices,
-                            isEnabled: { !Self.removable($0).isEmpty && !choices.isEmpty }),
+                            isEnabled: { !choices.isEmpty && !Deck.isDeckCollection(collectionName) }),
             SelectionAction(id: "remove", title: "Remove", systemImage: "trash", role: .destructive,
-                            perform: { pendingRemove = $0 }, isEnabled: { !Self.removable($0).isEmpty }),
+                            perform: { cards in
+                                if Self.removable(cards).isEmpty {
+                                    actionError = "Cards built into decks leave by taking the deck apart."
+                                } else {
+                                    pendingRemove = cards
+                                }
+                            }),
         ]
     }
 
@@ -244,6 +250,10 @@ struct CollectionCardsView: View {
     }
 
     private func move(_ ids: [UUID], to destination: String) {
+        guard !ids.isEmpty else {
+            actionError = "Cards built into decks move by taking the deck apart."
+            return
+        }
         run(done: "Moved", to: destination) { try await CollectionEditController.move(entryIDs: ids, to: destination, context: modelContext) }
     }
 

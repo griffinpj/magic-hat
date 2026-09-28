@@ -50,7 +50,7 @@ nonisolated enum BackupFrequency: String, CaseIterable, Identifiable, Sendable {
 @Observable
 final class BackupScheduler {
     static let shared = BackupScheduler()
-    static let keep = 10
+    nonisolated static let keep = 10
 
     private let defaults = UserDefaults.standard
     private static let frequencyKey = "backup.frequency"

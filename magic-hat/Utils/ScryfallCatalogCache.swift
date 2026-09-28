@@ -57,11 +57,11 @@ nonisolated enum ScryfallCatalog: String, CaseIterable, Sendable {
 final class ScryfallCatalogCache {
     static let shared = ScryfallCatalogCache()
 
-    static let ttl: TimeInterval = 7 * 24 * 3600
+    nonisolated static let ttl: TimeInterval = 7 * 24 * 3600
     /// The set list is kept a day, not a week: a set released today should
     /// be on the Sets page (and in the set suggestions) tomorrow at the
     /// latest, and pulling the page down fetches it now.
-    static let setsTTL: TimeInterval = 24 * 3600
+    nonisolated static let setsTTL: TimeInterval = 24 * 3600
 
     nonisolated private struct Entry<T: Codable & Sendable>: Codable, Sendable {
         let value: T

@@ -311,7 +311,7 @@ struct SearchView: View {
         if !selection.isActive {
         ToolbarItem(placement: .topBarLeading) {
             Menu {
-                Button("Save Search…", systemImage: "bookmark.badge.plus") {
+                Button("Save Search…", systemImage: "bookmark") {
                     saveName = controller.query.suggestedName
                     showSaveAlert = true
                 }

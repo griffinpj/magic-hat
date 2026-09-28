@@ -99,13 +99,16 @@ struct ScanTrayView: View {
     }
 
     private func addAll() {
-        do {
-            try session.addAll(to: target, context: modelContext)
-            lastCollection = target
-            added += 1
-            dismiss()
-        } catch {
-            self.error = error.localizedDescription
+        let target = self.target
+        Task {
+            do {
+                try await session.addAll(to: target, context: modelContext)
+                lastCollection = target
+                added += 1
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 }

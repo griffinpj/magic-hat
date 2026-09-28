@@ -100,6 +100,9 @@ struct SettingsView: View {
             } label: {
                 Label("Card Language", systemImage: "character.bubble")
             }
+            // Pushed, as the Settings app lists languages: eleven rows, and a
+            // menu picker builds its whole menu on every update.
+            .pickerStyle(.navigationLink)
             .accessibilityIdentifier("settings-language")
         } header: {
             Text("Display")
