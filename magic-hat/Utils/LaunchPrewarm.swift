@@ -148,6 +148,7 @@ enum LaunchPrewarm {
         "folder.fill",
         "gearshape",
         "hammer",
+        "hand.draw",
         "hand.point.up.left",
         "hand.raised",
         "hand.tap",

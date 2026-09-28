@@ -104,15 +104,7 @@ struct HistoryDetailView: View {
         }
     }
 
-    private func icon(for action: HistoryAction) -> String {
-        switch action.action {
-        case .deckBuild, .deckDisassemble: return "rectangle.stack"
-        case .move: return "arrow.right.circle"
-        case .manualRemove: return "minus.circle"
-        case .manualAdd: return "plus.circle"
-        default: return "square.and.arrow.down"
-        }
-    }
+    private func icon(for action: HistoryAction) -> String { action.action.systemImage }
 
     // MARK: Groups
 

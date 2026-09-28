@@ -32,6 +32,8 @@ struct DeckProposeView: View {
     @State private var isJudging = false
     @State private var applied = 0
     @State private var error: String?
+    @State private var viewer: CardViewerSession?
+    @Namespace private var zoom
 
     private var deckTracker: DeckChangeTracker { .shared }
 
@@ -66,6 +68,10 @@ struct DeckProposeView: View {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
             .task(id: deckTracker.revision) { await load() }
+            .fullScreenCover(item: $viewer) { v in
+                CardViewerView(items: v.items, currentID: Bindable(v).currentID, deck: v.deck)
+                    .navigationTransition(.zoom(sourceID: v.currentID ?? "", in: zoom))
+            }
             // Judged again whenever the picks or the list change.
             .task(id: "\(picks.map(\.id).joined(separator: ","))|\(controller.listHash)|\(controller.analysis != nil)") {
                 await judge()
@@ -84,7 +90,8 @@ struct DeckProposeView: View {
             }
             ForEach(picks) { card in
                 ProposalRow(card: card, proposal: verdicts[card.id], judging: isJudging && verdicts[card.id] == nil,
-                            locked: snapshot?.isLocked ?? true,
+                            locked: snapshot?.isLocked ?? true, zoom: zoom,
+                            onOpen: { open(card, in: picks) },
                             onApply: { apply(card, verdicts[card.id]) },
                             onRemove: { withAnimation { picks.removeAll { $0.id == card.id } } })
             }
@@ -116,9 +123,12 @@ struct DeckProposeView: View {
                     ForEach(search.results.prefix(60)) { card in
                         let picked = picks.contains { $0.id == card.id }
                         HStack(spacing: 8) {
-                            CardRowLead(item: card) {
-                                Text(card.typeLine ?? card.setName)
+                            Button { open(card, in: Array(search.results.prefix(60))) } label: {
+                                CardRowLead(item: card, zoom: zoom) {
+                                    Text(card.typeLine ?? card.setName)
+                                }
                             }
+                            .buttonStyle(.plain)
                             Button {
                                 withAnimation {
                                     if picked { picks.removeAll { $0.id == card.id } } else { picks.append(card) }
@@ -172,6 +182,10 @@ struct DeckProposeView: View {
         verdicts = Dictionary(result.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
+    private func open(_ card: CardItem, in cards: [CardItem]) {
+        viewer = CardViewerSession(items: cards, currentID: card.id, deck: session)
+    }
+
     private func apply(_ card: CardItem, _ proposal: DeckProposal?) {
         guard let proposal else { return }
         do {
@@ -201,19 +215,24 @@ private struct ProposalRow: View {
     let proposal: DeckProposal?
     let judging: Bool
     let locked: Bool
+    let zoom: Namespace.ID
+    let onOpen: () -> Void
     let onApply: () -> Void
     let onRemove: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                CardRowLead(item: card) {
-                    if let reason = proposal?.reason {
-                        ReasonDetailLine(reason: reason, price: card.price, owned: card.owned)
-                    } else {
-                        Text(card.typeLine ?? "")
+                Button(action: onOpen) {
+                    CardRowLead(item: card, zoom: zoom) {
+                        if let reason = proposal?.reason {
+                            ReasonDetailLine(reason: reason, price: card.price, owned: card.owned)
+                        } else {
+                            Text(card.typeLine ?? "")
+                        }
                     }
                 }
+                .buttonStyle(.plain)
                 if let label = actionLabel, !locked {
                     Button(label, action: onApply)
                         .buttonStyle(.bordered)
@@ -225,7 +244,7 @@ private struct ProposalRow: View {
             verdictLine
                 .font(.caption)
             if let effect, !effect.isNeutral {
-                ProposalEffectLine(effect: effect)
+                EffectLine(effect: effect)
             }
         }
         .padding(.vertical, 2)
@@ -259,7 +278,7 @@ private struct ProposalRow: View {
                 Text("for \(Text(out.name).strikethrough())").foregroundStyle(.secondary).lineLimit(1)
                 ReasonLabel(reason: tag)
             case .add?:
-                Image(systemName: "plus.circle").foregroundStyle(.green)
+                Image(systemName: "plus.circle.fill").foregroundStyle(.green)
                 Text("Add it — the deck is short of its size").foregroundStyle(.secondary)
             case .notBetter(let weakest)?:
                 Image(systemName: "equal.circle").foregroundStyle(.orange)
@@ -275,32 +294,6 @@ private struct ProposalRow: View {
             case nil:
                 if judging { Text("Weighing it up…").foregroundStyle(.secondary) }
             }
-        }
-    }
-}
-
-/// "+0.3 power · −0.2 playability · breaks a combo", as on a swap row.
-private struct ProposalEffectLine: View {
-    let effect: DeckSwapEffect
-
-    var body: some View {
-        HStack(spacing: 8) {
-            delta("power", effect.power)
-            delta("impact", effect.impact)
-            delta("playability", effect.playability)
-            if !effect.breaks.isEmpty { Text(effect.breaks.count == 1 ? "breaks a combo" : "breaks \(effect.breaks.count) combos").foregroundStyle(.red) }
-            if !effect.gains.isEmpty { Text(effect.gains.count == 1 ? "gains a combo" : "gains \(effect.gains.count) combos").foregroundStyle(.green) }
-        }
-        .font(.caption2.weight(.medium))
-        .lineLimit(1)
-        .minimumScaleFactor(0.8)
-    }
-
-    @ViewBuilder private func delta(_ label: String, _ x: Double) -> some View {
-        if x != 0 {
-            Text((x > 0 ? "+" : "−") + String(format: "%.1f", abs(x)) + " " + label)
-                .foregroundStyle(x > 0 ? Color.green : Color.orange)
-                .monospacedDigit()
         }
     }
 }

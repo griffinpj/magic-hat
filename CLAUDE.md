@@ -1436,16 +1436,37 @@ bookmark — iCloud Drive with no entitlement — else `Documents/Backups`
 The newest ten automatic backups are kept. `BackupTests` round-trips a
 world through zip and restore and undoes afterwards.
 
-## Collections: selection, moving, buying
+## Selecting cards, anywhere
 
-`CardGridView(selection:)` puts the grid in Photos-style selection (a tap
-toggles; badges are outside the equatable tile). `CollectionCardsView`'s
-"…" menu has Select Cards and Buy; selecting hides the tab bar for a
-bottom bar of Move (any other collection or list), Buy and Remove. Moves
-and removals of a selection run on the writer
-(`CollectionEditController.move/remove(entryIDs:)`) as one action; `.move`
-is its own `AuditAction` ("Moved 3 Cards · Main → Trade", detail grouped
-as moves). Deck rows are never moved or removed this way.
+One selection for every screen that shows cards (`Views/Cards/CardSelection
+.swift`): a collection or list, All Collection, search results, a set's
+cards, a deck's list. The screen owns a `CardSelection`, hands it to
+`CardGridView(selection:)` (or the deck's rows), applies
+`.cardSelectionBar(selection, items:, actions:)` and hides its own toolbar
+items while `selection.isActive`. A long press on a tile starts it with that
+card (a deck row: Select in its long-press menu); Select Cards in the
+screen's "…" menu starts it empty. The bar is the same everywhere: Select
+All / Done on top; Add (to any collection, list, or deck board, copies =
+the row's count, one for a search hit), Buy, the screen's own actions, the
+count in the bottom bar's middle (a large title hides the principal slot),
+destructive actions trailing. The tab bar hides; Back hides. Screen actions:
+a collection's Move and Remove (never deck rows; on the writer, one History
+action, `.move` is its own `AuditAction`), a deck's Move to board and Remove.
+Every finished action says what it did in a toast and a VoiceOver
+announcement (the overlay isn't reachable to VoiceOver).
+
+## Sorting, the same everywhere
+
+`SortButton` (Views/Cards) is the only sort control on card lists: a
+floating glass circle bottom-trailing, the options with the current one
+checked, and Ascending/Descending where the source orders both ways
+(Scryfall). Collection grid (`CardSort`: Name, Mana Value, Price High/Low,
+Rarity, Set, Quantity, Recently Added), a deck's list and its add sheet
+(`DeckCardSort`), search results and a set's cards (`SearchSort`). Icons
+come from `SortIcon`, so an order has one symbol everywhere. All persist
+(`collection.sort`, `deck.sort`, `deck.add.sort.all|recommended`; Scryfall's
+in the query). The Decks tab's sort is a Files-style View Options menu,
+because it sorts decks, not cards.
 
 `CardStore` (Models/BuyLink) builds TCGplayer Mass Entry
 (`massentry?productline=Magic&c=4 Name||…`) and Card Kingdom builder
@@ -1513,8 +1534,11 @@ binder into this collection or list. Unfound names are listed.
 
 ## Search: Sets, and/or
 
-The Search tab has a Cards | Sets picker in a top `safeAreaBar` (on the
-landing page and on Sets). `SetBrowserView` groups `/sets` by year
+The Search tab has a Cards | Sets picker as the first row of the landing
+Form and of the Sets list — in the scrolling content, not a `safeAreaBar`:
+under the large title a bar re-laid itself out on every frame of the
+title's expansion, moving the content inset under the scroll, and a slow
+glide to the top stuttered. `SetBrowserView` groups `/sets` by year
 (`SetBrowsing`, pure; `SetKind` folds Scryfall's `set_type`), with owned
 copies per set (`CollectionStore.ownedCopiesBySet`); a set pushes
 `SetCardsView`, a `s:code` search in collector-number order. The set list
@@ -1533,7 +1557,11 @@ decode. `clauses(_:key:match:)` → `(t:dragon or t:elder) -t:legendary`;
 ## Decks: folders, link import, proposals
 
 The Decks tab is `DeckBrowser(folderID:)` per level in a
-`NavigationStack(path: [DeckRoute])`: folders first (tiles with their
+`NavigationStack(path: [DeckRoute])` — subfolders inline-titled with the
+always-shown search drawer, as every pushed screen (the automatic drawer
+slid over a folder's first row); an ⓘ opens `DecksGuideView`; Select Decks
+(View Options) moves or deletes several; List rows swipe for Move and
+Delete: folders first (tiles with their
 decks' covers, or list rows), then decks; icons or list and a sort
 (`decks.layout`, `decks.sort`); drag and drop (`DeckDragItem` payload
 strings) or Move (`DeckMoveSheet`); search is flat across folders and says

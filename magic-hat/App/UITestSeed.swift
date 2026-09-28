@@ -28,7 +28,11 @@ enum UITestSeed {
     static func populate(_ container: ModelContainer) {
         // Preferences persist on the simulator between runs; a sort left
         // behind by one test must not reorder the grid for the next.
-        UserDefaults.standard.removeObject(forKey: "collection.sort")
+        for key in ["collection.sort", "deck.sort", "deck.add.sort.all", "deck.add.sort.recommended",
+                    "decks.layout", "decks.sort", AppSettings.gridColumnsKey, AppSettings.currencyKey,
+                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         let context = container.mainContext
         context.insert(MTGCollection(name: collectionName))
 
@@ -80,7 +84,11 @@ enum UITestSeed {
     /// the one thing not exercised); everything else — hydration, prices,
     /// images — is the real thing over the network.
     static func prepareRealRun() {
-        UserDefaults.standard.removeObject(forKey: "collection.sort")
+        for key in ["collection.sort", "deck.sort", "deck.add.sort.all", "deck.add.sort.recommended",
+                    "decks.layout", "decks.sort", AppSettings.gridColumnsKey, AppSettings.currencyKey,
+                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey] {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
         CatalogSyncController.shared.markCatalogReadyForTesting()
     }
 

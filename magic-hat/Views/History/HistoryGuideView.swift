@@ -82,7 +82,9 @@ struct HistoryGuideView: View {
     }
 }
 
-private struct GuideRow: View {
+/// One explained feature: an icon, a title, a sentence or two. Shared by
+/// the in-app guides (History, Decks, Scanning Tips).
+struct GuideRow: View {
     let icon: String
     let title: String
     let text: String

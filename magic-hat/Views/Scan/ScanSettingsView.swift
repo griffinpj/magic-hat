@@ -149,7 +149,7 @@ struct ScanSetLockView: View {
         }
         .navigationTitle("Lock to Sets")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $search, prompt: "Set name or code")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Set name or code")
         .task {
             do { sets = try await ScryfallCatalogCache.shared.sets() } catch { failed = true }
         }

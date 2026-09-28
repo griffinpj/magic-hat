@@ -15,9 +15,11 @@
 import SwiftUI
 import SwiftData
 
-struct SetBrowserView: View {
+struct SetBrowserView<Header: View>: View {
     /// The tab's search text, filtering set names and codes.
     let filter: String
+    /// The tab's Cards | Sets picker, first in the list whatever it shows.
+    @ViewBuilder var header: () -> Header
 
     @Environment(\.modelContext) private var modelContext
     @AppStorage("search.sets.kind") private var kindRaw = SetKind.main.rawValue
@@ -33,6 +35,22 @@ struct SetBrowserView: View {
 
     var body: some View {
         Group {
+            if loaded, !(failed && sets.isEmpty), !sections.isEmpty {
+                list
+            } else {
+                VStack(spacing: 0) {
+                    header().padding(.horizontal, 16).padding(.top, 8)
+                    placeholder
+                }
+            }
+        }
+        .task { await load(force: false) }
+        .task(id: tracker.revision) { await loadOwned() }
+        .task(id: "\(filter)|\(kindRaw)|\(includeDigital)|\(sets.count)") { await regroup() }
+    }
+
+    @ViewBuilder private var placeholder: some View {
+        Group {
             if !loaded {
                 ProgressView("Loading sets…").frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if failed && sets.isEmpty {
@@ -44,19 +62,19 @@ struct SetBrowserView: View {
                     Button("Try Again") { Task { await load(force: true) } }
                         .buttonStyle(.borderedProminent)
                 }
-            } else if sections.isEmpty {
-                ContentUnavailableView.search(text: filter)
             } else {
-                list
+                ContentUnavailableView.search(text: filter)
             }
         }
-        .task { await load(force: false) }
-        .task(id: tracker.revision) { await loadOwned() }
-        .task(id: "\(filter)|\(kindRaw)|\(includeDigital)|\(sets.count)") { await regroup() }
     }
 
     private var list: some View {
         List {
+            Section {
+                header()
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             Section {
                 kindPicker
             }
@@ -168,6 +186,7 @@ struct SetCardsView: View {
     @Environment(\.modelContext) private var modelContext
     @State private var controller = SearchController()
     @State private var owned = 0
+    @State private var selection = CardSelection()
 
     private var tracker: CollectionChangeTracker { .shared }
 
@@ -186,13 +205,34 @@ struct SetCardsView: View {
                     Button("Try Again") { controller.run() }.buttonStyle(.borderedProminent)
                 }
             case .results:
-                CardGridView(items: controller.resultList, onAppearIndex: { controller.loadMore(near: $0) }, header: {
-                    header
-                })
+                CardGridView(items: controller.resultList, onAppearIndex: { controller.loadMore(near: $0) }, scrollToTop: 0,
+                             header: { header }, accessory: {
+                                 if !selection.isActive {
+                                     SortButton(options: SearchSort.allCases, selected: controller.query.sort, title: \.label,
+                                                icon: \.systemImage, direction: controller.query.effectiveDirection,
+                                                onDirection: { controller.query.direction = $0; controller.runIfChanged() },
+                                                onSelect: { controller.query.sort = $0; controller.query.direction = nil; controller.runIfChanged() },
+                                                identifier: "set-sort")
+                                 }
+                             }, selection: selection)
             }
         }
         .navigationTitle(set.name ?? set.code.uppercased())
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !selection.isActive {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("Select Cards", systemImage: "checkmark.circle") { selection.begin() }
+                            .disabled(controller.results.isEmpty)
+                    } label: {
+                        Label("More", systemImage: "ellipsis")
+                    }
+                    .accessibilityIdentifier("set-more")
+                }
+            }
+        }
+        .cardSelectionBar(selection, items: controller.results)
         .task {
             guard controller.phase == .idle else { return }
             var q = CardSearchQuery()

@@ -102,6 +102,11 @@ struct DeckBrowser: View {
     @State private var pendingDelete: DeleteRequest?
     @State private var error: String?
     @State private var dropTarget: UUID?
+    @State private var showGuide = false
+    /// Choosing decks to move or delete together, as in Files' Select.
+    @State private var selecting = false
+    @State private var chosen: Set<UUID> = []
+    @State private var confirmDeleteChosen = false
 
     @AppStorage("decks.layout") private var layoutRaw = DeckBrowserLayout.icons.rawValue
     @AppStorage("decks.sort") private var sortRaw = DeckBrowserSort.updated.rawValue
@@ -154,12 +159,38 @@ struct DeckBrowser: View {
     var body: some View {
         content
             .navigationTitle(title)
-            .searchable(text: $search, prompt: folderID == nil ? "Search decks" : "Search all decks")
+            // A subfolder is pushed: inline, as every pushed screen is.
+            .navigationBarTitleDisplayMode(folderID == nil ? .automatic : .inline)
+            // Always shown, as on every other screen: with the automatic
+            // drawer a pushed folder's list started under the hidden field
+            // and the field slid over the first row.
+            .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: folderID == nil ? "Search decks" : "Search all decks")
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    viewMenu
-                    addMenu
+                if selecting {
+                    selectionToolbar
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        if folderID == nil {
+                            Button("Managing Decks", systemImage: "info.circle") { showGuide = true }
+                                .accessibilityIdentifier("decks-info")
+                        }
+                    }
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        viewMenu
+                        addMenu
+                    }
                 }
+            }
+            .toolbar(selecting ? .hidden : .automatic, for: .tabBar)
+            .navigationBarBackButtonHidden(selecting)
+            .sheet(isPresented: $showGuide) { DecksGuideView() }
+            .confirmationDialog(chosen.count == 1 ? "Delete 1 Deck?" : "Delete \(chosen.count) Decks?",
+                                isPresented: $confirmDeleteChosen, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) { deleteChosen() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Built decks go back to their collections first. No cards are lost.")
             }
             .sheet(isPresented: $showNewDeck) {
                 NewDeckView { id in file(id) }
@@ -167,7 +198,9 @@ struct DeckBrowser: View {
             .sheet(item: $importSource) { source in
                 DeckImportView(source: source) { id in file(id) }
             }
-            .sheet(item: $moving) { request in
+            .sheet(item: $moving, onDismiss: {
+                if selecting { selecting = false; chosen = [] }
+            }) { request in
                 DeckMoveSheet(request: request, tree: tree)
             }
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.plainText, .text, .utf8PlainText]) { result in
@@ -261,12 +294,16 @@ struct DeckBrowser: View {
                     .accessibilityIdentifier("deck-folder-\(node.name)")
                 }
                 ForEach(shownDecks) { deck in
-                    Button { open(.deck(deck.id)) } label: {
+                    Button { tapDeck(deck) } label: {
                         DeckTile(deck: deck, location: isSearching ? location(of: deck) : nil)
+                            .overlay(alignment: .topTrailing) {
+                                if selecting { SelectionMark(isSelected: chosen.contains(deck.id)).padding(8) }
+                            }
                     }
                     .buttonStyle(.plain)
-                    .contextMenu { deckMenu(deck) }
+                    .contextMenu { if !selecting { deckMenu(deck) } }
                     .draggable(DeckDragItem.deck(deck.id).payload)
+                    .accessibilityAddTraits(chosen.contains(deck.id) ? .isSelected : [])
                 }
             }
             .padding(16)
@@ -298,11 +335,21 @@ struct DeckBrowser: View {
                 .dropDestination(for: String.self) { items, _ in drop(items, into: node.id) } isTargeted: { over in
                     dropTarget = over ? node.id : (dropTarget == node.id ? nil : dropTarget)
                 }
+                .swipeActions(edge: .trailing) {
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        pendingDelete = DeleteRequest(deck: nil, folder: node)
+                    }
+                    Button("Move", systemImage: "folder") {
+                        moving = MoveRequest(deckIDs: [], folderID: node.id, name: node.name)
+                    }
+                    .tint(.blue)
+                }
                 .accessibilityIdentifier("deck-folder-\(node.name)")
             }
             ForEach(shownDecks) { deck in
-                Button { open(.deck(deck.id)) } label: {
+                Button { tapDeck(deck) } label: {
                     HStack(spacing: 12) {
+                        if selecting { SelectionMark(isSelected: chosen.contains(deck.id), size: 22) }
                         CardArtThumb(artURL: deck.coverArtURL)
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 4) {
@@ -322,8 +369,20 @@ struct DeckBrowser: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .contextMenu { deckMenu(deck) }
+                .contextMenu { if !selecting { deckMenu(deck) } }
                 .draggable(DeckDragItem.deck(deck.id).payload)
+                // Files' row swipes: the two things done to a deck most.
+                .swipeActions(edge: .trailing) {
+                    if !selecting {
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            pendingDelete = DeleteRequest(deck: deck, folder: nil)
+                        }
+                        Button("Move", systemImage: "folder") {
+                            moving = MoveRequest(deckIDs: [deck.id], folderID: nil, name: deck.name)
+                        }
+                        .tint(.blue)
+                    }
+                }
                 .accessibilityIdentifier("deck-tile-\(deck.name)")
             }
         }
@@ -343,6 +402,13 @@ struct DeckBrowser: View {
                 ForEach(DeckBrowserSort.allCases) { Text($0.label).tag($0.rawValue) }
             }
             .pickerStyle(.menu)
+            Divider()
+            Button("Select Decks", systemImage: "checkmark.circle") {
+                chosen = []
+                selecting = true
+            }
+            .disabled(shownDecks.isEmpty)
+            .accessibilityIdentifier("decks-select")
             if let folderID, let node = tree.nodes[folderID] {
                 Divider()
                 Button("Rename Folder…", systemImage: "pencil") { startRename(folder: node) }
@@ -404,6 +470,68 @@ struct DeckBrowser: View {
         Divider()
         Button("Delete Folder", systemImage: "trash", role: .destructive) {
             pendingDelete = DeleteRequest(deck: nil, folder: node)
+        }
+    }
+
+    @ToolbarContentBuilder private var selectionToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            let all = !shownDecks.isEmpty && chosen.count == shownDecks.count
+            Button(all ? "Deselect All" : "Select All") {
+                chosen = all ? [] : Set(shownDecks.map(\.id))
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            Text(chosen.isEmpty ? "Select Decks" : (chosen.count == 1 ? "1 Deck" : "\(chosen.count) Decks"))
+                .font(.headline)
+                .accessibilityIdentifier("decks-selection-count")
+        }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("Done") { selecting = false; chosen = [] }
+                .accessibilityIdentifier("decks-selection-done")
+        }
+        ToolbarItem(placement: .bottomBar) {
+            Button("Move", systemImage: "folder") {
+                let names = decks.filter { chosen.contains($0.id) }.map(\.name)
+                moving = MoveRequest(deckIDs: Array(chosen), folderID: nil,
+                                     name: names.count == 1 ? names[0] : "\(names.count) Decks")
+            }
+            .disabled(chosen.isEmpty)
+            .accessibilityIdentifier("decks-selection-move")
+        }
+        ToolbarSpacer(.flexible, placement: .bottomBar)
+        ToolbarItem(placement: .bottomBar) {
+            Button("Delete", systemImage: "trash") { confirmDeleteChosen = true }
+                .disabled(chosen.isEmpty)
+                .accessibilityIdentifier("decks-selection-delete")
+        }
+    }
+
+    private func tapDeck(_ deck: DeckSummary) {
+        if selecting {
+            if chosen.contains(deck.id) { chosen.remove(deck.id) } else { chosen.insert(deck.id) }
+        } else {
+            open(.deck(deck.id))
+        }
+    }
+
+    private func deleteChosen() {
+        let chosenDecks = decks.filter { chosen.contains($0.id) }
+        let container = modelContext.container
+        let context = modelContext
+        Task {
+            do {
+                for deck in chosenDecks {
+                    if deck.builtCopies > 0 {
+                        _ = try await DeckBuilder.shared(for: container).disassemble(deckID: deck.id)
+                        CollectionChangeTracker.shared.bump()
+                    }
+                    try DeckEditController.delete(deckID: deck.id, context: context)
+                }
+                selecting = false
+                chosen = []
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 

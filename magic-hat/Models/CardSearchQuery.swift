@@ -43,17 +43,17 @@ nonisolated enum SearchSort: String, CaseIterable, Codable, Hashable, Sendable, 
 
     var systemImage: String {
         switch self {
-        case .name: return "textformat"
-        case .released: return "calendar"
-        case .price: return "dollarsign"
-        case .manaValue: return "circle.hexagonpath"
+        case .name: return SortIcon.name
+        case .released: return SortIcon.released
+        case .price: return SortIcon.price
+        case .manaValue: return SortIcon.manaValue
         case .power: return "bolt"
         case .toughness: return "shield"
-        case .rarity: return "star"
+        case .rarity: return SortIcon.rarity
         case .color: return "paintpalette"
         case .edhrec: return "chart.bar"
         case .artist: return "paintbrush"
-        case .set: return "square.stack"
+        case .set: return SortIcon.set
         }
     }
 

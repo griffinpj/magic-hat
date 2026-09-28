@@ -25,6 +25,7 @@ struct BackupSettingsView: View {
     @State private var isRestoring = false
     @State private var restored: String?
     @State private var error: String?
+    @State private var pendingDelete: URL?
 
     struct ShareItem: Identifiable {
         let url: URL
@@ -105,10 +106,7 @@ struct BackupSettingsView: View {
                         Button("Restore…", systemImage: "arrow.down.doc") { prepare(url) }
                         Button("Share…", systemImage: "square.and.arrow.up") { sharing = ShareItem(url: url) }
                         Divider()
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            try? FileManager.default.removeItem(at: url)
-                            refreshLocal()
-                        }
+                        Button("Delete", systemImage: "trash", role: .destructive) { pendingDelete = url }
                     } label: {
                         HStack {
                             Image(systemName: "doc.zipper").foregroundStyle(.secondary)
@@ -146,6 +144,16 @@ struct BackupSettingsView: View {
             case .success(let url): prepare(url)
             case .failure(let e): error = e.localizedDescription
             }
+        }
+        .confirmationDialog("Delete This Backup?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                            titleVisibility: .visible, presenting: pendingDelete) { url in
+            Button("Delete Backup", role: .destructive) {
+                try? FileManager.default.removeItem(at: url)
+                refreshLocal()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { url in
+            Text("“\(url.deletingPathExtension().lastPathComponent)” is deleted from this iPhone. It can't be restored afterwards.")
         }
         .confirmationDialog("Replace Everything?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
                             titleVisibility: .visible, presenting: pending) { item in

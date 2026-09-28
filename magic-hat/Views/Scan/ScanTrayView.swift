@@ -21,13 +21,18 @@ struct ScanTrayView: View {
     @State private var target = ""
     @State private var error: String?
     @State private var added = 0
+    @State private var confirmClear = false
+    @State private var viewer: CardViewerSession?
+    @Namespace private var zoom
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     ForEach(session.tray) { item in
-                        TrayRow(item: item, onChange: session.update)
+                        TrayRow(item: item, zoom: zoom, onChange: session.update) {
+                            viewer = CardViewerSession(items: session.tray.map(\.card), currentID: item.card.id)
+                        }
                     }
                     .onDelete { offsets in
                         for i in offsets { session.remove(session.tray[i].id) }
@@ -50,10 +55,17 @@ struct ScanTrayView: View {
             .navigationTitle("\(session.trayCopies) Scanned")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.accessibilityIdentifier("scan-tray-done") }
                 ToolbarItem(placement: .destructiveAction) {
-                    Button("Clear", role: .destructive) { session.clear(); dismiss() }
+                    Button("Clear", role: .destructive) { confirmClear = true }
                         .disabled(session.tray.isEmpty)
+                        .confirmationDialog("Clear \(session.trayCopies == 1 ? "1 Scanned Card" : "\(session.trayCopies) Scanned Cards")?",
+                                            isPresented: $confirmClear, titleVisibility: .visible) {
+                            Button("Clear All", role: .destructive) { session.clear(); dismiss() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("They haven't been added anywhere yet, so they'll need scanning again.")
+                        }
                 }
                 ToolbarItem(placement: .bottomBar) {
                     Button(action: addAll) {
@@ -76,6 +88,10 @@ struct ScanTrayView: View {
                 }
             }
             .sensoryFeedback(.success, trigger: added)
+            .fullScreenCover(item: $viewer) { v in
+                CardViewerView(items: v.items, currentID: Bindable(v).currentID)
+                    .navigationTransition(.zoom(sourceID: v.currentID ?? "", in: zoom))
+            }
             .alert("Couldn't Add", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
@@ -96,14 +112,19 @@ struct ScanTrayView: View {
 
 private struct TrayRow: View {
     let item: ScanTrayItem
+    let zoom: Namespace.ID
     let onChange: (ScanTrayItem) -> Void
+    let onOpen: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                CardRowLead(item: item.card) {
-                    Text(PriceFormat.string(item.price))
+                Button(action: onOpen) {
+                    CardRowLead(item: item.card, zoom: zoom) {
+                        Text(PriceFormat.string(item.price))
+                    }
                 }
+                .buttonStyle(.plain)
                 Stepper(value: Binding(get: { item.quantity }, set: { var copy = item; copy.quantity = $0; onChange(copy) }), in: 0...99) {
                     Text("×\(item.quantity)").monospacedDigit().font(.headline)
                 }

@@ -44,8 +44,7 @@ nonisolated enum PriceFormat {
     }
 
     /// "+2.03 (+5.61%)" — signed, for value change since purchase.
-    static func change(_ amount: Double, _ percent: Double) -> String {
-        let sign = amount >= 0 ? "+" : "-"
-        return String(format: "%@%.2f (%@%.1f%%)", sign, abs(amount), sign, abs(percent))
+    static func change(_ amount: Double, _ percent: Double, currency: DisplayCurrency = AppSettings.currency) -> String {
+        "\(signed(amount, currency: currency)) (\(self.percent(percent)))"
     }
 }

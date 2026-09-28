@@ -178,12 +178,12 @@ nonisolated enum DeckCardSort: String, CaseIterable, Identifiable, Hashable, Sen
 
     var systemImage: String {
         switch self {
-        case .relevance: return "wand.and.stars"
-        case .name: return "textformat"
-        case .manaValue: return "circle.hexagonpath"
-        case .priceHigh: return "dollarsign.circle"
-        case .priceLow: return "dollarsign"
-        case .rarity: return "star"
+        case .relevance: return SortIcon.relevance
+        case .name: return SortIcon.name
+        case .manaValue: return SortIcon.manaValue
+        case .priceHigh: return SortIcon.priceHigh
+        case .priceLow: return SortIcon.priceLow
+        case .rarity: return SortIcon.rarity
         }
     }
 

@@ -96,7 +96,7 @@ struct AddCardView: View {
                     .accessibilityIdentifier("add-card-confirm")
                 }
             }
-            .alert("Couldn't add", isPresented: errorBinding) {
+            .alert("Couldn't Add", isPresented: errorBinding) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(errorMessage ?? "")
@@ -388,7 +388,7 @@ struct EditEntryView: View {
                 Button("Remove \(item.quantity)", role: .destructive) { remove() }
                 Button("Cancel", role: .cancel) {}
             }
-            .alert("Couldn't save", isPresented: Binding(get: { errorMessage != nil },
+            .alert("Couldn't Save", isPresented: Binding(get: { errorMessage != nil },
                                                         set: { if !$0 { errorMessage = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {

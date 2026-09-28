@@ -62,6 +62,8 @@ struct DeckDetailView: View {
         var id: String { scope.rawValue }
     }
     @State private var showExport = false
+    @State private var selection = CardSelection()
+    @State private var pendingRemove: [CardItem]?
     @State private var showPropose = false
     @State private var filterText = ""
     @State private var searchSessionActive = false
@@ -99,68 +101,7 @@ struct DeckDetailView: View {
     }
 
     var body: some View {
-        Group {
-            if let snapshot {
-                TabView(selection: $tab) {
-                    DeckCardsView(snapshot: snapshot, filterText: filterText, onAddCards: { openAdd(.all) },
-                                  onShowIssues: { withAnimation { tab = .stats } },
-                                  analysis: analysis, onShowSwaps: { pushed = .swaps },
-                                  zoom: zoom, viewer: viewer, session: session, onOpenViewer: { viewer = $0 })
-                        .tag(Tab.cards)
-                    DeckStatsView(snapshot: snapshot, analysis: analysis, onAddRecommended: { openAdd(.recommended) })
-                        .tag(Tab.stats)
-                    DeckDetailsView(snapshot: snapshot, onBuild: { showBuild = true },
-                                    onDisassemble: { confirmDisassemble = true },
-                                    onExport: { showExport = true },
-                                    onDelete: { confirmDelete = true })
-                        .tag(Tab.details)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                // The bars show whatever is behind them, and behind a
-                // grouped list that is the grouped grey — as on any Settings
-                // screen — while the plain card list is white. The page
-                // container paints it, since the pages themselves stop at
-                // the bar.
-                .background(tab == .cards ? Color(.systemBackground) : Color(.systemGroupedBackground),
-                            ignoresSafeAreaEdges: .all)
-                .animation(.default, value: tab)
-                .safeAreaBar(edge: .top) {
-                    Picker("Section", selection: $tab) {
-                        ForEach(Tab.allCases) { Label($0.label, systemImage: $0.systemImage).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
-                    .accessibilityIdentifier("deck-tabs")
-                }
-            } else if hasLoaded {
-                ContentUnavailableView("Deck Not Found", systemImage: "rectangle.stack")
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .background {
-            SearchDismisser(isEmpty: filterText.isEmpty)
-            SearchSessionReporter(isActive: $searchSessionActive)
-        }
-        .navigationTitle(snapshot?.name ?? "Deck")
-        .navigationSubtitle(snapshot?.subtitle ?? "")
-        .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $filterText, placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: "Search this deck")
-        // + and … stay reachable while typing; only Back steps aside.
-        .searchPresentationToolbarBehavior(.avoidHidingContent)
-        .navigationBarBackButtonHidden(searchSessionActive)
-        .onChange(of: searchSessionActive) { _, active in if active { tab = .cards } }
-        .onChange(of: filterText) { _, text in if !text.isEmpty { tab = .cards } }
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("Add Cards", systemImage: "plus") { openAdd(.all) }
-                    .disabled(snapshot?.isLocked ?? true)
-                    .accessibilityIdentifier("deck-add-cards")
-                menu
-            }
-        }
+        screen
         .navigationDestination(item: $pushed) { push in
             if let snapshot {
                 switch push {
@@ -210,9 +151,98 @@ struct DeckDetailView: View {
         .task(id: "\(deckID)|\(deckTracker.revision)|\(collectionTracker.revision)") { await load() }
     }
 
+    /// The pages, the bars and the selection; `body` adds the sheets.
+    private var screen: some View {
+        pages
+        .background {
+            SearchDismisser(isEmpty: filterText.isEmpty)
+            SearchSessionReporter(isActive: $searchSessionActive)
+        }
+        .navigationTitle(snapshot?.name ?? "Deck")
+        .navigationSubtitle(snapshot?.subtitle ?? "")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $filterText, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Search this deck")
+        // + and … stay reachable while typing; only Back steps aside.
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
+        .navigationBarBackButtonHidden(searchSessionActive || selection.isActive)
+        .onChange(of: searchSessionActive) { _, active in if active { tab = .cards } }
+        .onChange(of: filterText) { _, text in if !text.isEmpty { tab = .cards } }
+        .toolbar {
+            if !selection.isActive {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("Add Cards", systemImage: "plus") { openAdd(.all) }
+                        .disabled(snapshot?.isLocked ?? true)
+                        .accessibilityIdentifier("deck-add-cards")
+                    menu
+                }
+            }
+        }
+        .cardSelectionBar(selection, items: snapshot?.allItems.map(\.card) ?? [], actions: selectionActions, managesBack: false)
+        .onChange(of: selection.isActive) { _, active in if active { tab = .cards } }
+        .onChange(of: snapshot?.allItems.map(\.card.id)) { _, ids in selection.keep(only: ids ?? []) }
+        .confirmationDialog("Remove \(pendingRemove?.count == 1 ? "1 Card" : "\(pendingRemove?.count ?? 0) Cards") from the Deck?",
+                            isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+                            titleVisibility: .visible, presenting: pendingRemove) { cards in
+            Button("Remove", role: .destructive) { removeRows(cards) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Takes them off the list. Cards already built stay in the deck until you disassemble it.")
+        }
+    }
+
+    private var pages: some View {
+        Group {
+            if let snapshot {
+                TabView(selection: $tab) {
+                    DeckCardsView(snapshot: snapshot, filterText: filterText, onAddCards: { openAdd(.all) },
+                                  onShowIssues: { withAnimation { tab = .stats } },
+                                  analysis: analysis, onShowSwaps: { pushed = .swaps },
+                                  zoom: zoom, viewer: viewer, session: session, onOpenViewer: { viewer = $0 },
+                                  selection: selection)
+                        .tag(Tab.cards)
+                    DeckStatsView(snapshot: snapshot, analysis: analysis, onAddRecommended: { openAdd(.recommended) })
+                        .tag(Tab.stats)
+                    DeckDetailsView(snapshot: snapshot, onBuild: { showBuild = true },
+                                    onDisassemble: { confirmDisassemble = true },
+                                    onExport: { showExport = true },
+                                    onDelete: { confirmDelete = true })
+                        .tag(Tab.details)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                // The bars show whatever is behind them, and behind a
+                // grouped list that is the grouped grey — as on any Settings
+                // screen — while the plain card list is white. The page
+                // container paints it, since the pages themselves stop at
+                // the bar.
+                .background(tab == .cards ? Color(.systemBackground) : Color(.systemGroupedBackground),
+                            ignoresSafeAreaEdges: .all)
+                .animation(.default, value: tab)
+                .safeAreaBar(edge: .top) {
+                    if !selection.isActive {
+                    Picker("Section", selection: $tab) {
+                        ForEach(Tab.allCases) { Label($0.label, systemImage: $0.systemImage).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    .accessibilityIdentifier("deck-tabs")
+                    }
+                }
+            } else if hasLoaded {
+                ContentUnavailableView("Deck Not Found", systemImage: "rectangle.stack")
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
     private var menu: some View {
         Menu {
             if let snapshot {
+                Button("Select Cards", systemImage: "checkmark.circle") { selection.begin() }
+                    .disabled(snapshot.allItems.isEmpty)
+                    .accessibilityIdentifier("deck-menu-select")
                 Button(snapshot.isLocked ? "Unlock Deck" : "Lock Deck",
                        systemImage: snapshot.isLocked ? "lock.open" : "lock") { toggleLock() }
                 Divider()
@@ -228,16 +258,16 @@ struct DeckDetailView: View {
                         .accessibilityIdentifier("deck-menu-propose")
                 }
                 Divider()
-                Button("Build Deck…", systemImage: "hammer") { showBuild = true }
+                Button("Build from Collection…", systemImage: "hammer") { showBuild = true }
                     .disabled(snapshot.mainCopies == 0)
-                Button("Disassemble Deck…", systemImage: "arrow.uturn.backward") { confirmDisassemble = true }
+                Button("Disassemble…", systemImage: "arrow.uturn.backward") { confirmDisassemble = true }
                     .disabled(!snapshot.isBuilt)
                 Divider()
                 Button("Rename…", systemImage: "pencil") {
                     newName = snapshot.name
                     showRename = true
                 }
-                Button("Export…", systemImage: "square.and.arrow.up") { showExport = true }
+                Button("Export List…", systemImage: "square.and.arrow.up") { showExport = true }
                     .accessibilityIdentifier("deck-menu-export")
                 BuyMenu(title: "Buy Missing Cards", lines: snapshot.missingBuyLines)
                     .accessibilityIdentifier("deck-menu-buy")
@@ -248,6 +278,39 @@ struct DeckDetailView: View {
             Label("More", systemImage: "ellipsis")
         }
         .accessibilityIdentifier("deck-menu")
+    }
+
+    // MARK: Selection
+
+    /// Beside Add and Buy: another board for the chosen rows, and Remove —
+    /// neither on a locked deck.
+    private var selectionActions: [SelectionAction] {
+        let locked = snapshot?.isLocked ?? true
+        let boards = DeckBoard.addable.map { board in
+            SelectionAction.Choice(id: board.rawValue, title: board.label, systemImage: "arrow.right", section: "Move to") { cards in
+                moveRows(cards, to: board)
+            }
+        }
+        return [
+            SelectionAction(id: "board", title: "Move", systemImage: "arrow.right.circle", choices: boards,
+                            isEnabled: { !$0.isEmpty && !locked }),
+            SelectionAction(id: "remove", title: "Remove", systemImage: "trash", role: .destructive,
+                            perform: { pendingRemove = $0 }, isEnabled: { !$0.isEmpty && !locked }),
+        ]
+    }
+
+    private func moveRows(_ cards: [CardItem], to board: DeckBoard) {
+        do {
+            for card in cards { if let id = UUID(uuidString: card.id) { try DeckEditController.move(deckCardID: id, to: board, context: modelContext) } }
+            selection.finished("Moved \(cards.count == 1 ? "1 card" : "\(cards.count) cards") to \(board.label)")
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func removeRows(_ cards: [CardItem]) {
+        do {
+            for card in cards { if let id = UUID(uuidString: card.id) { try DeckEditController.setQuantity(deckCardID: id, 0, context: modelContext) } }
+            selection.finished("Removed \(cards.count == 1 ? "1 card" : "\(cards.count) cards")")
+        } catch { self.error = error.localizedDescription }
     }
 
     // MARK: Actions

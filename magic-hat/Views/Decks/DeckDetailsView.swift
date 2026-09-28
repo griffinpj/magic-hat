@@ -88,7 +88,7 @@ struct DeckDetailsView: View {
 
             Section("About") {
                 LabeledContent("Cards", value: "\(snapshot.mainCopies)")
-                LabeledContent("Value", value: PriceFormat.compact(snapshot.stats.totalValue))
+                LabeledContent("Value", value: PriceFormat.whole(snapshot.stats.totalValue))
                 LabeledContent("Built", value: snapshot.isBuilt ? "\(snapshot.builtCopies) of \(snapshot.mainCopies) cards" : "Not built")
                 LabeledContent("Created", value: snapshot.createdDate.formatted(date: .abbreviated, time: .omitted))
                 LabeledContent("Updated", value: snapshot.updatedDate.formatted(date: .abbreviated, time: .shortened))

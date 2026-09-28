@@ -118,7 +118,7 @@ final class DeckFlowTests: XCTestCase {
 
         // Build: the seed collection is the only source.
         app.buttons["deck-menu"].tap()
-        app.buttons["Build Deck…"].tap()
+        app.buttons["Build from Collection…"].tap()
         let cont = app.buttons["build-continue"]
         XCTAssertTrue(cont.waitForExistence(timeout: 5))
         cont.tap()
@@ -148,7 +148,7 @@ final class DeckFlowTests: XCTestCase {
 
         // Disassemble: back to the collection.
         app.buttons["deck-menu"].tap()
-        app.buttons["Disassemble Deck…"].tap()
+        app.buttons["Disassemble…"].tap()
         let back = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Move'")).firstMatch
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()

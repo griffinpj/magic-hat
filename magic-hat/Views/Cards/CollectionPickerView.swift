@@ -55,7 +55,7 @@ struct CollectionPickerView: View {
         }
         .navigationTitle("Collection")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $search, prompt: "Search collections")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search collections and lists")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
@@ -77,7 +77,7 @@ struct CollectionPickerView: View {
         } message: {
             Text(creatingKind == .list ? "Cards you want rather than own. They don't count toward your collection." : "An empty collection you can add cards to.")
         }
-        .alert("Couldn't create", isPresented: Binding(get: { createError != nil },
+        .alert("Couldn't Create", isPresented: Binding(get: { createError != nil },
                                                      set: { if !$0 { createError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

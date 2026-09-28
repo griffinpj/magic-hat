@@ -144,7 +144,7 @@ struct DeckStatsView: View {
             LabeledContent("Lands", value: "\(stats.landCopies)")
             LabeledContent("Average mana value", value: String(format: "%.2f", stats.averageManaValue))
             LabeledContent("Median mana value", value: String(format: "%.1f", stats.medianManaValue))
-            LabeledContent("Value", value: PriceFormat.compact(stats.totalValue))
+            LabeledContent("Value", value: PriceFormat.whole(stats.totalValue))
             ownership
         }
     }

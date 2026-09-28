@@ -94,7 +94,7 @@ struct ImportWizardView: View {
                         }
                     }
                 }
-                .alert("Import Error", isPresented: errorBinding) {
+                .alert("Couldn't Import", isPresented: errorBinding) {
                     Button("OK", role: .cancel) {}
                 } message: {
                     Text(errorMessage ?? "")
