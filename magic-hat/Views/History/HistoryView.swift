@@ -229,7 +229,7 @@ struct HistoryView: View {
                     }
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
                     .font(.body)
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
@@ -375,17 +375,7 @@ private struct HistoryRow: View {
     var branches: [String] = []
     var onBranchTap: (Int) -> Void = { _ in }
 
-    private var icon: String {
-        switch action.action {
-        case .deckBuild, .deckDisassemble: return "rectangle.stack"
-        case .move: return "arrow.right.circle"
-        case .manualAdd: return "plus.circle"
-        case .manualRemove: return "minus.circle"
-        case .undo: return "arrow.uturn.backward"
-        case .redo: return "arrow.uturn.forward"
-        default: return "square.and.arrow.down"
-        }
-    }
+    private var icon: String { action.action.systemImage }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {

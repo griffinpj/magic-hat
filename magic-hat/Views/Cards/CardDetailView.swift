@@ -392,7 +392,7 @@ private struct PrintingRow: View {
                     Text("#\(card.collectorNumber)")
                         .font(.subheadline.weight(.medium))
                     if owned {
-                        Label("In binder", systemImage: "checkmark.seal.fill")
+                        Label("In collection", systemImage: "checkmark.seal.fill")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.green)
                             .labelStyle(.titleAndIcon)

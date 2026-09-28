@@ -43,6 +43,19 @@ nonisolated enum AuditAction: String, Codable, Sendable, CaseIterable {
 
     /// Undo and redo are the timeline's mechanics, not entries in it.
     var isUserAction: Bool { self != .undo && self != .redo }
+
+    /// The symbol History shows for the action, in the list and its detail.
+    var systemImage: String {
+        switch self {
+        case .deckBuild, .deckDisassemble: return "rectangle.stack"
+        case .move: return "arrow.right.circle"
+        case .manualAdd: return "plus.circle"
+        case .manualRemove: return "minus.circle"
+        case .undo: return "arrow.uturn.backward"
+        case .redo: return "arrow.uturn.forward"
+        case .importAdd, .importReplace: return "square.and.arrow.down"
+        }
+    }
 }
 
 /// What a ledger record remembers about the row it changed, beyond the

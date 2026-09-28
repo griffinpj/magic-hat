@@ -35,10 +35,11 @@ struct CardGridView<Header: View, Accessory: View>: View {
     @ViewBuilder var header: () -> Header
     /// Floating accessory (e.g. a sort button).
     @ViewBuilder var accessory: () -> Accessory
-    /// Set while choosing cards (Photos' Select): a tap toggles the card's
-    /// id in the set instead of opening the viewer, and each tile wears a
-    /// check. Nil when the grid isn't selecting.
-    var selection: Binding<Set<String>>? = nil
+    /// Choosing several cards (see CardSelection): a long press on a tile
+    /// starts it with that card; while it is active a tap toggles a card
+    /// instead of opening the viewer, and each tile wears the ring. Nil on
+    /// a grid that offers no selection.
+    var selection: CardSelection? = nil
 
     @Namespace private var zoom
     @Environment(\.displayScale) private var displayScale
@@ -84,8 +85,8 @@ struct CardGridView<Header: View, Accessory: View>: View {
                                 // Outside the equatable tile, so selecting
                                 // redraws a badge, not the art.
                                 .overlay(alignment: .topTrailing) {
-                                    if let selection {
-                                        SelectionBadge(isSelected: selection.wrappedValue.contains(id))
+                                    if let selection, selection.isActive {
+                                        SelectionMark(isSelected: selection.contains(id)).padding(6)
                                     }
                                 }
                                 .onAppear {
@@ -95,17 +96,22 @@ struct CardGridView<Header: View, Accessory: View>: View {
                                 }
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    if let selection {
-                                        if selection.wrappedValue.contains(id) {
-                                            selection.wrappedValue.remove(id)
-                                        } else {
-                                            selection.wrappedValue.insert(id)
-                                        }
+                                    if let selection, selection.isActive {
+                                        selection.toggle(id)
                                     } else {
                                         open(item)
                                     }
                                 }
-                                .accessibilityAddTraits(selection?.wrappedValue.contains(id) == true ? .isSelected : [])
+                                .onLongPressGesture(minimumDuration: 0.4) {
+                                    guard let selection else { return }
+                                    if selection.isActive { selection.toggle(id) } else { selection.begin(with: id) }
+                                }
+                                .sensoryFeedback(.selection, trigger: selection?.contains(id) ?? false)
+                                .accessibilityAddTraits(selection?.contains(id) == true ? .isSelected : [])
+                                .accessibilityAction(named: "Select") {
+                                    guard let selection else { return }
+                                    if selection.isActive { selection.toggle(id) } else { selection.begin(with: id) }
+                                }
                         }
                     }
                 }
@@ -162,31 +168,6 @@ struct CardGridView<Header: View, Accessory: View>: View {
     }
 }
 
-/// The check on a tile while the grid is selecting: an empty ring, filled
-/// once the card is chosen — the Photos mark.
-private struct SelectionBadge: View {
-    let isSelected: Bool
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.black.opacity(0.25)))
-            Circle()
-                .strokeBorder(.white, lineWidth: 1.5)
-            if isSelected {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-        }
-        .frame(width: 24, height: 24)
-        .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-        .padding(6)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 extension CardGridView where Header == EmptyView, Accessory == EmptyView {
     init(items: CardItemList, onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0) {
         self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
@@ -196,7 +177,7 @@ extension CardGridView where Header == EmptyView, Accessory == EmptyView {
 
 extension CardGridView where Header == EmptyView {
     init(items: CardItemList, onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0,
-         selection: Binding<Set<String>>? = nil,
+         selection: CardSelection? = nil,
          @ViewBuilder accessory: @escaping () -> Accessory) {
         self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
                   header: { EmptyView() }, accessory: accessory, selection: selection)
@@ -205,8 +186,9 @@ extension CardGridView where Header == EmptyView {
 
 extension CardGridView where Accessory == EmptyView {
     init(items: CardItemList, onAppearIndex: @escaping (Int) -> Void = { _ in }, scrollToTop: Int = 0,
+         selection: CardSelection? = nil,
          @ViewBuilder header: @escaping () -> Header) {
         self.init(items: items, onAppearIndex: onAppearIndex, scrollToTop: scrollToTop,
-                  header: header, accessory: { EmptyView() })
+                  header: header, accessory: { EmptyView() }, selection: selection)
     }
 }

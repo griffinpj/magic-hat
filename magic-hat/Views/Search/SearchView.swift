@@ -49,6 +49,7 @@ struct SearchView: View {
     /// the search field. The field filters whichever page is showing.
     @State private var mode: SearchMode = .cards
     @State private var setFilter = ""
+    @State private var selection = CardSelection()
 
     enum SearchMode: String, CaseIterable, Identifiable {
         case cards, sets
@@ -56,9 +57,19 @@ struct SearchView: View {
         var label: String { self == .cards ? "Cards" : "Sets" }
     }
 
-    /// The picker shows on the landing page and on Sets; a card search in
-    /// progress has its own X back to the landing.
-    private var showsModePicker: Bool { mode == .sets || controller.phase == .idle }
+    /// Cards | Sets, as the first row of whichever page is showing (the
+    /// landing Form, the Sets list) — in the scrolling content, not a bar:
+    /// a `safeAreaBar` under the large title re-laid itself out on every
+    /// frame of the title's expansion, and each pass moved the content
+    /// inset under the scroll, so a slow glide to the top stuttered. A card
+    /// search in progress has its own X back to the landing.
+    private var modePicker: some View {
+        Picker("Browse", selection: $mode) {
+            ForEach(SearchMode.allCases) { Text($0.label).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .accessibilityIdentifier("search-mode")
+    }
 
     private var tracker: CollectionChangeTracker { .shared }
     /// Results carry prices in the currency they were fetched in.
@@ -68,22 +79,11 @@ struct SearchView: View {
         NavigationStack {
             Group {
                 if mode == .sets {
-                    SetBrowserView(filter: setFilter)
+                    SetBrowserView(filter: setFilter) { modePicker }
                 } else {
                     content
                 }
             }
-                .safeAreaBar(edge: .top) {
-                    if showsModePicker {
-                        Picker("Browse", selection: $mode) {
-                            ForEach(SearchMode.allCases) { Text($0.label).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
-                        .accessibilityIdentifier("search-mode")
-                    }
-                }
                 .navigationDestination(for: ScryfallSet.self) { SetCardsView(set: $0) }
                 .background { SearchDismisser(trigger: dismissSearchTrigger, isEmpty: searchText.isEmpty) }
                 .navigationTitle("Search")
@@ -129,7 +129,7 @@ struct SearchView: View {
             results
         case .empty:
             ContentUnavailableView {
-                Label("No Cards", systemImage: "magnifyingglass")
+                Label("No Results", systemImage: "magnifyingglass")
             } description: {
                 Text("Nothing on Scryfall matches this search.")
             } actions: {
@@ -153,6 +153,11 @@ struct SearchView: View {
     private var landing: some View {
         ScrollViewReader { proxy in
         Form {
+            Section {
+                modePicker
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             if !savedSearches.isEmpty {
                 Section {
                     ForEach(savedSearches) { saved in
@@ -186,10 +191,14 @@ struct SearchView: View {
     }
 
     private var results: some View {
-        CardGridView(items: controller.resultList, onAppearIndex: { controller.loadMore(near: $0) }, header: {
-            let names = completions
-            if !names.isEmpty { completionStrip(names) }
-        })
+        CardGridView(items: controller.resultList, onAppearIndex: { controller.loadMore(near: $0) }, scrollToTop: 0,
+                     header: {
+                         let names = completions
+                         if !names.isEmpty { completionStrip(names) }
+                     }, accessory: {
+                         if !selection.isActive { sortButton }
+                     }, selection: selection)
+        .cardSelectionBar(selection, items: controller.results)
         // Quiet progress: a small pill while a new first page replaces
         // what's shown, or the next page is on its way.
         .overlay(alignment: .top) {
@@ -198,6 +207,15 @@ struct SearchView: View {
         .overlay(alignment: .bottom) {
             if controller.isLoadingMore { progressPill.padding(.bottom, 12) }
         }
+    }
+
+    /// The collection grid's sort button, over Scryfall's orders.
+    private var sortButton: some View {
+        SortButton(options: SearchSort.allCases, selected: controller.query.sort, title: \.label, icon: \.systemImage,
+                   direction: controller.query.effectiveDirection,
+                   onDirection: { controller.query.direction = $0; controller.runIfChanged() },
+                   onSelect: { controller.query.sort = $0; controller.query.direction = nil; controller.runIfChanged() },
+                   identifier: "search-sort")
     }
 
     private var progressPill: some View {
@@ -290,6 +308,7 @@ struct SearchView: View {
     }
 
     @ToolbarContentBuilder private var cardsToolbar: some ToolbarContent {
+        if !selection.isActive {
         ToolbarItem(placement: .topBarLeading) {
             Menu {
                 Button("Save Search…", systemImage: "bookmark.badge.plus") {
@@ -310,6 +329,7 @@ struct SearchView: View {
             }
             .accessibilityIdentifier("search-saved")
         }
+        }
 
         if controller.phase == .idle {
             // The filters are on screen; the one action left is to run them.
@@ -323,32 +343,8 @@ struct SearchView: View {
                 .accessibilityIdentifier("search-run")
             }
         } else {
+            if !selection.isActive {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    ForEach(SearchSort.allCases) { option in
-                        Button {
-                            controller.query.sort = option
-                            controller.query.direction = nil
-                            controller.runIfChanged()
-                        } label: {
-                            Label(option.label, systemImage: option == controller.query.sort ? "checkmark" : option.systemImage)
-                        }
-                    }
-                    Divider()
-                    let current = controller.query.effectiveDirection
-                    Button {
-                        controller.query.direction = current == .ascending ? .descending : .ascending
-                        controller.runIfChanged()
-                    } label: {
-                        Label(current == .ascending ? "Ascending" : "Descending",
-                              systemImage: current == .ascending ? "arrow.up" : "arrow.down")
-                    }
-                } label: {
-                    Label("Sort", systemImage: "arrow.up.arrow.down")
-                }
-                .menuOrder(.fixed)
-                .accessibilityIdentifier("search-sort")
-
                 Button {
                     showFilters = true
                 } label: {
@@ -359,8 +355,18 @@ struct SearchView: View {
                 .accessibilityIdentifier("search-filters")
                 .accessibilityValue(controller.query.hasFilters ? "\(controller.query.activeFilterCount) active" : "none")
 
+                Menu {
+                    Button("Select Cards", systemImage: "checkmark.circle") { selection.begin() }
+                        .disabled(controller.results.isEmpty)
+                        .accessibilityIdentifier("search-select")
+                } label: {
+                    Label("More", systemImage: "ellipsis")
+                }
+                .accessibilityIdentifier("search-more")
+
                 Button("Clear Search", systemImage: "xmark") { clearSearch() }
                     .accessibilityIdentifier("search-clear")
+            }
             }
         }
     }

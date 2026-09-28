@@ -285,6 +285,7 @@ struct CardViewerView: View {
             )
             lastCollection = name
             quickAdded = "Added \(item.name) to \(name)"
+            AccessibilityNotification.Announcement("Added \(item.name) to \(name)").post()
             quickAddCount += 1
         } catch {
             deleteError = error.localizedDescription

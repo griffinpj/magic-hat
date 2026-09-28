@@ -104,7 +104,7 @@ struct CollectionsView: View {
             Group {
                 if collections.isEmpty {
                     ContentUnavailableView {
-                        Text("📭").font(.system(size: 64))
+                        Label("No Collections", systemImage: "tray")
                     } description: {
                         Text("No collections yet.\nImport a ManaBox export, or start a collection or a list, from the “…” menu.")
                     }
@@ -132,7 +132,7 @@ struct CollectionsView: View {
                             Label("Import…", systemImage: "square.and.arrow.down")
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Label("More", systemImage: "ellipsis")
                     }
                     .accessibilityIdentifier("collections-menu")
                 }
@@ -168,7 +168,7 @@ struct CollectionsView: View {
             } message: {
                 Text(createError ?? "")
             }
-            .alert("Import Error", isPresented: errorBinding) {
+            .alert("Couldn't Import", isPresented: errorBinding) {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(importError ?? "")

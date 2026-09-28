@@ -89,8 +89,8 @@ struct PriceFormatTests {
     }
 
     @Test func changeIsSignedWithPercent() {
-        #expect(PriceFormat.change(2.03, 5.61) == "+2.03 (+5.6%)")
-        #expect(PriceFormat.change(-6.81, -4.64) == "-6.81 (-4.6%)")
+        #expect(PriceFormat.change(2.03, 5.61, currency: .usd) == "+$2.03 (+5.6%)")
+        #expect(PriceFormat.change(-6.81, -4.64, currency: .usd) == "\u{2212}$6.81 (\u{2212}4.6%)")
     }
 
     @Test func gainLossDerivesFromPurchasePrice() {

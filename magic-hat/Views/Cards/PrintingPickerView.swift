@@ -37,7 +37,7 @@ struct PrintingPickerView: View {
             if isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error {
-                ContentUnavailableView("Couldn't load printings", systemImage: "wifi.slash", description: Text(error))
+                ContentUnavailableView("Couldn't Load Printings", systemImage: "wifi.exclamationmark", description: Text(error))
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
@@ -51,7 +51,7 @@ struct PrintingPickerView: View {
         }
         .navigationTitle("Printing")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $search, prompt: "Search sets")
+        .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Set name or code")
         .task { await load() }
     }
 

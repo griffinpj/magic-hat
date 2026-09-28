@@ -147,4 +147,108 @@ final class FeatureFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["No Camera"].waitForExistence(timeout: 10) || app.staticTexts["scan-status"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["scan-photo"].exists || app.buttons["Scan a Photo"].exists)
     }
+
+    /// A long press on a tile starts selecting; the bar's Add puts copies
+    /// of the chosen cards on a list, in one step.
+    @MainActor
+    func testLongPressSelectsAndAddsToAList() {
+        let app = launch()
+        app.buttons["collections-menu"].tap()
+        app.buttons["new-list-menu"].tap()
+        app.alerts.textFields.firstMatch.typeText("Picks")
+        app.alerts.buttons["Create"].tap()
+        XCTAssertTrue(app.navigationBars["Picks"].waitForExistence(timeout: 5))
+        app.navigationBars["Picks"].buttons.firstMatch.tap()
+
+        app.staticTexts["Test Collection"].tap()
+        let first = app.staticTexts["Card 0"].firstMatch
+        XCTAssertTrue(first.waitForExistence(timeout: 10))
+        first.press(forDuration: 0.8)
+        let count = app.staticTexts["selection-count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 5), "a long press starts selecting")
+        XCTAssertTrue(count.label.hasPrefix("1 Selected") || count.label.contains("1 Selected"), count.label)
+        app.staticTexts["Card 10"].firstMatch.tap()
+        XCTAssertTrue(count.label.hasPrefix("2 Selected"), count.label)
+        app.buttons["selection-add"].tap()
+        app.buttons["Picks"].tap()
+        XCTAssertTrue(count.waitForNonExistence(timeout: 5), "out of selection after adding")
+        XCTAssertTrue(app.staticTexts["Card 0"].firstMatch.exists, "adding copies leaves the collection as it was")
+        app.navigationBars["Test Collection"].buttons.firstMatch.tap()
+        let unique = NSPredicate(format: "label ENDSWITH '· 2 unique'")
+        XCTAssertTrue(app.buttons["collection-Picks"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(unique).firstMatch.waitForExistence(timeout: 10), "both cards are on the list")
+    }
+
+    /// A deck's rows select from the menu or a row's long-press menu, and
+    /// move to another board together.
+    @MainActor
+    func testDeckRowsSelectAndMoveBoard() {
+        let app = launch()
+        app.tabBars.buttons["Decks"].tap()
+        XCTAssertTrue(app.navigationBars["Decks"].waitForExistence(timeout: 10))
+        UIPasteboard.general.string = "1 Card 3\n1 Card 6\n1 Card 9\n"
+        app.buttons["decks-add"].tap()
+        app.buttons["decks-menu-clipboard"].tap()
+        let paste = app.buttons["import-paste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.tap()
+        let name = app.textFields["import-name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText("Select Deck")
+        app.buttons["import-run"].tap()
+        XCTAssertTrue(app.navigationBars["Select Deck"].waitForExistence(timeout: 15))
+
+        app.buttons["deck-menu"].tap()
+        app.buttons["deck-menu-select"].tap()
+        let count = app.staticTexts["selection-count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        app.buttons["deck-row-Card 3"].firstMatch.tap()
+        app.buttons["deck-row-Card 6"].firstMatch.tap()
+        XCTAssertTrue(count.label.hasPrefix("2 Selected"), count.label)
+        app.buttons["selection-board"].tap()
+        app.buttons["Sideboard"].tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Sideboard · 2'")).firstMatch.waitForExistence(timeout: 10),
+                      "both rows are on the sideboard")
+    }
+
+    /// Select Decks moves several into a folder at once; the ⓘ explains how.
+    @MainActor
+    func testSelectDecksAndMoveIntoAFolder() {
+        let app = launch()
+        app.tabBars.buttons["Decks"].tap()
+        XCTAssertTrue(app.navigationBars["Decks"].waitForExistence(timeout: 10))
+        for deckName in ["Alpha Deck", "Beta Deck"] {
+            app.buttons["decks-add"].tap()
+            app.buttons["decks-menu-new"].tap()
+            let field = app.textFields["newdeck-name"]
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            field.tap()
+            field.typeText(deckName)
+            app.buttons["newdeck-create"].firstMatch.tap()
+            XCTAssertTrue(app.navigationBars[deckName].waitForExistence(timeout: 10))
+            app.navigationBars[deckName].buttons.firstMatch.tap()
+        }
+        app.buttons["decks-add"].tap()
+        app.buttons["decks-menu-folder"].tap()
+        app.alerts.textFields.firstMatch.typeText("Shelf")
+        app.alerts.buttons["Create"].tap()
+        XCTAssertTrue(app.buttons["deck-folder-Shelf"].waitForExistence(timeout: 5))
+
+        app.buttons["decks-info"].tap()
+        XCTAssertTrue(app.navigationBars["Managing Decks"].waitForExistence(timeout: 5))
+        app.buttons["decks-guide-done"].tap()
+
+        app.buttons["decks-view-menu"].tap()
+        app.buttons["decks-select"].tap()
+        app.buttons["deck-tile-Alpha Deck"].firstMatch.tap()
+        app.buttons["deck-tile-Beta Deck"].firstMatch.tap()
+        XCTAssertEqual(app.staticTexts["decks-selection-count"].label, "2 Decks")
+        app.buttons["decks-selection-move"].tap()
+        app.buttons["move-to-Shelf"].tap()
+        XCTAssertTrue(app.buttons["deck-tile-Alpha Deck"].firstMatch.waitForNonExistence(timeout: 5))
+        app.buttons["deck-folder-Shelf"].tap()
+        XCTAssertTrue(app.navigationBars["Shelf"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["deck-tile-Beta Deck"].firstMatch.waitForExistence(timeout: 5))
+    }
 }

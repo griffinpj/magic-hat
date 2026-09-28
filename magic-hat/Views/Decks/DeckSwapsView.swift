@@ -83,7 +83,7 @@ struct DeckSwapsView: View {
         } else if controller.isPlanning || controller.analysis == nil {
             // The plan reads every spare card in the collection; a second
             // or two on a big one, off the main actor. Say so.
-            ProgressView("Reading the collection…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            ProgressView("Reading your collection…").frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView("Nothing to Swap", systemImage: "arrow.left.arrow.right",
                                    description: Text("Add a few cards and a commander first."))
@@ -128,7 +128,8 @@ struct DeckSwapsView: View {
                     Section {
                         ForEach(plan.trims) { trim in
                             TrimRow(card: trim.outCard, quantity: trim.quantity, reason: trim.tag, effect: trim.effect, locked: locked,
-                                    onCut: { cut(trim) })
+                                    zoom: zoom, onCut: { cut(trim) }, onOpen: { open(trim.outCard, in: plan.trims.map(\.outCard)) })
+                                .id(trim.outCard.id)
                         }
                     } header: {
                         Text("Cut")
@@ -300,14 +301,19 @@ private struct TrimRow: View {
     let reason: CardReason
     let effect: DeckSwapEffect?
     let locked: Bool
+    let zoom: Namespace.ID
     let onCut: () -> Void
+    let onOpen: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                CardRowLead(item: card) {
-                    ReasonDetailLine(reason: reason, price: card.price, owned: false)
+                Button(action: onOpen) {
+                    CardRowLead(item: card, zoom: zoom) {
+                        ReasonDetailLine(reason: reason, price: card.price, owned: false)
+                    }
                 }
+                .buttonStyle(.plain)
                 if !locked {
                     Button(quantity > 1 ? "Cut \(quantity)" : "Cut", action: onCut)
                         .buttonStyle(.bordered)
@@ -321,8 +327,9 @@ private struct TrimRow: View {
     }
 }
 
-/// "+0.3 power · −0.2 playability · breaks a combo".
-private struct EffectLine: View {
+/// "+0.3 power · −0.2 playability · breaks a combo" — what a change does
+/// to the deck, on the swap table and the Try Cards verdicts alike.
+struct EffectLine: View {
     let effect: DeckSwapEffect
 
     var body: some View {

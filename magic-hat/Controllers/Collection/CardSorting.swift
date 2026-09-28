@@ -14,11 +14,15 @@
 
 import Foundation
 
+/// A collection's orders — the same names, order and icons as a deck's
+/// (DeckCardSort) where they overlap, plus what only owned rows have.
 nonisolated enum CardSort: String, CaseIterable, Identifiable, Sendable {
     case name = "Name"
-    case setCode = "Set"
-    case rarity = "Rarity"
+    case manaValue = "Mana Value"
     case priceHigh = "Price (High)"
+    case priceLow = "Price (Low)"
+    case rarity = "Rarity"
+    case setCode = "Set"
     case quantity = "Quantity"
     case recent = "Recently Added"
 
@@ -26,12 +30,14 @@ nonisolated enum CardSort: String, CaseIterable, Identifiable, Sendable {
 
     var systemImage: String {
         switch self {
-        case .name: return "textformat"
-        case .setCode: return "square.stack.3d.up"
-        case .rarity: return "sparkles"
-        case .priceHigh: return "dollarsign.circle"
-        case .quantity: return "number"
-        case .recent: return "clock"
+        case .name: return SortIcon.name
+        case .manaValue: return SortIcon.manaValue
+        case .priceHigh: return SortIcon.priceHigh
+        case .priceLow: return SortIcon.priceLow
+        case .rarity: return SortIcon.rarity
+        case .setCode: return SortIcon.set
+        case .quantity: return SortIcon.quantity
+        case .recent: return SortIcon.recent
         }
     }
 }
@@ -67,6 +73,20 @@ nonisolated enum CardSorting {
                 let l = $0.marketPrice ?? 0
                 let r = $1.marketPrice ?? 0
                 if l != r { return l > r }
+                return byName($0, $1)
+            }
+        case .priceLow:
+            return items.sorted {
+                // Unpriced sorts to the bottom here too.
+                let l = $0.marketPrice ?? .infinity
+                let r = $1.marketPrice ?? .infinity
+                if l != r { return l < r }
+                return byName($0, $1)
+            }
+        case .manaValue:
+            return items.sorted {
+                let l = ManaSymbol.manaValue(of: $0.manaCost ?? ""), r = ManaSymbol.manaValue(of: $1.manaCost ?? "")
+                if l != r { return l < r }
                 return byName($0, $1)
             }
         case .quantity:

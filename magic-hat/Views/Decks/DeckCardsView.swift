@@ -49,6 +49,8 @@ struct DeckCardsView: View {
     /// and "+" on the Synergies screen it pushes. Nil while loading.
     var session: DeckAddSession? = nil
     var onOpenViewer: ((CardViewerSession) -> Void)? = nil
+    /// Choosing rows (see CardSelection); the deck screen owns it and its bar.
+    var selection: CardSelection? = nil
 
     @Environment(\.modelContext) private var modelContext
     @State private var error: String?
@@ -62,6 +64,8 @@ struct DeckCardsView: View {
     /// deck was re-read off the main actor — behind the Decks tab's and
     /// the add sheet's re-reads of the same write.
     @State private var pending: [UUID: (quantity: Int, at: Date)] = [:]
+    /// Bumped per stepper tap, for the same tick the add sheet gives.
+    @State private var steps = 0
 
     private var locked: Bool { snapshot.isLocked }
     private var trimmedFilter: String { filterText.trimmingCharacters(in: .whitespaces) }
@@ -88,6 +92,7 @@ struct DeckCardsView: View {
                 // later tap doesn't clear that tap's count.
                 .onChange(of: snapshot.updatedDate) { _, date in pending = pending.filter { $0.value.at > date } }
         }
+            .sensoryFeedback(.selection, trigger: steps)
             .alert("Couldn't Update Deck", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
@@ -143,7 +148,7 @@ struct DeckCardsView: View {
                                 }
                                 Text(section.title)
                                 Spacer()
-                                Text("\(section.copies) · \(PriceFormat.compact(section.value))")
+                                Text("\(section.copies) · \(PriceFormat.whole(section.value))")
                                     .monospacedDigit()
                                     .foregroundStyle(.secondary)
                             }
@@ -168,34 +173,15 @@ struct DeckCardsView: View {
             .listStyle(.plain)
             .contentMargins(.bottom, 80, for: .scrollContent)
             .scrollDismissesKeyboard(.immediately)
-            .overlay(alignment: .bottomTrailing) { sortButton }
+            .overlay(alignment: .bottomTrailing) { if selection?.isActive != true { sortButton } }
         }
     }
 
     /// The collection grid's floating sort button, over the list's
     /// bottom-trailing corner: a menu of orders, the current one checked.
     private var sortButton: some View {
-        Menu {
-            ForEach(DeckCardSort.allCases.filter { $0 != .relevance }) { option in
-                Button {
-                    sortRaw = option.rawValue
-                } label: {
-                    Label(option.rawValue, systemImage: option == sort ? "checkmark" : option.systemImage)
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 52, height: 52)
-                .contentShape(Circle())
-        }
-        .menuOrder(.fixed)
-        .accessibilityLabel("Sort")
-        .accessibilityValue(sort.rawValue)
-        .accessibilityIdentifier("deck-sort")
-        .glassEffect(.regular.interactive(), in: Circle())
-        .padding(.trailing, 20)
-        .padding(.bottom, 20)
+        SortButton(options: DeckCardSort.allCases.filter { $0 != .relevance }, selected: sort, title: \.rawValue,
+                   icon: \.systemImage, onSelect: { sortRaw = $0.rawValue }, identifier: "deck-sort")
     }
 
     /// A pinned header: sentence case and primary, as in Music, rather than
@@ -272,11 +258,26 @@ struct DeckCardsView: View {
             DeckCardItem(id: item.id, board: item.board, quantity: $0.quantity, card: item.card,
                          builtQuantity: item.builtQuantity, availableQuantity: item.availableQuantity)
         } ?? item
-        return DeckCardRow(item: shown, locked: locked, zoom: zoom, onSetQuantity: { setQuantity(item, $0) },
-                           onOpen: { open(item) })
+        let selecting = selection?.isActive == true
+        return HStack(spacing: 10) {
+            if selecting {
+                SelectionMark(isSelected: selection?.contains(item.card.id) == true, size: 22)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+            DeckCardRow(item: shown, locked: locked || selecting, zoom: zoom, onSetQuantity: { setQuantity(item, $0) },
+                        onOpen: { open(item) })
+                .allowsHitTesting(!selecting)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if selecting { selection?.toggle(item.card.id) } }
+        .accessibilityAddTraits(selection?.contains(item.card.id) == true ? .isSelected : [])
             .id(item.card.id)
             .contextMenu {
-                if !locked {
+                if !selecting {
+                    Button("Select", systemImage: "checkmark.circle") { selection?.begin(with: item.card.id) }
+                        .accessibilityIdentifier("deck-row-select")
+                }
+                if !locked, !selecting {
                     ForEach(DeckBoard.addable.filter { $0 != item.board }, id: \.rawValue) { b in
                         Button("Move to \(b.label)", systemImage: "arrow.right") { move(item, to: b) }
                     }
@@ -296,6 +297,7 @@ struct DeckCardsView: View {
             let at = Date()
             try DeckEditController.setQuantity(deckCardID: item.id, quantity, context: modelContext)
             pending[item.id] = (max(0, quantity), at)
+            steps += 1
         } catch { self.error = error.localizedDescription }
     }
 

@@ -56,9 +56,9 @@ struct CollectionCardsView: View {
 
     /// Choosing several cards to move, buy or remove at once (Photos'
     /// Select). The tab bar steps aside for the actions' bottom bar.
-    @State private var isSelecting = false
-    @State private var selection: Set<String> = []
-    @State private var confirmRemove = false
+    @State private var selection = CardSelection()
+    /// The rows a Remove from the selection bar would take, while it asks.
+    @State private var pendingRemove: [CardItem]?
     @State private var isWorking = false
     @State private var actionError: String?
     @State private var importing = false
@@ -79,7 +79,7 @@ struct CollectionCardsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if items.isEmpty {
                 ContentUnavailableView {
-                    Text("📭").font(.system(size: 64))
+                    Label(isList ? "Empty List" : "No Cards", systemImage: isList ? CollectionKind.list.systemImage : "tray")
                 } description: {
                     Text(isList ? "This list is empty.\nImport a list, or add cards from Search or any card's Add." : "This collection has no cards.")
                 } actions: {
@@ -91,7 +91,7 @@ struct CollectionCardsView: View {
                 }
             } else if visible.isEmpty, !query.isEmpty {
                 ContentUnavailableView {
-                    Label("No Matches", systemImage: "magnifyingglass")
+                    Label("No Results", systemImage: "magnifyingglass")
                 } description: {
                     Text("Nothing in \(CollectionScope.displayName(collectionName)) matches this search.")
                 } actions: {
@@ -105,9 +105,9 @@ struct CollectionCardsView: View {
                     items: visible,
                     onAppearIndex: { prefetch(around: $0) },
                     scrollToTop: scrollToTop,
-                    selection: isSelecting ? $selection : nil,
+                    selection: selection,
                     accessory: {
-                        if !isSelecting {
+                        if !selection.isActive {
                             VStack(alignment: .trailing, spacing: 10) {
                                 SyncPill()
                                 sortButton
@@ -135,26 +135,24 @@ struct CollectionCardsView: View {
                     prompt: isList ? "Search this list" : "Search this collection")
         .searchPresentationToolbarBehavior(.avoidHidingContent)
         .toolbar {
-            if isSelecting {
-                selectionToolbar
-            } else {
-                browsingToolbar
-            }
+            if !selection.isActive { browsingToolbar }
         }
-        .toolbar(isSelecting ? .hidden : .visible, for: .tabBar)
-        .navigationBarBackButtonHidden(isSelecting)
-        .animation(.default, value: isSelecting)
+        .cardSelectionBar(selection, items: visible.items, actions: selectionActions)
         .onChange(of: visible) { _, list in
             // A card that left the grid (removed, moved) leaves the selection.
-            if isSelecting { selection.formIntersection(list.ids) }
+            selection.keep(only: list.ids)
         }
-        .confirmationDialog(removeTitle, isPresented: $confirmRemove, titleVisibility: .visible) {
-            Button("Remove \(selectedRemovable.count == 1 ? "Card" : "\(selectedRemovable.count) Cards")", role: .destructive) {
-                run { try await CollectionEditController.remove(entryIDs: selectedRemovable, context: modelContext) }
+        .confirmationDialog(removeTitle, isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+                            titleVisibility: .visible, presenting: pendingRemove) { cards in
+            let ids = Self.removable(cards)
+            Button("Remove \(ids.count == 1 ? "Card" : "\(ids.count) Cards")", role: .destructive) {
+                run(done: "Removed") { try await CollectionEditController.remove(entryIDs: ids, context: modelContext) }
             }
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(hasDeckRowsSelected ? "Cards built into decks stay; take the deck apart to move them. Recorded in History." : "Recorded in History, where it can be undone.")
+        } message: { cards in
+            Text(cards.contains { Deck.isDeckCollection($0.collectionName) }
+                 ? "Cards built into decks stay; take the deck apart to move them. Recorded in History."
+                 : "Recorded in History, where it can be undone.")
         }
         .alert("Couldn't Do That", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -194,10 +192,7 @@ struct CollectionCardsView: View {
                         .accessibilityIdentifier("collection-clear")
                 }
                 Menu {
-                    Button("Select Cards", systemImage: "checkmark.circle") {
-                        selection = []
-                        isSelecting = true
-                    }
+                    Button("Select Cards", systemImage: "checkmark.circle") { selection.begin() }
                     .disabled(visible.isEmpty)
                     .accessibilityIdentifier("collection-select")
                     BuyMenu(title: query.isEmpty ? "Buy All" : "Buy These", lines: buyLines(visible.items))
@@ -213,108 +208,55 @@ struct CollectionCardsView: View {
             }
     }
 
-    @ToolbarContentBuilder private var selectionToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            let all = !visible.isEmpty && selection.count == visible.count
-            Button(all ? "Deselect All" : "Select All") {
-                selection = all ? [] : Set(visible.ids)
-            }
-            .accessibilityIdentifier("selection-all")
-        }
-        ToolbarItem(placement: .principal) {
-            Text(selectionTitle)
-                .font(.headline)
-                .monospacedDigit()
-                .accessibilityIdentifier("selection-count")
-        }
-        ToolbarItem(placement: .confirmationAction) {
-            Button("Done") {
-                isSelecting = false
-                selection = []
-            }
-            .accessibilityIdentifier("selection-done")
-        }
-        ToolbarItemGroup(placement: .bottomBar) {
-            Menu {
-                let destinations = allCollections.filter { $0.name != collectionName }
-                let owned = destinations.filter { $0.kind == .collection }
-                let lists = destinations.filter { $0.kind == .list }
-                if !owned.isEmpty {
-                    Section("Collections") {
-                        ForEach(owned) { c in
-                            Button(c.name, systemImage: CollectionKind.collection.systemImage) { move(to: c.name) }
-                        }
-                    }
-                }
-                if !lists.isEmpty {
-                    Section("Lists") {
-                        ForEach(lists) { c in
-                            Button(c.name, systemImage: CollectionKind.list.systemImage) { move(to: c.name) }
-                        }
-                    }
-                }
-            } label: {
-                Label("Move", systemImage: "arrow.right.circle")
-            }
-            .disabled(selectedRemovable.isEmpty || allCollections.count < 2)
-            .accessibilityIdentifier("selection-move")
-            BuyMenu(title: "Buy", lines: buyLines(selectedItems), iconOnly: true)
-                .disabled(selection.isEmpty)
-                .accessibilityIdentifier("selection-buy")
-        }
-        ToolbarSpacer(.flexible, placement: .bottomBar)
-        ToolbarItem(placement: .bottomBar) {
-            Button("Remove", systemImage: "trash") { confirmRemove = true }
-                .disabled(selectedRemovable.isEmpty)
-                .accessibilityIdentifier("selection-remove")
-        }
-    }
-
     // MARK: Selection
 
-    private var selectedItems: [CardItem] {
-        visible.items.filter { selection.contains($0.id) }
+    /// Beside the shared Add and Buy: Move (into another collection or
+    /// list) and Remove, for rows that aren't built into a deck.
+    private var selectionActions: [SelectionAction] {
+        let destinations = allCollections.filter { $0.name != collectionName }
+        let choices = destinations.map { c in
+            SelectionAction.Choice(id: c.name, title: c.name, systemImage: c.kind.systemImage,
+                                   section: c.kind == .list ? "Lists" : "Collections") { cards in
+                move(Self.removable(cards), to: c.name)
+            }
+        }
+        return [
+            SelectionAction(id: "move", title: "Move", systemImage: "arrow.right.circle", choices: choices,
+                            isEnabled: { !Self.removable($0).isEmpty && !choices.isEmpty }),
+            SelectionAction(id: "remove", title: "Remove", systemImage: "trash", role: .destructive,
+                            perform: { pendingRemove = $0 }, isEnabled: { !Self.removable($0).isEmpty }),
+        ]
     }
 
     /// Rows a move or removal can take: not a deck's (those leave by
     /// disassembling).
-    private var selectedRemovable: [UUID] {
-        selectedItems.filter { !Deck.isDeckCollection($0.collectionName) }.compactMap { UUID(uuidString: $0.id) }
-    }
-
-    private var hasDeckRowsSelected: Bool {
-        selectedItems.contains { Deck.isDeckCollection($0.collectionName) }
-    }
-
-    private var selectionTitle: String {
-        guard !selection.isEmpty else { return "Select Cards" }
-        let copies = selectedItems.reduce(0) { $0 + $1.quantity }
-        return selection.count == copies ? "\(copies) Selected" : "\(selection.count) Selected · \(copies) copies"
+    private static func removable(_ cards: [CardItem]) -> [UUID] {
+        cards.filter { !Deck.isDeckCollection($0.collectionName) }.compactMap { UUID(uuidString: $0.id) }
     }
 
     private var removeTitle: String {
-        let count = selectedRemovable.count
-        return count == 1 ? "Remove 1 card?" : "Remove \(count) cards?"
+        let count = Self.removable(pendingRemove ?? []).count
+        return count == 1 ? "Remove 1 Card?" : "Remove \(count) Cards?"
     }
 
     private func buyLines(_ items: [CardItem]) -> [BuyLine] {
         CardStore.lines(items.map { ($0.name, max($0.quantity, 1)) })
     }
 
-    private func move(to destination: String) {
-        let ids = selectedRemovable
-        run { try await CollectionEditController.move(entryIDs: ids, to: destination, context: modelContext) }
+    private func move(_ ids: [UUID], to destination: String) {
+        run(done: "Moved", to: destination) { try await CollectionEditController.move(entryIDs: ids, to: destination, context: modelContext) }
     }
 
     /// A bulk write on the writer, then out of selection mode.
-    private func run(_ work: @escaping () async throws -> CollectionEditController.BulkSummary) {
+    private func run(done verb: String, to destination: String? = nil,
+                     _ work: @escaping () async throws -> CollectionEditController.BulkSummary) {
         isWorking = true
         Task {
             defer { isWorking = false }
             do {
-                _ = try await work()
-                isSelecting = false
-                selection = []
+                let summary = try await work()
+                let cards = summary.copies == 1 ? "1 card" : "\(summary.copies) cards"
+                selection.finished(destination.map { "\(verb) \(cards) to \($0)" } ?? "\(verb) \(cards)")
             } catch {
                 actionError = error.localizedDescription
             }
@@ -437,27 +379,8 @@ struct CollectionCardsView: View {
 
 
     private var sortButton: some View {
-        Menu {
-            // Plain buttons, not a Picker: a Picker inside a Menu builds a
-            // nested selection control and is noticeably slower to present.
-            ForEach(CardSort.allCases) { option in
-                Button {
-                    sortRaw = option.rawValue
-                } label: {
-                    Label(option.rawValue, systemImage: option == sort ? "checkmark" : option.systemImage)
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 52, height: 52)
-                .contentShape(Circle())
-        }
-        .menuOrder(.fixed)
-        .accessibilityIdentifier("sort-button")
-        .glassEffect(.regular.interactive(), in: Circle())
-        .padding(.trailing, 20)
-        .padding(.bottom, 20)
+        SortButton(options: CardSort.allCases, selected: sort, title: \.rawValue, icon: \.systemImage,
+                   onSelect: { sortRaw = $0.rawValue })
     }
 }
 

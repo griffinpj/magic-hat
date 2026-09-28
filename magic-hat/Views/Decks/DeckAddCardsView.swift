@@ -59,8 +59,16 @@ struct DeckAddCardsView: View {
     @State private var query = CardSearchQuery()
     @State private var scope: DeckSearchScope
     /// Each scope's order, from the floating sort button.
-    @State private var sorts: [DeckSearchScope: DeckCardSort] = [:]
-    private var sort: DeckCardSort { sorts[scope] ?? .relevance }
+    /// Remembered per scope, as the collection's and a deck's sorts are.
+    @AppStorage("deck.add.sort.all") private var sortAllRaw = DeckCardSort.relevance.rawValue
+    @AppStorage("deck.add.sort.recommended") private var sortRecommendedRaw = DeckCardSort.relevance.rawValue
+    private func sort(for scope: DeckSearchScope) -> DeckCardSort {
+        DeckCardSort(rawValue: scope == .all ? sortAllRaw : sortRecommendedRaw) ?? .relevance
+    }
+    private var sort: DeckCardSort { sort(for: scope) }
+    private func setSort(_ option: DeckCardSort) {
+        if scope == .all { sortAllRaw = option.rawValue } else { sortRecommendedRaw = option.rawValue }
+    }
     @State private var identityFilter = true
     /// The "In collection" chip: only what is owned.
     @State private var ownedOnly: Bool
@@ -183,7 +191,8 @@ struct DeckAddCardsView: View {
             .onChange(of: identityFilter) { _, _ in runSearch(immediately: true) }
             .onChange(of: ownedOnly) { _, _ in runSearch(immediately: true) }
             .onChange(of: session.board) { _, _ in runSearch(immediately: true) }
-            .onChange(of: sorts) { _, _ in runSearch(immediately: true) }
+            .onChange(of: sortAllRaw) { _, _ in runSearch(immediately: true) }
+            .onChange(of: sortRecommendedRaw) { _, _ in runSearch(immediately: true) }
             .onChange(of: analysis.plan?.id) { _, _ in mergeRecommendations() }
             .onChange(of: analysis.synergyVersion) { _, _ in refreshRecommended(immediately: true) }
             .task(id: deckTracker.revision) { await loadDeck() }
@@ -313,28 +322,8 @@ struct DeckAddCardsView: View {
     /// list's bottom-trailing corner, a menu of orders, the current one
     /// checked. Remembered per scope while the sheet is open.
     private var sortButton: some View {
-        Menu {
-            // Plain buttons, not a Picker, as in the collection grid.
-            ForEach(DeckCardSort.allCases) { option in
-                Button {
-                    sorts[scope] = option
-                } label: {
-                    Label(option.rawValue, systemImage: option == sort ? "checkmark" : option.systemImage)
-                }
-            }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 52, height: 52)
-                .contentShape(Circle())
-        }
-        .menuOrder(.fixed)
-        .accessibilityLabel("Sort")
-        .accessibilityValue(sort.rawValue)
-        .accessibilityIdentifier("deck-search-sort")
-        .glassEffect(.regular.interactive(), in: Circle())
-        .padding(.trailing, 20)
-        .padding(.bottom, 20)
+        SortButton(options: DeckCardSort.allCases, selected: sort, title: \.rawValue, icon: \.systemImage,
+                   onSelect: { setSort($0) }, identifier: "deck-search-sort")
     }
 
     // MARK: Results
@@ -625,7 +614,7 @@ struct DeckAddCardsView: View {
         let picksIn = analysis.commanderPicks
         let recsIn = recommendedShown
         let ownedOnly = self.ownedOnly
-        let sort = sorts[.recommended] ?? .relevance
+        let sort = sort(for: .recommended)
         recommendedTask = Task.detached(priority: .userInitiated) {
             if !immediately { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
