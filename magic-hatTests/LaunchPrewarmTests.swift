@@ -55,6 +55,15 @@ struct LaunchPrewarmTests {
         #expect(missing.isEmpty, "add to LaunchPrewarm.symbolNames: \(missing.sorted())")
     }
 
+    /// Every prewarmed name is a real symbol — and since the test above
+    /// keeps every name the source draws in the list, so is every icon in
+    /// the app. A missing one draws nothing and logs SwiftUI's "No symbol
+    /// named" fault on each draw ("bookmark.badge.plus" on Save Search).
+    @Test func everyPrewarmedSymbolExists() {
+        let missing = LaunchPrewarm.symbolNames.filter { UIImage(systemName: $0) == nil }
+        #expect(missing.isEmpty, "not an SF Symbol: \(missing.sorted())")
+    }
+
     /// An empty name is looked up like any other, fails, and logs.
     @Test func noEmptySymbolNames() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

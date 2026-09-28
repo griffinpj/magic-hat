@@ -102,7 +102,7 @@ final class ScanSession {
     private var failed: (key: String, at: Date)?
     private var emptySince: Date?
 
-    init(settings: ScanSettings = .shared) {
+    init(settings: ScanSettings) {
         self.settings = settings
     }
 
@@ -314,7 +314,7 @@ final class ScanSession {
     }
 
     /// Everything in the tray into `collection`, as one action.
-    func addAll(to collection: String, context: ModelContext) throws {
+    func addAll(to collection: String, context: ModelContext) async throws {
         let requests = tray.map { item in
             CollectionEditController.AddRequest(
                 printing: item.printing, collectionName: collection, quantity: item.quantity, finish: item.finish,
@@ -322,7 +322,7 @@ final class ScanSession {
                 purchasePrice: item.price
             )
         }
-        try CollectionEditController.addMany(requests, context: context)
+        try await CollectionEditController.addMany(requests, context: context)
         clear()
     }
 }

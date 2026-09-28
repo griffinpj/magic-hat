@@ -293,9 +293,9 @@ struct DeckDetailView: View {
         }
         return [
             SelectionAction(id: "board", title: "Move", systemImage: "arrow.right.circle", choices: boards,
-                            isEnabled: { !$0.isEmpty && !locked }),
+                            isEnabled: { !locked }),
             SelectionAction(id: "remove", title: "Remove", systemImage: "trash", role: .destructive,
-                            perform: { pendingRemove = $0 }, isEnabled: { !$0.isEmpty && !locked }),
+                            perform: { pendingRemove = $0 }, isEnabled: { !locked }),
         ]
     }
 

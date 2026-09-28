@@ -122,6 +122,9 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
 
     /// Builds the session once; returns the rotation coordinator's preview
     /// layer needs, on the main actor.
+    /// On the main actor (the preview layer is UIKit's); the session is
+    /// built on the camera's queue while this waits.
+    @MainActor
     func configure(previewLayer: AVCaptureVideoPreviewLayer, cameraID: String?) async throws {
         requestedID = cameraID
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -134,11 +137,9 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
                 }
             }
         }
-        await MainActor.run {
-            previewLayer.session = session
-            self.previewLayer = previewLayer
-            self.attachRotation()
-        }
+        previewLayer.session = session
+        self.previewLayer = previewLayer
+        attachRotation()
     }
 
     /// A rotation coordinator for the current device and preview.

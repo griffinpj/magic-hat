@@ -351,6 +351,221 @@ final class RealCollectionTests: XCTestCase {
         assertNoHangs(since: mark, "back to the Collection tab")
     }
 
+    /// Every screen added since the transitions tour: Settings and its
+    /// pushes, the Scan tab, Search's Sets page and a set, selection in a
+    /// grid and in a deck, a list's import sheet, the Decks guide, view
+    /// switches and folders, Try Cards and Swaps, History's guide, and tab
+    /// switching back and forth. Each step on its own, so a stall names it.
+    @MainActor
+    func testNewScreensTour() {
+        let app = launch()
+        let card = collectionCard(app)
+        settle(3)
+        var mark = hangs().count
+
+        // Settings, and what it pushes.
+        app.buttons["open-settings"].tap()
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "open Settings")
+        app.buttons["settings-backup"].tap()
+        XCTAssertTrue(app.navigationBars["Backup & Restore"].waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "push Backup & Restore")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["settings-about"].tap()
+        XCTAssertTrue(app.staticTexts["about-version"].waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "push About")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["settings-done"].tap()
+        settle()
+        mark = assertNoHangs(since: mark, "close Settings")
+
+        // Selection in the real grid: long press, select more, Done.
+        card.tap()
+        XCTAssertTrue(app.navigationBars["Real Collection"].waitForExistence(timeout: 10))
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "push into the collection")
+        let window = app.windows.firstMatch
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.3)).press(forDuration: 0.8)
+        XCTAssertTrue(app.staticTexts["selection-count"].waitForExistence(timeout: 5), "long press selects")
+        settle()
+        mark = assertNoHangs(since: mark, "start selecting in the collection")
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.82, dy: 0.3)).tap()
+        app.buttons["selection-all"].tap()
+        settle()
+        mark = assertNoHangs(since: mark, "select all 3,800 rows")
+        app.buttons["selection-add"].tap()
+        settle(0.5)
+        mark = assertNoHangs(since: mark, "open the Add menu")
+        // Close the menu without choosing: a tap above it.
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)).tap()
+        XCTAssertTrue(app.buttons["selection-done"].waitForExistence(timeout: 5))
+        app.buttons["selection-done"].tap()
+        settle()
+        mark = assertNoHangs(since: mark, "leave selection")
+        app.buttons["sort-button"].tap()
+        app.buttons["Mana Value"].firstMatch.tap()
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "sort by mana value")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        settle()
+        mark = assertNoHangs(since: mark, "pop the collection")
+
+        // A list and its import sheet.
+        app.buttons["collections-menu"].tap()
+        app.buttons["new-list-menu"].tap()
+        app.alerts.textFields.firstMatch.typeText("Perf List \(Int.random(in: 1000...9999))")
+        app.alerts.buttons["Create"].tap()
+        XCTAssertTrue(app.buttons["collection-empty-import"].waitForExistence(timeout: 10))
+        settle()
+        mark = assertNoHangs(since: mark, "create and open a list")
+        app.buttons["collection-empty-import"].tap()
+        XCTAssertTrue(app.textViews["collection-import-text"].waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "open the import sheet")
+        app.buttons["Cancel"].firstMatch.tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        settle()
+        mark = assertNoHangs(since: mark, "back from the list")
+
+        // Tabs, back and forth, twice.
+        for round in 1...2 {
+            for tab in ["Decks", "History", "Search", "Scan", "Collection"] {
+                app.tabBars.buttons[tab].tap()
+                settle(round == 1 ? 1.5 : 0.6)
+                mark = assertNoHangs(since: mark, "tab \(tab), round \(round)")
+            }
+        }
+
+        // Scan without a camera.
+        app.tabBars.buttons["Scan"].tap()
+        settle()
+        mark = assertNoHangs(since: mark, "Scan tab")
+
+        // Search: Sets, a set, back; a search; selecting in results.
+        app.tabBars.buttons["Search"].tap()
+        let mode = app.segmentedControls["search-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 10))
+        mode.buttons["Sets"].tap()
+        XCTAssertTrue(app.buttons["sets-kind"].waitForExistence(timeout: 20), "the set list loads")
+        settle(1.5)
+        mark = assertNoHangs(since: mark, "switch to Sets")
+        app.swipeUp()
+        app.swipeDown()
+        settle()
+        mark = assertNoHangs(since: mark, "scroll the set list")
+        let firstSet = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'set-row-'")).element(boundBy: 2)
+        if firstSet.waitForExistence(timeout: 5) {
+            firstSet.tap()
+            settle(3)
+            mark = assertNoHangs(since: mark, "open a set")
+            app.swipeUp()
+            settle(1.5)
+            mark = assertNoHangs(since: mark, "scroll a set's cards")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            settle()
+            mark = assertNoHangs(since: mark, "back to Sets")
+        }
+        mode.buttons["Cards"].tap()
+        settle()
+        mark = assertNoHangs(since: mark, "back to the search form")
+        let field = app.searchFields.firstMatch
+        field.tap()
+        let tip = app.buttons["Continue"]
+        if tip.waitForExistence(timeout: 2) { tip.tap() }
+        field.typeText("dragon\n")
+        settle(4)
+        mark = assertNoHangs(since: mark, "search results")
+        window.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.45)).press(forDuration: 0.8)
+        settle()
+        mark = assertNoHangs(since: mark, "select in search results")
+        if app.buttons["selection-done"].exists { app.buttons["selection-done"].tap() }
+        app.buttons["search-sort"].tap()
+        app.buttons["Price"].firstMatch.tap()
+        settle(3)
+        mark = assertNoHangs(since: mark, "sort search results")
+        app.buttons["search-clear"].firstMatch.tap()
+        settle()
+        mark = assertNoHangs(since: mark, "clear the search")
+
+        // History's guide.
+        app.tabBars.buttons["History"].tap()
+        app.buttons["history-info"].tap()
+        XCTAssertTrue(app.navigationBars["About History"].waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "open History's guide")
+        app.buttons["history-guide-done"].tap()
+
+        // Decks: guide, list view, a folder, a deck from real names.
+        app.tabBars.buttons["Decks"].tap()
+        XCTAssertTrue(app.navigationBars["Decks"].waitForExistence(timeout: 10))
+        app.buttons["decks-info"].tap()
+        XCTAssertTrue(app.navigationBars["Managing Decks"].waitForExistence(timeout: 5))
+        settle()
+        mark = assertNoHangs(since: mark, "open the Decks guide")
+        app.buttons["decks-guide-done"].tap()
+        app.buttons["decks-view-menu"].tap()
+        app.buttons["List"].firstMatch.tap()
+        settle()
+        mark = assertNoHangs(since: mark, "switch Decks to List")
+        app.buttons["decks-view-menu"].tap()
+        app.buttons["Icons"].firstMatch.tap()
+        settle()
+        mark = assertNoHangs(since: mark, "switch Decks to Icons")
+        UIPasteboard.general.string = "1 Sol Ring\n1 Arcane Signet\n1 Lightning Bolt\n1 Counterspell\n1 Llanowar Elves\n"
+        app.buttons["decks-add"].tap()
+        app.buttons["decks-menu-clipboard"].tap()
+        let paste = app.buttons["import-paste"]
+        if paste.waitForExistence(timeout: 5) {
+            paste.tap()
+            let name = app.textFields["import-name"]
+            XCTAssertTrue(name.waitForExistence(timeout: 5))
+            name.tap()
+            name.typeText("Perf Deck")
+            app.buttons["import-run"].tap()
+            XCTAssertTrue(app.segmentedControls["deck-tabs"].waitForExistence(timeout: 30), "the deck opens")
+            settle(2)
+            mark = assertNoHangs(since: mark, "import and open a deck")
+            app.buttons["deck-menu"].tap()
+            app.buttons["deck-menu-select"].tap()
+            settle()
+            mark = assertNoHangs(since: mark, "select in a deck")
+            app.buttons["selection-done"].tap()
+            app.buttons["deck-menu"].tap()
+            app.buttons["deck-menu-propose"].tap()
+            settle(1.5)
+            mark = assertNoHangs(since: mark, "open Try Cards")
+            app.buttons["propose-done"].tap()
+            app.buttons["deck-menu"].tap()
+            app.buttons["deck-menu-swaps"].tap()
+            settle(2)
+            mark = assertNoHangs(since: mark, "push Swaps")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            app.segmentedControls["deck-tabs"].buttons["Details"].tap()
+            settle(1.5)
+            mark = assertNoHangs(since: mark, "deck Details page")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            settle()
+            mark = assertNoHangs(since: mark, "pop the deck")
+        }
+        app.buttons["decks-add"].tap()
+        app.buttons["decks-menu-folder"].tap()
+        app.alerts.textFields.firstMatch.typeText("Perf Folder")
+        app.alerts.buttons["Create"].tap()
+        let folder = app.buttons["deck-folder-Perf Folder"].firstMatch
+        if folder.waitForExistence(timeout: 5) {
+            folder.tap()
+            settle()
+            mark = assertNoHangs(since: mark, "push a folder")
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            settle()
+        }
+        assertNoHangs(since: mark, "back to Decks")
+    }
+
     /// A deck's add sheet on Recommended — EDHREC's picks and the plan, cards
     /// from all over Magic, many sets the collection never showed — then a
     /// card opened from it, closed, and another opened.

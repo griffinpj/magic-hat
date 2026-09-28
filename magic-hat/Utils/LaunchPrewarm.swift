@@ -100,7 +100,6 @@ enum LaunchPrewarm {
         "bolt.fill",
         "bolt.slash",
         "bookmark",
-        "bookmark.badge.plus",
         "bookmark.fill",
         "books.vertical",
         "calendar",

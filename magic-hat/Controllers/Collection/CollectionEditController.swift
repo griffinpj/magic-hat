@@ -325,25 +325,60 @@ extension CollectionEditController {
         return actionID
     }
 
-    /// Several adds as one action (a scan's tray): the same merging as
-    /// `add`, one History row. Returns the action's id.
+    /// Several adds as one action — a selection's Add, a scan's tray, an
+    /// imported list — on the background writer: a selection can be the
+    /// whole collection, and one fetch and one save per card on the main
+    /// context froze the app for 27s adding 3,800 rows. Returns the
+    /// action's id.
     @discardableResult
-    static func addMany(_ requests: [AddRequest], context modelContext: ModelContext) throws -> UUID {
+    static func addMany(_ requests: [AddRequest], context: ModelContext) async throws -> UUID {
+        let id = try await CardMetaWriter.shared(for: context.container).runAddMany(requests)
+        CollectionChangeTracker.shared.bump()
+        return id
+    }
+
+    /// The same merging as `add`, for many rows at once, with batched
+    /// fetches: the collections once, the cards' metadata and the rows they
+    /// might merge into by IN-queries of 500, one save at the end.
+    nonisolated static func addMany(_ requests: [AddRequest], in modelContext: ModelContext) throws -> UUID {
         let actionID = UUID()
         let now = Date()
-        for request in requests where request.quantity > 0 {
+        let requests = requests.filter { $0.quantity > 0 }
+        let names = Set(requests.map { $0.collectionName.trimmingCharacters(in: .whitespacesAndNewlines) })
+        guard !names.contains("") else { throw CollectionEditError.missingCollection }
+
+        let existingCollections = Set(try modelContext.fetch(FetchDescriptor<MTGCollection>()).map(\.name))
+        for name in names.subtracting(existingCollections) { modelContext.insert(MTGCollection(name: name)) }
+
+        let ids = Array(Set(requests.map(\.printing.scryfallID)))
+        var metas: [String: CardMeta] = [:]
+        var rows: [String: CollectionEntry] = [:]
+        let nameList = Array(names)
+        for chunk in ids.chunked(into: 500) {
+            for meta in try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { chunk.contains($0.scryfallID) })) {
+                metas[meta.scryfallID] = meta
+            }
+            for entry in try modelContext.fetch(FetchDescriptor<CollectionEntry>(
+                predicate: #Predicate { chunk.contains($0.scryfallID) && nameList.contains($0.collectionName) })) {
+                rows[entry.mergeKey] = entry
+            }
+        }
+
+        for request in requests {
             let collectionName = request.collectionName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !collectionName.isEmpty else { throw CollectionEditError.missingCollection }
-            try ensureCollection(named: collectionName, context: modelContext)
-            let meta = try ensureMeta(for: request.printing, context: modelContext)
             let scryfallID = request.printing.scryfallID
+            let meta: CardMeta
+            if let known = metas[scryfallID] {
+                meta = known
+            } else {
+                meta = placeholderMeta(for: request.printing)
+                modelContext.insert(meta)
+                metas[scryfallID] = meta
+            }
             let key = CollectionEntry.mergeKey(scryfallID: scryfallID, collectionName: collectionName,
                                                finish: request.finish.rawValue, condition: request.condition)
-            let candidates = try modelContext.fetch(FetchDescriptor<CollectionEntry>(
-                predicate: #Predicate { $0.collectionName == collectionName && $0.scryfallID == scryfallID }
-            ))
             let entry: CollectionEntry
-            if let existing = candidates.first(where: { $0.mergeKey == key }) {
+            if let existing = rows[key] {
                 existing.quantity += request.quantity
                 if existing.purchasePrice == nil { existing.purchasePrice = request.purchasePrice }
                 entry = existing
@@ -357,6 +392,7 @@ extension CollectionEditController {
                     purchasePriceCurrency: request.purchasePrice == nil ? nil : AppSettings.currency.code, addedDate: now
                 )
                 modelContext.insert(entry)
+                rows[key] = entry
             }
             if entry.card == nil { entry.card = meta }
             modelContext.insert(AuditRecord(
@@ -368,7 +404,6 @@ extension CollectionEditController {
             ))
         }
         try modelContext.save()
-        CollectionChangeTracker.shared.bump()
         return actionID
     }
 
@@ -492,8 +527,16 @@ extension CollectionEditController {
         if let existing = try context.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.scryfallID == id })).first {
             return existing
         }
+        let meta = placeholderMeta(for: printing)
+        context.insert(meta)
+        return meta
+    }
+
+    /// A pending CardMeta carrying what the selection already knows, so the
+    /// grid can show the card at once and hydration fills the rest.
+    nonisolated private static func placeholderMeta(for printing: PrintingSelection) -> CardMeta {
         let meta = CardMeta(
-            scryfallID: id, name: printing.name, setCode: printing.setCode,
+            scryfallID: printing.scryfallID, name: printing.name, setCode: printing.setCode,
             setName: printing.setName, collectorNumber: printing.collectorNumber,
             rarity: printing.rarity,
             imageWidth: printing.aspectRatio > 1 ? 680 : 488,
@@ -510,7 +553,6 @@ extension CollectionEditController {
             meta.priceEUR = printing.price
             meta.priceEURFoil = printing.priceFoil
         }
-        context.insert(meta)
         return meta
     }
 }

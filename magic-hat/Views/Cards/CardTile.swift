@@ -151,10 +151,7 @@ struct CardTile: View, Equatable {
             }
             // Price and copies as one Text, so a narrow cell shrinks the
             // pair a little rather than truncating either.
-            (Text(item.marketPrice.map { PriceFormat.tile($0) } ?? "—")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(priceStyle)
-             + countText)
+            Text("\(Text(item.marketPrice.map { PriceFormat.tile($0) } ?? "—").font(.caption.weight(.semibold)).foregroundStyle(priceStyle))\(countText)")
                 .minimumScaleFactor(0.7)
             ownedMark
         }

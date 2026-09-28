@@ -113,6 +113,16 @@ actor CardMetaWriter: ModelActor {
         try CollectionEditController.move(entryIDs: entryIDs, to: destination, in: modelContext)
     }
 
+    /// Many adds as one action (see CollectionEditController.addMany).
+    func runAddMany(_ requests: [CollectionEditController.AddRequest]) throws -> UUID {
+        try CollectionEditController.addMany(requests, in: modelContext)
+    }
+
+    /// Many cards onto one deck board (see DeckEditController.addMany).
+    func runDeckAddMany(_ lines: [DeckEditController.AddLine], to deckID: UUID, board: DeckBoard) throws -> Int {
+        try DeckEditController.addMany(lines, to: deckID, board: board, in: modelContext)
+    }
+
     /// A selection removed (see CollectionEditController).
     func runRemove(entryIDs: [UUID]) throws -> CollectionEditController.BulkSummary {
         try CollectionEditController.remove(entryIDs: entryIDs, in: modelContext)

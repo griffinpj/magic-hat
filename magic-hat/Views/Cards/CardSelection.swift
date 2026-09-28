@@ -75,8 +75,9 @@ struct SelectionAction: Identifiable {
     /// A menu of choices instead of one action (Move to…).
     var choices: [Choice] = []
     var perform: ([CardItem]) -> Void = { _ in }
-    /// Whether it applies to the chosen cards (deck rows can't be moved).
-    var isEnabled: ([CardItem]) -> Bool = { !$0.isEmpty }
+    /// Whether the action is offered at all (a locked deck's aren't).
+    /// Not per card: the chosen cards are only gathered when it runs.
+    var isEnabled: () -> Bool = { true }
 
     struct Choice: Identifiable {
         let id: String
@@ -107,9 +108,17 @@ private struct CardSelectionBar: ViewModifier {
     let managesBack: Bool
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openURL) private var openURL
     @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
     @Query(sort: \Deck.name) private var decks: [Deck]
     @State private var error: String?
+    /// Copies per card id, built when selecting starts, so the count in the
+    /// bar is dictionary lookups rather than copying every chosen card on
+    /// each redraw (0.2s with 3,800 chosen).
+    @State private var copiesByID: [String: Int] = [:]
+    @State private var buying = false
+    /// A bulk add is running on the writer.
+    @State private var working = false
 
     private var chosen: [CardItem] { items.filter { selection.contains($0.id) } }
 
@@ -144,6 +153,30 @@ private struct CardSelectionBar: ViewModifier {
                 }
             }
             .animation(.snappy, value: selection.toast)
+            .overlay {
+                if working {
+                    ProgressView()
+                        .controlSize(.large)
+                        .padding(24)
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+            .task(id: selection.isActive) {
+                guard selection.isActive else { copiesByID = [:]; return }
+                let items = self.items
+                copiesByID = await Task.detached(priority: .userInitiated) {
+                    Dictionary(items.map { ($0.id, max($0.quantity, 1)) }, uniquingKeysWith: { a, _ in a })
+                }.value
+            }
+            .confirmationDialog(buyTitle, isPresented: $buying, titleVisibility: .visible) {
+                ForEach(CardStore.allCases) { store in
+                    Button(store.label) {
+                        let lines = CardStore.lines(chosen.map { ($0.name, max($0.quantity, 1)) })
+                        if let url = store.url(for: lines) { openURL(url) }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            }
             .alert("Couldn't Add", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
@@ -163,7 +196,9 @@ private struct CardSelectionBar: ViewModifier {
         }
         ToolbarItemGroup(placement: .bottomBar) {
             addMenu
-            BuyMenu(title: "Buy", lines: CardStore.lines(chosen.map { ($0.name, max($0.quantity, 1)) }), iconOnly: true)
+            // A button and a dialog, not a menu of links: a menu's items are
+            // built on every redraw, and the links need every chosen card.
+            Button("Buy", systemImage: "cart") { buying = true }
                 .disabled(selection.count == 0)
                 .accessibilityIdentifier("selection-buy")
             ForEach(actions.filter { $0.role != .destructive }) { actionItem($0) }
@@ -187,17 +222,25 @@ private struct CardSelectionBar: ViewModifier {
         }
     }
 
+    private var copies: Int {
+        selection.ids.reduce(0) { $0 + (copiesByID[$1] ?? 1) }
+    }
+
+    private var buyTitle: String {
+        copies == 1 ? "Buy 1 Card At" : "Buy \(copies) Cards At"
+    }
+
     private var title: String {
         guard selection.count > 0 else { return "Select Cards" }
-        let copies = chosen.reduce(0) { $0 + max($1.quantity, 1) }
+        let copies = self.copies
         return selection.count == copies ? "\(copies) Selected" : "\(selection.count) Selected (\(copies))"
     }
 
     @ViewBuilder private func actionItem(_ action: SelectionAction) -> some View {
-        let cards = chosen
+        let enabled = selection.count > 0 && action.isEnabled()
         if action.choices.isEmpty {
-            Button(action.title, systemImage: action.systemImage, role: action.role) { action.perform(cards) }
-                .disabled(!action.isEnabled(cards))
+            Button(action.title, systemImage: action.systemImage, role: action.role) { action.perform(chosen) }
+                .disabled(!enabled)
                 .accessibilityIdentifier("selection-\(action.id)")
         } else {
             Menu {
@@ -205,14 +248,14 @@ private struct CardSelectionBar: ViewModifier {
                 ForEach(sections, id: \.self) { section in
                     Section(section) {
                         ForEach(action.choices.filter { $0.section == section }) { choice in
-                            Button(choice.title, systemImage: choice.systemImage) { choice.perform(cards) }
+                            Button(choice.title, systemImage: choice.systemImage) { choice.perform(chosen) }
                         }
                     }
                 }
             } label: {
                 Label(action.title, systemImage: action.systemImage)
             }
-            .disabled(!action.isEnabled(cards))
+            .disabled(!enabled)
             .accessibilityIdentifier("selection-\(action.id)")
         }
     }
@@ -270,27 +313,30 @@ private struct CardSelectionBar: ViewModifier {
                 purchasePrice: item.marketPrice
             )
         }
-        do {
-            try CollectionEditController.addMany(requests, context: modelContext)
-            let total = requests.reduce(0) { $0 + $1.quantity }
-            selection.finished("Added \(total == 1 ? "1 card" : "\(total) cards") to \(collection)")
-        } catch {
-            self.error = error.localizedDescription
+        let total = requests.reduce(0) { $0 + $1.quantity }
+        working = true
+        Task {
+            defer { working = false }
+            do {
+                try await CollectionEditController.addMany(requests, context: modelContext)
+                selection.finished("Added \(total == 1 ? "1 card" : "\(total) cards") to \(collection)")
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 
     private func add(to deckID: UUID, name: String, board: DeckBoard) {
-        let cards = chosen
-        do {
-            var total = 0
-            for item in cards {
-                let n = Self.copies(of: item)
-                _ = try DeckEditController.add(PrintingSelection(item: item), to: deckID, board: board, quantity: n, context: modelContext)
-                total += n
+        let lines = chosen.map { DeckEditController.AddLine(printing: PrintingSelection(item: $0), quantity: Self.copies(of: $0)) }
+        working = true
+        Task {
+            defer { working = false }
+            do {
+                let total = try await DeckEditController.addMany(lines, to: deckID, board: board, context: modelContext)
+                selection.finished("Added \(total == 1 ? "1 card" : "\(total) cards") to \(name)")
+            } catch {
+                self.error = error.localizedDescription
             }
-            selection.finished("Added \(total == 1 ? "1 card" : "\(total) cards") to \(name)")
-        } catch {
-            self.error = error.localizedDescription
         }
     }
 }
