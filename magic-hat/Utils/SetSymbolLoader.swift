@@ -160,7 +160,7 @@ final class SetSymbolLoader {
         // Through HTTPClient, whose request runs off the main actor: a
         // `URLSession.shared` touched here was touched on the main thread.
         let http = HTTPClient(accept: "image/svg+xml,*/*")
-        guard let data = try? await http.requestData(url: url, rateLimit: .other), !data.isEmpty else { return nil }
+        guard let data = try? await http.requestData(url: url, rateLimit: .images), !data.isEmpty else { return nil }
         await Self.writeFile(data, to: svgURL)
         return data
     }

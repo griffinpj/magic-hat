@@ -62,7 +62,7 @@ nonisolated struct ScryfallBulkClient {
     func manifest() async throws -> [ScryfallBulkEntry] {
         let url = baseURL.appendingPathComponent("bulk-data")
         return try await http.request(
-            ScryfallBulkListResponse.self, url: url, rateLimit: .other
+            ScryfallBulkListResponse.self, url: url, rateLimit: .cardsManifest
         ).data
     }
 

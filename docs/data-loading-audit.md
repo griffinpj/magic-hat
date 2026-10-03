@@ -56,6 +56,18 @@ triggered, how it is surfaced, what was wrong, and what changed.
   it is, when it runs (reading the live settings: cadence, automatic
   catalog updates, backup frequency) and the last run in full.
 
+## Rate limiting (added 2026-10-03)
+
+Scryfall sent a 429 with "FAILURE TO ACT WILL RESULT IN A NETWORK BLOCK"
+during development. Causes: each API family paced only against itself
+(search + collection + the rest = 14/sec against a 10/sec ceiling), no
+back-off on a 429, and several copies of the app (phone, simulator, a
+test run) each taking the full budget on one IP. Now: one shared bucket
+at 5/sec for every API family, families halved inside it, images on
+their own lane, and a 429 holding all Scryfall traffic for `Retry-After`
+(60s default) with the countdown shown in Data Activity. See CLAUDE.md
+"Rate limits".
+
 ## Still open
 
 - The hydration pill could say "Updating prices n/N" during a price

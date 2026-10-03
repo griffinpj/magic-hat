@@ -125,7 +125,16 @@ final class DataActivity {
         }
     }
 
+    /// Until when Scryfall traffic is held after a 429 (see RateLimiter);
+    /// nil when nothing is held. Shown so a stalled load has a reason.
+    private(set) var scryfallPausedUntil: Date?
+
     var isAnythingRunning: Bool { !running.isEmpty }
+
+    func scryfallPaused(until date: Date) {
+        if let current = scryfallPausedUntil, current > date { return }
+        scryfallPausedUntil = date
+    }
 
     func isRunning(_ task: DataTask) -> Bool { running[task] != nil }
 

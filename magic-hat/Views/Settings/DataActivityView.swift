@@ -18,6 +18,11 @@ struct DataActivityView: View {
     var body: some View {
         List {
             Section {
+                if let paused = activity.scryfallPausedUntil, paused > now {
+                    Label("Scryfall asked for a pause · \(Int(paused.timeIntervalSince(now)))s left", systemImage: "hand.raised")
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("data-activity-paused")
+                }
                 let running = DataTask.allCases.filter { activity.isRunning($0) }
                 if running.isEmpty {
                     Label("Nothing is loading right now.", systemImage: "checkmark.circle")
@@ -45,10 +50,12 @@ struct DataActivityView: View {
         }
         .navigationTitle("Data Activity")
         .navigationBarTitleDisplayMode(.inline)
-        // "2 minutes ago" moves on while the screen is open.
+        // "2 minutes ago" moves on while the screen is open; a pause's
+        // countdown every second.
         .task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
+                let paused = activity.scryfallPausedUntil.map { $0 > now } ?? false
+                try? await Task.sleep(for: .seconds(paused ? 1 : 30))
                 now = Date()
             }
         }

@@ -13,6 +13,9 @@ import Foundation
 enum HTTPError: Error, LocalizedError {
     case badURL
     case badStatus(Int, Data)
+    /// A 429: Scryfall asked for a pause (`RateLimiter.backOff`); nothing
+    /// Scryfall is sent until it ends.
+    case rateLimited(retryAfter: TimeInterval)
     case decoding(Error)
     case transport(Error)
 
@@ -20,6 +23,7 @@ enum HTTPError: Error, LocalizedError {
         switch self {
         case .badURL: return "Invalid URL."
         case .badStatus(let code, _): return "Server returned status \(code)."
+        case .rateLimited(let seconds): return "Scryfall asked us to slow down; waiting \(Int(seconds)) seconds."
         case .decoding(let e): return "Failed to decode response: \(e.localizedDescription)"
         case .transport(let e): return "Network error: \(e.localizedDescription)"
         }
@@ -111,6 +115,15 @@ nonisolated struct HTTPClient {
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse else {
                 return data
+            }
+            if http.statusCode == 429, category.isScryfall {
+                // Scryfall's warning says a network block follows if this is
+                // ignored: hold everything Scryfall for what it asks.
+                let seconds = RateLimiter.retryAfter(http.value(forHTTPHeaderField: "Retry-After"))
+                await RateLimiter.shared.backOff(seconds: seconds)
+                let until = Date().addingTimeInterval(seconds)
+                Task { @MainActor in DataActivity.shared.scryfallPaused(until: until) }
+                throw HTTPError.rateLimited(retryAfter: seconds)
             }
             guard (200..<300).contains(http.statusCode) else {
                 throw HTTPError.badStatus(http.statusCode, data)

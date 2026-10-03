@@ -162,9 +162,24 @@ are cross-cutting, not owned by one feature.
 
 ## Rate limits (Scryfall)
 
-Enforced in `RateLimiter`. `/cards/search|named|random|collection` 2/sec,
-`/cards/manifest` 10/min, everything else (incl. images) 10/sec. All requests
-send an accurate `User-Agent` (`MagicHat/1.0`) and an `Accept` header.
+Enforced in `RateLimiter`, at **half** of what Scryfall publishes (about
+10/sec to `api.scryfall.com`; a 429 then a network block past it), because a
+phone, a simulator and a test run share one IP while developing and each
+used to take the whole budget — Scryfall sent "FAILURE TO ACT WILL RESULT
+IN A NETWORK BLOCK" (2026-10-03). One shared bucket for every API family
+(5/sec; the families used to pace only against themselves, and search +
+collection + the rest added up to 14/sec); inside it `/cards/search|named|
+random|collection` 1/sec and `/bulk-data` 5/min; images
+(`cards.scryfall.io`, `svgs.scryfall.io` — a CDN outside the API limit) on
+their own 5/sec lane so a scroll never starves a hydration batch. **A 429
+from any Scryfall host holds all Scryfall traffic** for `Retry-After` (60s
+without one): `HTTPClient` calls `RateLimiter.backOff`, throws
+`HTTPError.rateLimited`, and Data Activity shows the countdown; a loader
+that hits it marks its chunk failed and its next chunk waits at the limiter,
+so nothing retries into the block. Other hosts (Spellbook, Recommander,
+EDHREC, deck sites) stay at 2/sec each. `RateLimiterTests` runs the actor
+on a fake clock. All requests send an accurate `User-Agent` (`MagicHat/1.0`)
+and an `Accept` header.
 
 ## Reads go through CollectionStore; writes bump the tracker
 
@@ -1471,6 +1486,19 @@ actions, renaming and clearing.
   ("2 hours ago · 3,846 cards · 41s"), and a detail with what it is, when
   it runs (read from the live settings) and the last run. `UITestSeed`
   seeds the log (`seedForTesting`); `SettingsImportTour` shoots it.
+- **The grid's glass cell glows with its card's art.** `ArtTint` is the
+  average colour of the art's top and bottom thirds (a 12×16 rendering
+  of the decoded thumbnail, microseconds, inside the `@concurrent`
+  decode that already ran), pushed a little towards saturation and kept
+  off black and white, cached per URL in `ImageMemoryCache` (a few bytes
+  each, so it outlives the image). `CardTile` draws a gradient of the
+  two colours *behind* the glass — the material does the softening and
+  the bleed to the rim — and tints the glass with their mix. Never a
+  blur of our own: a blurred copy of the art is an offscreen pass per
+  tile, and the grid has 3,800 of them; a gradient and a tint are a fill
+  each (real-collection scroll run: no app frame in any stall).
+  `CardImageView(tint:)` hands the colour up when its image lands; a
+  warmed tile reads the cache in its body for its first frame.
 - Images live on disk (Caches/), not in SwiftData, to keep the store small.
   Two tiers: the bytes on disk, decoded tiles in memory by URL and size.
   `CardGridView` warms the next 30 tiles' images as tiles appear
