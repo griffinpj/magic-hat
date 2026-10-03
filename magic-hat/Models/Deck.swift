@@ -82,6 +82,9 @@ nonisolated final class Deck {
     var coverArtURL: String?
     /// The folder the deck is filed in (DeckFolder); nil at the top level.
     var folderID: UUID?
+    /// The branch the list is on (DeckBranch); nil until versions are
+    /// first used on the deck. See DeckVersion.
+    var currentBranchID: UUID?
 
     @Relationship(deleteRule: .cascade, inverse: \DeckCard.deck)
     var cards: [DeckCard]
@@ -170,55 +173,80 @@ nonisolated enum DeckCardSort: String, CaseIterable, Identifiable, Hashable, Sen
     case relevance = "Relevance"
     case name = "Name"
     case manaValue = "Mana Value"
-    case priceHigh = "Price (High)"
-    case priceLow = "Price (Low)"
+    case price = "Price"
     case rarity = "Rarity"
 
     var id: String { rawValue }
+
+    /// The stored value, reading the "Price (High)" / "Price (Low)" pair
+    /// from before the direction was its own choice.
+    init?(stored raw: String) {
+        if let sort = DeckCardSort(rawValue: raw) { self = sort }
+        else if raw.hasPrefix("Price") { self = .price }
+        else { return nil }
+    }
+
+    /// The direction a stored pair means: the stored one, else the sort's.
+    static func direction(sortRaw: String, directionRaw: String) -> SortDirection? {
+        SortDirection(rawValue: directionRaw) ?? (sortRaw == "Price (Low)" ? .ascending : nil)
+    }
 
     var systemImage: String {
         switch self {
         case .relevance: return SortIcon.relevance
         case .name: return SortIcon.name
         case .manaValue: return SortIcon.manaValue
-        case .priceHigh: return SortIcon.priceHigh
-        case .priceLow: return SortIcon.priceLow
+        case .price: return SortIcon.price
         case .rarity: return SortIcon.rarity
         }
     }
 
-    /// The Scryfall order this sort asks for.
-    var scryfall: (sort: SearchSort, direction: SortDirection) {
+    var defaultDirection: SortDirection {
         switch self {
-        case .relevance: return (.edhrec, .ascending)
-        case .name: return (.name, .ascending)
-        case .manaValue: return (.manaValue, .ascending)
-        case .priceHigh: return (.price, .descending)
-        case .priceLow: return (.price, .ascending)
-        case .rarity: return (.rarity, .descending)
+        case .relevance, .name, .manaValue: return .ascending
+        case .price, .rarity: return .descending
+        }
+    }
+
+    /// The Scryfall order this sort asks for.
+    func scryfall(_ direction: SortDirection? = nil) -> (sort: SearchSort, direction: SortDirection) {
+        let direction = direction ?? defaultDirection
+        switch self {
+        case .relevance: return (.edhrec, direction)
+        case .name: return (.name, direction)
+        case .manaValue: return (.manaValue, direction)
+        case .price: return (.price, direction)
+        case .rarity: return (.rarity, direction)
         }
     }
 
     /// `rows` in this order, by the card each carries. Relevance leaves
-    /// them as they are; unpriced cards sort last either way by price.
-    func apply<Row>(_ rows: [Row], card: (Row) -> CardItem) -> [Row] {
-        guard self != .relevance else { return rows }
+    /// them as they are (reversed when descending is asked for); unpriced
+    /// cards sort last either way by price. Ties fall to name, then to the
+    /// list's own order.
+    func apply<Row>(_ rows: [Row], card: (Row) -> CardItem, direction: SortDirection? = nil) -> [Row] {
+        let ascending = (direction ?? defaultDirection) == .ascending
+        guard self != .relevance else { return ascending ? rows : rows.reversed() }
+        func ordered<K: Comparable>(_ l: K, _ r: K) -> Bool { ascending ? l < r : l > r }
         return rows.enumerated().sorted { a, b in
             let l = card(a.element), r = card(b.element)
             switch self {
-            case .relevance, .name:
+            case .relevance:
                 break
+            case .name:
+                if l.sortKey != r.sortKey { return ordered(l.sortKey, r.sortKey) }
             case .manaValue:
                 let lv = ManaSymbol.manaValue(of: l.manaCost ?? ""), rv = ManaSymbol.manaValue(of: r.manaCost ?? "")
-                if lv != rv { return lv < rv }
-            case .priceHigh:
-                let lp = l.marketPrice ?? -1, rp = r.marketPrice ?? -1
-                if lp != rp { return lp > rp }
-            case .priceLow:
-                let lp = l.marketPrice ?? .infinity, rp = r.marketPrice ?? .infinity
-                if lp != rp { return lp < rp }
+                if lv != rv { return ordered(lv, rv) }
+            case .price:
+                switch (l.marketPrice, r.marketPrice) {
+                case let (lp?, rp?) where lp != rp: return ordered(lp, rp)
+                case (_?, nil): return true
+                case (nil, _?): return false
+                default: break
+                }
             case .rarity:
-                if l.rarityRankValue != r.rarityRankValue { return l.rarityRankValue > r.rarityRankValue }
+                if l.rarityRankValue != r.rarityRankValue { return ordered(l.rarityRankValue, r.rarityRankValue) }
             }
             if l.sortKey != r.sortKey { return l.sortKey < r.sortKey }
             return a.offset < b.offset

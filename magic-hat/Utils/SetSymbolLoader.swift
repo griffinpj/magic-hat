@@ -297,13 +297,18 @@ nonisolated enum RarityPalette {
 /// colour, as it is printed on the card; common keeps `tint`.
 struct SetSymbolView: View {
     let setCode: String
+    /// The nominal size; drawn at `scale` times it everywhere, so every
+    /// symbol in the app grew together when they read small.
     var size: CGFloat = 22
     var tint: Color = .secondary
     var rarity: String? = nil
 
+    static let scale: CGFloat = 1.2
+
     @State private var image: UIImage?
 
     private var color: Color { rarity.flatMap(RarityPalette.color) ?? tint }
+    private var drawn: CGFloat { size * Self.scale }
 
     /// Whether the set draws from the font or a bundled vector — no WebKit.
     /// Places that show many sets at once (the grid) use a plain set code
@@ -315,9 +320,9 @@ struct SetSymbolView: View {
     var body: some View {
         if let glyph = KeyruneFont.glyph(for: setCode), let font = KeyruneFont.fontName {
             Text(glyph)
-                .font(.custom(font, size: size * 0.92))
+                .font(.custom(font, size: drawn * 0.92))
                 .foregroundStyle(color)
-                .frame(width: size, height: size)
+                .frame(width: drawn, height: drawn)
                 .accessibilityLabel(setCode.uppercased())
         } else if let asset = SetIcons.assetName(for: setCode) {
             // Compiled into the app from Scryfall's SVG (see SetIcons).
@@ -325,9 +330,9 @@ struct SetSymbolView: View {
                 .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                .padding(size * 0.06)
+                .padding(drawn * 0.06)
                 .foregroundStyle(color)
-                .frame(width: size, height: size)
+                .frame(width: drawn, height: drawn)
                 .accessibilityLabel(setCode.uppercased())
         } else {
             rasterized
@@ -347,21 +352,21 @@ struct SetSymbolView: View {
                     .foregroundStyle(color)
             } else {
                 Text(setCode.uppercased())
-                    .font(.system(size: size * 0.36, weight: .bold, design: .rounded))
+                    .font(.system(size: drawn * 0.36, weight: .bold, design: .rounded))
                     .minimumScaleFactor(0.5)
                     .lineLimit(1)
                     .padding(.horizontal, 2)
                     .foregroundStyle(color)
                     .overlay {
-                        RoundedRectangle(cornerRadius: size * 0.18, style: .continuous)
+                        RoundedRectangle(cornerRadius: drawn * 0.18, style: .continuous)
                             .strokeBorder(color.opacity(0.6), lineWidth: 1)
                     }
                     .accessibilityLabel(setCode.uppercased())
             }
         }
-        .frame(width: size, height: size)
+        .frame(width: drawn, height: drawn)
         .task(id: setCode) {
-            image = await SetSymbolLoader.shared.symbol(setCode: setCode, size: size)
+            image = await SetSymbolLoader.shared.symbol(setCode: setCode, size: drawn)
         }
     }
 }

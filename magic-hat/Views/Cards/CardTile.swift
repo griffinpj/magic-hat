@@ -55,12 +55,14 @@ struct CardTile: View, Equatable {
     }
 
     @ScaledMetric(relativeTo: .caption2) private var symbolSize: CGFloat = 12
+    @Environment(\.showsPrices) private var showsPrices
 
     static func == (lhs: CardTile, rhs: CardTile) -> Bool {
         let l = lhs.item, r = rhs.item
         guard lhs.targetWidth == rhs.targetWidth, lhs.showsCaption == rhs.showsCaption else { return false }
         guard l.id == r.id, l.quantity == r.quantity, l.imageURL == r.imageURL,
-              l.aspectRatio == r.aspectRatio, l.owned == r.owned, l.finish == r.finish else { return false }
+              l.aspectRatio == r.aspectRatio, l.owned == r.owned, l.finish == r.finish,
+              l.inCollection == r.inCollection else { return false }
         guard l.marketPrice == r.marketPrice, l.purchasePrice == r.purchasePrice else { return false }
         return l.setCode == r.setCode && l.rarity == r.rarity && l.collectorNumber == r.collectorNumber
     }
@@ -150,12 +152,17 @@ struct CardTile: View, Equatable {
                     .accessibilityLabel(item.finish.displayName)
             }
             // Price and copies as one Text, so a narrow cell shrinks the
-            // pair a little rather than truncating either.
-            Text("\(Text(item.marketPrice.map { PriceFormat.tile($0) } ?? "—").font(.caption.weight(.semibold)).foregroundStyle(priceStyle))\(countText)")
-                .minimumScaleFactor(0.7)
+            // pair a little rather than truncating either. With prices off
+            // the copies stand alone.
+            if showsPrices {
+                Text("\(Text(item.marketPrice.map { PriceFormat.tile($0) } ?? "—").font(.caption.weight(.semibold)).foregroundStyle(priceStyle))\(countText)")
+                    .minimumScaleFactor(0.7)
+            } else {
+                countText.minimumScaleFactor(0.7)
+            }
             ownedMark
         }
-        .accessibilityValue(trendLabel)
+        .accessibilityValue(showsPrices ? trendLabel : "")
     }
 
     private var priceStyle: AnyShapeStyle {
@@ -177,9 +184,10 @@ struct CardTile: View, Equatable {
             .foregroundStyle(.secondary)
     }
 
-    /// A search hit or printing we own somewhere (no quantity of its own).
+    /// A search hit or printing we own somewhere (no quantity of its own),
+    /// or a list's row for a card already in a collection.
     @ViewBuilder private var ownedMark: some View {
-        if !item.isEntry, item.owned {
+        if (!item.isEntry && item.owned) || item.inCollection {
             Image(systemName: "checkmark.circle.fill")
                 .font(.caption2)
                 .foregroundStyle(.green)
@@ -196,8 +204,12 @@ struct CardTile: View, Equatable {
                 Text(item.setCode.uppercased())
                     .fontWeight(.medium)
             }
-            Text("#\(item.collectorNumber)")
-                .fixedSize()
+            // A list's foil or many-copy row that is also owned has the
+            // most to say on the price side; the number gives way to it.
+            if !(item.inCollection && (isFoil || item.quantity > 1)) {
+                Text("#\(item.collectorNumber)")
+                    .fixedSize()
+            }
         }
         .font(.caption2)
         .foregroundStyle(.secondary)

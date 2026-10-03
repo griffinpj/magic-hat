@@ -40,12 +40,13 @@ struct AddCardView: View {
         self.item = item
         let selection = PrintingSelection(item: item)
         _printing = State(initialValue: selection)
+        // An owned row starts as it is; anything else as Settings says.
+        let finish = item.isEntry ? item.finish : AppSettings.defaultFinish
         _form = State(initialValue: EntryFormState(
-            finish: item.finish,
-            condition: CardCondition(rawValue: item.condition)?.rawValue ?? CardCondition.nearMint.rawValue,
-            // An owned row's language; otherwise the one Settings names.
+            finish: finish,
+            condition: item.isEntry ? (CardCondition(rawValue: item.condition)?.rawValue ?? AppSettings.defaultCondition) : AppSettings.defaultCondition,
             language: item.isEntry && !item.language.isEmpty ? item.language : AppSettings.cardLanguage,
-            price: selection.marketPrice(for: item.finish)
+            price: selection.marketPrice(for: finish)
         ))
         _collectionName = State(initialValue: "")
     }

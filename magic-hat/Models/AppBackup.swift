@@ -18,6 +18,7 @@
 //
 
 import Foundation
+import SwiftData
 
 nonisolated struct BackupManifest: Codable, Sendable, Equatable {
     static let currentFormat = 1
@@ -40,6 +41,8 @@ nonisolated struct AppBackup: Codable, Sendable {
     var decks: [DeckRecord]
     var deckCards: [DeckCardRecord]
     var folders: [FolderRecord]
+    var deckVersions: [DeckVersionRecord] = []
+    var deckBranches: [DeckBranchRecord] = []
     var audit: [AuditRecordValue]
     var branchNames: [BranchNameRecord]
     var savedSearches: [SavedSearchRecord]
@@ -82,6 +85,29 @@ nonisolated struct AppBackup: Codable, Sendable {
         var updatedDate: Date
         var coverArtURL: String?
         var folderID: UUID?
+        var currentBranchID: UUID?
+    }
+
+    struct DeckVersionRecord: Codable, Sendable, Equatable {
+        var id: UUID
+        var deckID: UUID
+        var parentID: UUID?
+        var createdAt: Date
+        var name: String
+        var kind: String
+        var note: String
+        var list: Data
+        var cardCount: Int
+        var added: Int
+        var removed: Int
+    }
+
+    struct DeckBranchRecord: Codable, Sendable, Equatable {
+        var id: UUID
+        var deckID: UUID
+        var name: String
+        var tipVersionID: UUID?
+        var createdAt: Date
     }
 
     struct DeckCardRecord: Codable, Sendable, Equatable {
@@ -127,6 +153,7 @@ nonisolated struct AppBackup: Codable, Sendable {
         var addedDate: Date?
         var sourceCollectionName: String?
         var collectionKind: String?
+        var payload: Data?
     }
 
     struct BranchNameRecord: Codable, Sendable, Equatable {
@@ -173,7 +200,7 @@ nonisolated extension AppBackup.EntryRecord {
 nonisolated extension AppBackup.DeckRecord {
     init(_ d: Deck) {
         self.init(id: d.id, name: d.name, format: d.formatRaw, isLocked: d.isLocked, notes: d.notes, createdDate: d.createdDate,
-                  updatedDate: d.updatedDate, coverArtURL: d.coverArtURL, folderID: d.folderID)
+                  updatedDate: d.updatedDate, coverArtURL: d.coverArtURL, folderID: d.folderID, currentBranchID: d.currentBranchID)
     }
 
     func model() -> Deck {
@@ -182,7 +209,23 @@ nonisolated extension AppBackup.DeckRecord {
         d.updatedDate = updatedDate
         d.coverArtURL = coverArtURL
         d.folderID = folderID
+        d.currentBranchID = currentBranchID
         return d
+    }
+}
+
+nonisolated extension AppBackup.DeckVersionRecord {
+    init(_ v: DeckVersion) {
+        self.init(id: v.id, deckID: v.deckID, parentID: v.parentID, createdAt: v.createdAt, name: v.name, kind: v.kindRaw,
+                  note: v.note, list: v.listJSON, cardCount: v.cardCount, added: v.added, removed: v.removed)
+    }
+
+    func model() -> DeckVersion {
+        let v = DeckVersion(id: id, deckID: deckID, parentID: parentID, createdAt: createdAt, name: name,
+                            kind: DeckVersion.Kind(rawValue: kind) ?? .saved, note: note, rows: [], added: added, removed: removed)
+        v.listJSON = list
+        v.cardCount = cardCount
+        return v
     }
 }
 
@@ -202,7 +245,7 @@ nonisolated extension AppBackup.AuditRecordValue {
                   undoesActionID: r.undoesActionID, setCode: r.setCode, setName: r.setName, collectorNumber: r.collectorNumber,
                   rarity: r.rarity, language: r.language, purchasePrice: r.purchasePrice,
                   purchasePriceCurrency: r.purchasePriceCurrency, manaBoxID: r.manaBoxID, addedDate: r.addedDate,
-                  sourceCollectionName: r.sourceCollectionName, collectionKind: r.collectionKindRaw)
+                  sourceCollectionName: r.sourceCollectionName, collectionKind: r.collectionKindRaw, payload: r.payload)
     }
 
     func model() -> AuditRecord {
@@ -216,6 +259,7 @@ nonisolated extension AppBackup.AuditRecordValue {
         r.language = language; r.purchasePrice = purchasePrice; r.purchasePriceCurrency = purchasePriceCurrency
         r.manaBoxID = manaBoxID; r.addedDate = addedDate; r.sourceCollectionName = sourceCollectionName
         r.collectionKindRaw = collectionKind
+        r.payload = payload
         return r
     }
 }
@@ -243,6 +287,8 @@ nonisolated extension AppBackup {
         case decks = "decks.json"
         case deckCards = "deck-cards.json"
         case folders = "deck-folders.json"
+        case deckVersions = "deck-versions.json"
+        case deckBranches = "deck-branches.json"
         case audit = "history.json"
         case branchNames = "history-branches.json"
         case savedSearches = "saved-searches.json"
@@ -275,6 +321,8 @@ nonisolated extension AppBackup {
         zip.add(File.decks.rawValue, try e.encode(decks))
         zip.add(File.deckCards.rawValue, try e.encode(deckCards))
         zip.add(File.folders.rawValue, try e.encode(folders))
+        zip.add(File.deckVersions.rawValue, try e.encode(deckVersions))
+        zip.add(File.deckBranches.rawValue, try e.encode(deckBranches))
         zip.add(File.audit.rawValue, try e.encode(audit))
         zip.add(File.branchNames.rawValue, try e.encode(branchNames))
         zip.add(File.savedSearches.rawValue, try e.encode(savedSearches))
@@ -310,6 +358,8 @@ nonisolated extension AppBackup {
             decks: try table(.decks, [DeckRecord].self, empty: []),
             deckCards: try table(.deckCards, [DeckCardRecord].self, empty: []),
             folders: try table(.folders, [FolderRecord].self, empty: []),
+            deckVersions: try table(.deckVersions, [DeckVersionRecord].self, empty: []),
+            deckBranches: try table(.deckBranches, [DeckBranchRecord].self, empty: []),
             audit: try table(.audit, [AuditRecordValue].self, empty: []),
             branchNames: try table(.branchNames, [BranchNameRecord].self, empty: []),
             savedSearches: try table(.savedSearches, [SavedSearchRecord].self, empty: []),
@@ -336,5 +386,54 @@ nonisolated extension AppBackup {
             lines.append(row.map(field).joined(separator: ","))
         }
         return lines.joined(separator: "\r\n") + "\r\n"
+    }
+}
+
+// MARK: - A deleted deck
+
+/// Everything a deck was, as the backup's own records: what a
+/// `.deckDelete` ledger record carries so an undo can bring the deck back
+/// with the same id (History's records name it by that), its list, and
+/// its versions and branches.
+nonisolated struct DeletedDeck: Codable, Sendable, Equatable {
+    var deck: AppBackup.DeckRecord
+    var cards: [AppBackup.DeckCardRecord]
+    var versions: [AppBackup.DeckVersionRecord]
+    var branches: [AppBackup.DeckBranchRecord]
+
+    /// The deck as it stands on `context`.
+    init(_ deck: Deck, in context: ModelContext) throws {
+        let id = deck.id
+        self.deck = AppBackup.DeckRecord(deck)
+        cards = deck.cards.compactMap(AppBackup.DeckCardRecord.init)
+        versions = try context.fetch(FetchDescriptor<DeckVersion>(predicate: #Predicate { $0.deckID == id })).map(AppBackup.DeckVersionRecord.init)
+        branches = try context.fetch(FetchDescriptor<DeckBranch>(predicate: #Predicate { $0.deckID == id })).map {
+            AppBackup.DeckBranchRecord(id: $0.id, deckID: $0.deckID, name: $0.name, tipVersionID: $0.tipVersionID, createdAt: $0.createdAt)
+        }
+    }
+
+    private static var encoder: JSONEncoder { let e = JSONEncoder(); e.dateEncodingStrategy = .deferredToDate; return e }
+    private static var decoder: JSONDecoder { let d = JSONDecoder(); d.dateDecodingStrategy = .deferredToDate; return d }
+
+    func encoded() throws -> Data { try Self.encoder.encode(self) }
+    static func decode(_ data: Data) throws -> DeletedDeck { try decoder.decode(DeletedDeck.self, from: data) }
+
+    /// Puts the deck back on `context`. A folder that has gone since
+    /// leaves it at the top level.
+    func restore(in context: ModelContext) throws {
+        let model = deck.model()
+        if let folder = deck.folderID,
+           try context.fetch(FetchDescriptor<DeckFolder>(predicate: #Predicate { $0.id == folder })).isEmpty {
+            model.folderID = nil
+        }
+        context.insert(model)
+        for c in cards {
+            let card = DeckCard(id: c.id, scryfallID: c.scryfallID, oracleID: c.oracleID, name: c.name,
+                                board: DeckBoard(rawValue: c.board) ?? .main, quantity: c.quantity, addedDate: c.addedDate)
+            card.deck = model
+            context.insert(card)
+        }
+        for v in versions { context.insert(v.model()) }
+        for b in branches { context.insert(DeckBranch(id: b.id, deckID: b.deckID, name: b.name, tipVersionID: b.tipVersionID, createdAt: b.createdAt)) }
     }
 }

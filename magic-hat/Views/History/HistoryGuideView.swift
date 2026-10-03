@@ -20,7 +20,9 @@ struct HistoryGuideView: View {
             List {
                 Section {
                     GuideRow(icon: "clock.arrow.circlepath", title: "Every change is kept",
-                             text: "Imports, adds, edits, removals, deleted collections, and cards moved by building or taking apart a deck are recorded as one row each, newest first. Deck list edits aren't recorded: a list is a wish, not cards.")
+                             text: "Imports, adds, edits, removals, deleted collections, and cards moved by building or taking apart a deck are recorded as one row each, newest first.")
+                    GuideRow(icon: "arrow.triangle.branch", title: "Deck lists are kept elsewhere",
+                             text: "Editing a deck's list moves no cards, so it isn't recorded here. Each deck keeps its own versions and branches: open the deck's … menu and choose Versions.")
                     GuideRow(icon: "hand.tap", title: "Open a row",
                              text: "Tap any row to see the cards it changed and the one thing you can do with it from where you are.")
                 }
@@ -65,8 +67,10 @@ struct HistoryGuideView: View {
                 }
 
                 Section("What can't be undone") {
-                    GuideRow(icon: "rectangle.stack.badge.minus", title: "Cards in a deleted deck",
-                             text: "Take a deck apart before deleting it (the app does this for you). A change whose cards would land in a deck that no longer exists is refused.")
+                    GuideRow(icon: "lock", title: "A step that is blocked says why",
+                             text: "When the next Undo or Redo can't run, its row shows a lock and the reason, and the button is off: the cards it would move are no longer where they were, or they would land in a deck that is gone.")
+                    GuideRow(icon: "rectangle.stack.badge.minus", title: "A deleted deck",
+                             text: "Deleting a deck is a row here. Undo it and the deck returns with its list and versions, and the builds recorded for it can be undone and redone again.")
                 }
             }
             .listStyle(.insetGrouped)

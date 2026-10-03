@@ -134,13 +134,37 @@ actor DeckStore: ModelActor {
         let played = commanders + main
         let stats = DeckStats.compute(played: played, format: deck.format, identity: identity, allItems: items)
 
-        return DeckSnapshot(
-            id: deck.id, name: deck.name, format: deck.format, isLocked: deck.isLocked, notes: deck.notes,
+        var branchName: String?
+        if let branchID = deck.currentBranchID {
+            branchName = try modelContext.fetch(FetchDescriptor<DeckBranch>(predicate: #Predicate { $0.id == branchID })).first?.name
+        }
+        var snapshot = DeckSnapshot(
+            id: deck.id, name: deck.name, format: deck.format, isLocked: deck.isLocked, notes: deck.notes, branchName: branchName,
             createdDate: deck.createdDate, updatedDate: deck.updatedDate, identity: identity,
             commanders: commanders, sections: sections,
             sideboard: items.filter { $0.board == .side }, maybeboard: items.filter { $0.board == .maybe },
             stats: stats
         )
+        snapshot.tokens = try tokens(for: played.map(\.card.scryfallID), metaByID: metaByID)
+        return snapshot
+    }
+
+    /// The tokens the played cards make, with an image where the catalog
+    /// holds the token (default_cards carries every token printing).
+    private func tokens(for scryfallIDs: [String], metaByID: [String: CardMeta]) throws -> [DeckToken] {
+        var makers: [(name: String, tokens: [RelatedToken])] = []
+        var seen = Set<String>()
+        for id in scryfallIDs where seen.insert(id).inserted {
+            guard let meta = metaByID[id] else { continue }
+            let tokens = meta.relatedTokens
+            if !tokens.isEmpty { makers.append((meta.name, tokens)) }
+        }
+        guard !makers.isEmpty else { return [] }
+        let tokenIDs = Array(Set(makers.flatMap { $0.tokens.map(\.id) }))
+        let tokenMetas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { tokenIDs.contains($0.scryfallID) }))
+        var images: [String: (image: String?, art: String?)] = [:]
+        for meta in tokenMetas { images[meta.scryfallID] = (meta.imageNormalURL, meta.artCropURL) }
+        return DeckToken.collect(makers, images: images)
     }
 
     private func boardOrder(_ board: DeckBoard) -> Int {
@@ -202,7 +226,11 @@ actor DeckStore: ModelActor {
                 meta = byPrinting["\(set.lowercased())|\(number)"]
             }
             if meta == nil, let candidates = metasByName[line.name] {
-                meta = candidates.first { owned.contains($0.scryfallID) } ?? candidates.first
+                // The set the line names, when it names one without a
+                // number; then a printing already owned; then any.
+                let inSet = line.setCode.map { set in candidates.filter { $0.setCode.lowercased() == set.lowercased() } } ?? []
+                meta = inSet.first { owned.contains($0.scryfallID) } ?? inSet.first
+                    ?? candidates.first { owned.contains($0.scryfallID) } ?? candidates.first
             }
             return ResolvedDeckLine(line: line, scryfallID: meta?.scryfallID, oracleID: meta?.oracleID, canonicalName: meta?.name)
         }

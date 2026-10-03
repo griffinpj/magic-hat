@@ -45,8 +45,9 @@ final class CollectionFlowTests: XCTestCase {
         XCTAssertTrue(details.waitForExistence(timeout: 5), "viewer should open with its toolbar")
         details.tap()
 
-        XCTAssertTrue(app.buttons["Versions"].waitForExistence(timeout: 5), "detail should push")
-        app.navigationBars["Card 0"].buttons.element(boundBy: 0).tap()
+        let segments = app.descendants(matching: .any)["detail-segments"]
+        XCTAssertTrue(segments.waitForExistence(timeout: 5), "detail should push")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(details.waitForExistence(timeout: 5), "popping detail should return to the viewer")
 
         let close = app.buttons["viewer-close"]
@@ -71,7 +72,7 @@ final class CollectionFlowTests: XCTestCase {
         confirm.tap()
         app.buttons["add-card-done"].tap()
 
-        XCTAssertTrue(app.staticTexts["2× Card 0"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'viewer-name' AND label CONTAINS 'Card 0' AND label CONTAINS '2 copies'")).firstMatch.waitForExistence(timeout: 10),
                       "viewer should show the merged quantity")
     }
 
@@ -98,7 +99,7 @@ final class CollectionFlowTests: XCTestCase {
 
         // Name order puts "Card 10" right after "Card 1"; the seed gives it
         // quantity 1 + 10 % 4.
-        XCTAssertTrue(app.staticTexts["3× Card 10"].waitForExistence(timeout: 10),
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'viewer-name' AND label CONTAINS 'Card 10' AND label CONTAINS '3 copies'")).firstMatch.waitForExistence(timeout: 10),
                       "viewer should step to the neighbour")
         app.buttons["viewer-close"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10),
@@ -135,7 +136,7 @@ final class CollectionFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Card 0"].firstMatch.waitForExistence(timeout: 5), "everything back")
     }
 
-    /// Pick "Price (High)" from the sort menu: the grid should jump to the top
+    /// Pick "Price" from the sort menu: the grid should jump to the top
     /// of the new order. In the seed, price = index % 50, so the priciest tier
     /// is 49 and its alphabetically-first name is "Card 149".
     @MainActor
@@ -147,12 +148,20 @@ final class CollectionFlowTests: XCTestCase {
         let sort = app.buttons["sort-button"]
         XCTAssertTrue(sort.waitForExistence(timeout: 5))
         sort.tap()
-        let price = app.buttons["Price (High)"]
+        let price = app.buttons["Price"]
         XCTAssertTrue(price.waitForExistence(timeout: 5), "sort menu")
         price.tap()
 
         XCTAssertTrue(app.staticTexts["Card 149"].firstMatch.waitForExistence(timeout: 10),
                       "top of the grid should show the highest-priced card")
+
+        // The other way: cheapest first (price 0, alphabetically "Card 0").
+        sort.tap()
+        let ascending = app.buttons["sort-ascending"]
+        XCTAssertTrue(ascending.waitForExistence(timeout: 5), "the menu offers both directions")
+        ascending.tap()
+        XCTAssertTrue(app.staticTexts["Card 0"].firstMatch.waitForExistence(timeout: 10), "ascending puts the cheapest first")
+        XCTAssertTrue(app.staticTexts["Card 149"].firstMatch.waitForNonExistence(timeout: 5))
     }
 
     @MainActor

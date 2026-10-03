@@ -11,10 +11,10 @@ struct CardSortingTests {
         var items: [CardItem] = (0..<300).map {
             TestSupport.card(id: "c\($0)", name: "Card \($0 % 50)", price: $0 % 25 == 0 ? Double($0) : nil)
         }
-        let reference = CardSorting.sorted(items, by: .priceHigh)
+        let reference = CardSorting.sorted(items, by: .price)
         for _ in 0..<5 {
             items.shuffle()
-            #expect(CardSorting.sorted(items, by: .priceHigh).map(\.id) == reference.map(\.id))
+            #expect(CardSorting.sorted(items, by: .price).map(\.id) == reference.map(\.id))
         }
     }
 
@@ -25,8 +25,33 @@ struct CardSortingTests {
             TestSupport.card(id: "c", name: "Mid", price: 5),
             TestSupport.card(id: "d", name: "Top", price: 50),
         ]
-        let sorted = CardSorting.sorted(items, by: .priceHigh).map(\.name)
+        let sorted = CardSorting.sorted(items, by: .price).map(\.name)
         #expect(sorted == ["Top", "Mid", "Apple", "Zebra"])
+    }
+
+    @Test func everySortRunsBothWaysWithUnpricedLastAndTiesByName() {
+        let items = [
+            TestSupport.card(id: "a", name: "Zebra", price: nil),
+            TestSupport.card(id: "b", name: "Apple", price: nil),
+            TestSupport.card(id: "c", name: "Mid", price: 5),
+            TestSupport.card(id: "d", name: "Top", price: 50),
+        ]
+        #expect(CardSorting.sorted(items, by: .price, direction: .ascending).map(\.name) == ["Mid", "Top", "Apple", "Zebra"])
+        #expect(CardSorting.sorted(items, by: .name, direction: .descending).map(\.name) == ["Zebra", "Top", "Mid", "Apple"])
+        #expect(CardSorting.sorted(items, by: .name).map(\.name) == ["Apple", "Mid", "Top", "Zebra"])
+        for sort in CardSort.allCases {
+            let up = CardSorting.sorted(items, by: sort, direction: .ascending).map(\.id)
+            let down = CardSorting.sorted(items, by: sort, direction: .descending).map(\.id)
+            #expect(Set(up) == Set(down) && up.count == items.count)
+        }
+    }
+
+    @Test func storedOrdersReadTheOldPricePair() {
+        #expect(CardOrder(sortRaw: "Price (High)", directionRaw: "") == CardOrder(.price, .descending))
+        #expect(CardOrder(sortRaw: "Price (Low)", directionRaw: "") == CardOrder(.price, .ascending))
+        #expect(CardOrder(sortRaw: "Price (Low)", directionRaw: "desc") == CardOrder(.price, .descending))
+        #expect(CardOrder(sortRaw: "Set", directionRaw: "") == CardOrder(.setCode, .ascending))
+        #expect(CardOrder(sortRaw: "nonsense", directionRaw: "") == CardOrder(.name, .ascending))
     }
 
     @Test func nameTiesBreakOnIdSoOrderIsTotal() {

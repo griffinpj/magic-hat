@@ -57,8 +57,12 @@ struct DeckCardsView: View {
     /// The order within each section, from the floating sort button;
     /// remembered across decks. Sections keep their type order.
     @AppStorage("deck.sort") private var sortRaw: String = DeckCardSort.name.rawValue
-    private var sort: DeckCardSort { DeckCardSort(rawValue: sortRaw) ?? .name }
-    private func sorted(_ items: [DeckCardItem]) -> [DeckCardItem] { sort.apply(items, card: \.card) }
+    @AppStorage("deck.sort.direction") private var sortDirectionRaw: String = ""
+    private var sort: DeckCardSort { DeckCardSort(stored: sortRaw) ?? .name }
+    private var sortDirection: SortDirection {
+        DeckCardSort.direction(sortRaw: sortRaw, directionRaw: sortDirectionRaw) ?? sort.defaultDirection
+    }
+    private func sorted(_ items: [DeckCardItem]) -> [DeckCardItem] { sort.apply(items, card: \.card, direction: sortDirection) }
     /// Counts this list's steppers have written, shown until the snapshot
     /// that includes them arrives. A tap used to show nothing until the
     /// deck was re-read off the main actor — behind the Decks tab's and
@@ -181,7 +185,9 @@ struct DeckCardsView: View {
     /// bottom-trailing corner: a menu of orders, the current one checked.
     private var sortButton: some View {
         SortButton(options: DeckCardSort.allCases.filter { $0 != .relevance }, selected: sort, title: \.rawValue,
-                   icon: \.systemImage, onSelect: { sortRaw = $0.rawValue }, identifier: "deck-sort")
+                   icon: \.systemImage, direction: sortDirection,
+                   onDirection: { sortRaw = sort.rawValue; sortDirectionRaw = $0.rawValue },
+                   onSelect: { sortRaw = $0.rawValue; sortDirectionRaw = "" }, identifier: "deck-sort")
     }
 
     /// A pinned header: sentence case and primary, as in Music, rather than

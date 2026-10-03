@@ -581,20 +581,25 @@ private struct DeckAddFeedback: ViewModifier {
 /// Every row has a fixed height and is always present, so the panel is
 /// the same size for every card and nothing below it moves as the pager
 /// goes from an owned foil with a purchase price to a search hit with
-/// none: name (the added date, or the owned marker, trailing), set line (with the
-/// language and condition chips trailing when owned), the cost row (empty
-/// for a land), the price line (the price, its change since bought).
+/// none: name (the copies as a trailing "×2", or the owned marker), set
+/// line (with the language and condition chips trailing when owned), the
+/// cost row (empty for a land, the added date trailing), the price line
+/// (the price, its change since bought). The count used to lead the
+/// name ("1× "Brims" Barone, Mid…"), which cost the name its room for a
+/// "1×" that said nothing.
 private struct InfoPanel: View {
     let item: CardItem
 
+    @Environment(\.showsPrices) private var showsPrices
     private static let rowHeight: CGFloat = 22
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 6) {
-                Text(item.isEntry ? "\(item.quantity)× \(item.name)" : item.name)
+                Text(item.name)
                     .font(.headline)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.85)
                 if item.isEntry, item.finish != .normal {
                     Text(item.finish.displayName.uppercased())
                         .font(.caption2.weight(.bold))
@@ -603,14 +608,15 @@ private struct InfoPanel: View {
                         .foregroundStyle(.black)
                 }
                 Spacer(minLength: 0)
-                if item.isEntry, let added = item.addedDate {
-                    Text("Added \(added.formatted(date: .abbreviated, time: .omitted))")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+                if item.isEntry, item.quantity > 1 {
+                    Text("×\(item.quantity)")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
                         .fixedSize()
+                        .accessibilityLabel("\(item.quantity) copies")
                 }
-                if !item.isEntry, item.owned {
+                if (!item.isEntry && item.owned) || item.inCollection {
                     Label("In collection", systemImage: "checkmark.seal.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.green)
@@ -619,6 +625,9 @@ private struct InfoPanel: View {
                 }
             }
             .frame(height: Self.rowHeight)
+            // One element: "Card 0, 2 copies, In collection".
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("viewer-name")
 
             HStack(spacing: 6) {
                 SetSymbolView(setCode: item.setCode, size: 18, tint: .primary, rarity: item.rarity)
@@ -634,12 +643,20 @@ private struct InfoPanel: View {
             }
             .frame(height: Self.rowHeight)
 
-            // The cost row is always there — lands have no cost.
+            // The cost row is always there — lands have no cost — and the
+            // added date sits at its end, the one row with room for it.
             HStack(spacing: 0) {
                 if let cost = item.manaCost, !cost.isEmpty {
                     ManaCostView(cost: cost, size: 16)
                 }
                 Spacer(minLength: 0)
+                if item.isEntry, !item.inCollection, let added = item.addedDate {
+                    Text("Added \(added.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
             .frame(height: 16)
 
@@ -651,7 +668,11 @@ private struct InfoPanel: View {
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
-    private var priceLine: some View {
+    @ViewBuilder private var priceLine: some View {
+        if showsPrices { marketLine } else { Color.clear }
+    }
+
+    private var marketLine: some View {
         HStack(spacing: 8) {
             Text("MARKET").font(.caption.weight(.bold)).foregroundStyle(.blue)
             Text(PriceFormat.string(item.marketPrice))

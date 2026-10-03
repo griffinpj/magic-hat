@@ -179,6 +179,11 @@ final class CatalogSyncController {
         defaults.string(forKey: versionKey(dataset)).flatMap(Self.parseBuildDate)
     }
 
+    /// "Oct 2" for the activity log's note.
+    nonisolated static func buildLabel(_ raw: String) -> String {
+        parseBuildDate(raw)?.formatted(date: .abbreviated, time: .omitted) ?? raw
+    }
+
     nonisolated static func parseBuildDate(_ raw: String) -> Date? {
         let withFraction = ISO8601DateFormatter()
         withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -293,6 +298,7 @@ final class CatalogSyncController {
             manifest = try await ScryfallBulkClient.shared.manifest()
         } catch {
             phase = .failed("Couldn't reach Scryfall.")
+            DataActivity.shared.skip(.catalog, note: "Couldn't reach Scryfall")
             return
         }
         lastManifestCheck = Date()
@@ -307,16 +313,25 @@ final class CatalogSyncController {
 
             if hasIngested(dataset) {
                 scheduleRefresh()
+                DataActivity.shared.skip(Self.activityTask(dataset), note: "Checked · a newer build waits for charging on Wi-Fi")
                 continue
             }
             do {
                 let file = try await download(uri, dataset: dataset, version: entry.updatedAt)
                 try await ingest(file, dataset: dataset, version: entry.updatedAt, container: container)
             } catch is CancellationError {
+                DataActivity.shared.end(Self.activityTask(dataset), note: "Stopped", failed: true)
                 return
             } catch {
                 phase = .failed("Couldn't add \(dataset.displayName).")
+                DataActivity.shared.end(Self.activityTask(dataset), note: "Couldn't add \(dataset.displayName)", failed: true)
                 return
+            }
+        }
+        for dataset in [BulkDataset.rulings, .defaultCards] where hasIngested(dataset) {
+            let entry = manifest.first { $0.type == dataset.rawValue }
+            if let entry, !shouldIngest(entry, dataset), !DataActivity.shared.isRunning(Self.activityTask(dataset)) {
+                DataActivity.shared.skip(Self.activityTask(dataset), note: "Checked · up to date")
             }
         }
     }
@@ -336,6 +351,8 @@ final class CatalogSyncController {
     // MARK: Background refresh
 
     private func scheduleRefresh() {
+        // Settings can leave the catalog as it is until Check for Updates.
+        guard AppSettings.autoCatalogRefresh else { return }
         let request = BGProcessingTaskRequest(identifier: Self.refreshTaskIdentifier)
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = true
@@ -416,6 +433,7 @@ final class CatalogSyncController {
             }
         }
         phase = .downloading(dataset, fraction: 0)
+        DataActivity.shared.begin(Self.activityTask(dataset))
         defaults.set(version, forKey: pendingVersionKey(dataset))
 
         // A transfer already in flight (we were relaunched mid-download):
@@ -453,6 +471,7 @@ final class CatalogSyncController {
 
     fileprivate func downloadProgressed(_ dataset: BulkDataset, fraction: Double) {
         if case .downloading(dataset, _) = phase { phase = .downloading(dataset, fraction: fraction) }
+        DataActivity.shared.progress(Self.activityTask(dataset), done: Int(fraction * 100), total: 100)
     }
 
     fileprivate func downloadFinished(_ dataset: BulkDataset, file: URL) {
@@ -477,13 +496,27 @@ final class CatalogSyncController {
 
     // MARK: Ingest
 
+    private static func activityTask(_ dataset: BulkDataset) -> DataTask { dataset == .rulings ? .rulings : .catalog }
+
     private func ingest(_ file: URL, dataset: BulkDataset, version: String, container: ModelContainer) async throws {
         phase = .ingesting(dataset, done: 0)
-        try await BulkIngester.ingest(file: file, dataset: dataset, container: container) { done in
-            Task { @MainActor in
-                CatalogSyncController.shared.phase = .ingesting(dataset, done: done)
+        let activity = DataActivity.shared
+        let task = Self.activityTask(dataset)
+        if !activity.isRunning(task) { activity.begin(task) }
+        var rows = 0
+        do {
+            try await BulkIngester.ingest(file: file, dataset: dataset, container: container) { done in
+                Task { @MainActor in
+                    CatalogSyncController.shared.phase = .ingesting(dataset, done: done)
+                    DataActivity.shared.progress(task, done: done)
+                }
+                rows = done
             }
+        } catch {
+            activity.end(task, count: rows, note: "Couldn't add \(dataset.displayName)", failed: true)
+            throw error
         }
+        activity.end(task, count: rows, note: "\(rows.formatted()) \(dataset == .rulings ? "rulings" : "cards") · build \(Self.buildLabel(version))")
         defaults.set(version, forKey: versionKey(dataset))
         defaults.set(Date(), forKey: ingestedAtKey(dataset))
         defaults.removeObject(forKey: pendingVersionKey(dataset))

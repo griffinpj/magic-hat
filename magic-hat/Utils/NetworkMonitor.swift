@@ -9,6 +9,7 @@
 
 import Foundation
 import Network
+import os
 
 @MainActor
 @Observable
@@ -22,6 +23,11 @@ final class NetworkMonitor {
     /// True when a large download should wait (cellular, hotspot, Low Data).
     var isMetered: Bool { isExpensive || isConstrained }
 
+    /// The same, readable off the main actor (the image loader, the price
+    /// refresh), kept by the path handler under a lock.
+    private static let meteredNow = OSAllocatedUnfairLock(initialState: false)
+    nonisolated static var isMeteredNow: Bool { meteredNow.withLock { $0 } }
+
     private let monitor = NWPathMonitor()
 
     private init() {
@@ -29,6 +35,7 @@ final class NetworkMonitor {
             let connected = path.status == .satisfied
             let expensive = path.isExpensive
             let constrained = path.isConstrained
+            Self.meteredNow.withLock { $0 = expensive || constrained }
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.isConnected = connected

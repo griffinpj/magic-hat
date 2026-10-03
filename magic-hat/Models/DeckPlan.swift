@@ -98,6 +98,8 @@ nonisolated struct DeckKeep: Hashable, Sendable {
     let why: String
     let rank: Int?
     let ranked: Int
+    /// The one tag that says why it would be the one to go.
+    var tag: CardReason = .weakest
 }
 
 nonisolated struct DeckPlan: Hashable, Sendable {
@@ -128,7 +130,7 @@ nonisolated struct DeckPlan: Hashable, Sendable {
     /// the spot.
     static func plan(snapshot: DeckSnapshot, analysis: DeckAnalysis, signals: DeckAnalysisSignals,
                      candidates: [DeckCandidate], readings: [String: CardReading],
-                     candidateReadings: [String: CardReading]) -> DeckPlan {
+                     candidateReadings: [String: CardReading], allowBasics: Bool = false) -> DeckPlan {
         let played = snapshot.playedItems
         let identity = snapshot.identity
         let identityKnown = analysis.isCommander
@@ -169,7 +171,7 @@ nonisolated struct DeckPlan: Hashable, Sendable {
         var cuts: [Cut] = []
         var trims: [DeckTrim] = []
         var dupSeen: [String: Int] = [:]
-        var keepByRow: [String: (Double, String)] = [:]
+        var keepByRow: [String: (Double, String, CardReason)] = [:]
         for item in played where item.board != .commander {
             let card = item.card
             let r = reading(item)
@@ -211,12 +213,12 @@ nonisolated struct DeckPlan: Hashable, Sendable {
             let tag: CardReason = !inCombos.isEmpty ? .inCombos(inCombos.count)
                 : (r.roles.isEmpty ? .noRole : (!engine.isEmpty && overlap == 0 ? .offPlan : .weakest))
             cuts.append(Cut(keep: keep, why: text, tag: tag, item: item, quantity: quantity, roles: r.roles))
-            keepByRow[card.id] = (keep, text)
+            keepByRow[card.id] = (keep, text, tag)
         }
         cuts.sort { $0.keep < $1.keep }
         let weights = Array(Set(keepByRow.values.map(\.0))).sorted()
         let place = Dictionary(uniqueKeysWithValues: weights.enumerated().map { ($1, $0 + 1) })
-        let keep = keepByRow.mapValues { DeckKeep(score: $0.0, why: $0.1, rank: place[$0.0], ranked: keepByRow.count) }
+        let keep = keepByRow.mapValues { DeckKeep(score: $0.0, why: $0.1, rank: place[$0.0], ranked: keepByRow.count, tag: $0.2) }
 
         // --- Candidates ---------------------------------------------------------
         let deckOracle = Set(played.compactMap { $0.card.oracleID })
@@ -233,7 +235,7 @@ nonisolated struct DeckPlan: Hashable, Sendable {
         for c in candidates {
             guard !seenPool.contains(c.id), !usedName.contains(front(c.card.name)) else { continue }
             if let oracle = c.card.oracleID, deckOracle.contains(oracle) { continue }
-            guard fits(c.card), !(c.card.typeLine ?? "").hasPrefix("Basic ") else { continue }
+            guard fits(c.card), allowBasics || !(c.card.typeLine ?? "").hasPrefix("Basic ") else { continue }
             seenPool.insert(c.id)
             pool.append(c)
         }
@@ -383,48 +385,11 @@ nonisolated struct DeckPlan: Hashable, Sendable {
         }
 
         // --- What each change would do ------------------------------------------
-        let before = (analysis.power.score, analysis.impact.score, analysis.playability.score)
         var allReadings = readings
         for c in pool where allReadings[c.card.id] == nil { allReadings[c.card.id] = candidateReadings[c.card.id] }
         func effect(out: DeckCardItem?, `in`: DeckCandidate?) -> DeckSwapEffect? {
-            var after: [DeckCardItem] = []
-            for item in played {
-                if let out, item.id == out.id {
-                    if item.quantity > 1 {
-                        after.append(DeckCardItem(id: item.id, board: item.board, quantity: item.quantity - 1, card: item.card,
-                                                  builtQuantity: min(item.builtQuantity, item.quantity - 1), availableQuantity: item.availableQuantity))
-                    }
-                    continue
-                }
-                after.append(item)
-            }
-            if let c = `in` {
-                after.append(DeckCardItem(id: UUID(), board: .main, quantity: 1, card: c.card, builtQuantity: 0, availableQuantity: c.ownedCopies))
-            }
-            var broke: [DeckCombo] = []
-            var combos = analysis.combos
-            if let out {
-                let name = front(out.card.name)
-                broke = combos.filter { $0.cards.contains { front($0) == name } }
-                combos.removeAll { combo in broke.contains { $0.id == combo.id } }
-            }
-            var gained: [DeckCombo] = []
-            if let c = `in` {
-                let want = front(c.card.name)
-                for combo in analysis.nearCombos where front(combo.missing ?? "") == want {
-                    if let out, combo.cards.contains(where: { front($0) == front(out.card.name) }) { continue }
-                    gained.append(combo); combos.append(combo)
-                }
-            }
-            var signals2 = signals
-            if signals.combos != nil { signals2.combos = DeckComboSet(included: combos, near: analysis.nearCombos) }
-            let a = DeckAnalysis.compute(played: after, format: format, identity: identity, problems: analysis.problems,
-                                         signals: signals2, readings: allReadings)
-            let round = { (x: Double) in (x * 10).rounded() / 10 }
-            return DeckSwapEffect(power: round(a.power.score - before.0), impact: round(a.impact.score - before.1),
-                                  playability: round(a.playability.score - before.2),
-                                  afterPower: a.power.score, afterImpact: a.impact.score, afterPlayability: a.playability.score,
-                                  breaks: broke.prefix(4).map(\.title), gains: gained.prefix(4).map(\.title))
+            swapEffect(out: out, in: `in`, played: played, analysis: analysis, signals: signals, format: format,
+                       identity: identity, readings: allReadings)
         }
 
         let stillShort = CardRole.allCases.filter { (counts[$0] ?? 0) < $0.floor }
@@ -444,6 +409,57 @@ nonisolated struct DeckPlan: Hashable, Sendable {
         )
     }
 
+    /// The deck re-scored as if one copy of `out` left and `in` joined:
+    /// the three scores' movement, and the combos taken apart and gained,
+    /// by arithmetic on what Spellbook already returned.
+    static func swapEffect(out: DeckCardItem?, `in`: DeckCandidate?, played: [DeckCardItem], analysis: DeckAnalysis,
+                           signals: DeckAnalysisSignals, format: DeckFormat, identity: [ManaColor],
+                           readings: [String: CardReading]) -> DeckSwapEffect? {
+        let front = CardReading.frontName
+        let before = (analysis.power.score, analysis.impact.score, analysis.playability.score)
+        var after: [DeckCardItem] = []
+        for item in played {
+            if let out, item.id == out.id {
+                if item.quantity > 1 {
+                    after.append(DeckCardItem(id: item.id, board: item.board, quantity: item.quantity - 1, card: item.card,
+                                              builtQuantity: min(item.builtQuantity, item.quantity - 1), availableQuantity: item.availableQuantity))
+                }
+                continue
+            }
+            after.append(item)
+        }
+        var readings = readings
+        if let c = `in` {
+            after.append(DeckCardItem(id: UUID(), board: .main, quantity: 1, card: c.card, builtQuantity: 0, availableQuantity: c.ownedCopies))
+            if readings[c.card.id] == nil { readings[c.card.id] = CardReading(c.card, identity: identity, tags: signals.tags) }
+        }
+        var broke: [DeckCombo] = []
+        var combos = analysis.combos
+        // A combo breaks only when the last copy of a piece leaves.
+        if let out, out.quantity <= 1 {
+            let name = front(out.card.name)
+            broke = combos.filter { $0.cards.contains { front($0) == name } }
+            combos.removeAll { combo in broke.contains { $0.id == combo.id } }
+        }
+        var gained: [DeckCombo] = []
+        if let c = `in` {
+            let want = front(c.card.name)
+            for combo in analysis.nearCombos where front(combo.missing ?? "") == want {
+                if let out, out.quantity <= 1, combo.cards.contains(where: { front($0) == front(out.card.name) }) { continue }
+                gained.append(combo); combos.append(combo)
+            }
+        }
+        var signals2 = signals
+        if signals.combos != nil { signals2.combos = DeckComboSet(included: combos, near: analysis.nearCombos) }
+        let a = DeckAnalysis.compute(played: after, format: format, identity: identity, problems: analysis.problems,
+                                     signals: signals2, readings: readings)
+        let round = { (x: Double) in (x * 10).rounded() / 10 }
+        return DeckSwapEffect(power: round(a.power.score - before.0), impact: round(a.impact.score - before.1),
+                              playability: round(a.playability.score - before.2),
+                              afterPower: a.power.score, afterImpact: a.impact.score, afterPlayability: a.playability.score,
+                              breaks: broke.prefix(4).map(\.title), gains: gained.prefix(4).map(\.title))
+    }
+
     /// What a card is pulling its weight for: the roles it fills, its
     /// overlap with the commander's mechanics, its meta score, how widely
     /// it is played — and a bonus that puts a combo piece out of reach of
@@ -457,6 +473,17 @@ nonisolated struct DeckPlan: Hashable, Sendable {
 
 // MARK: - Proposals
 
+/// A card that could come out for a proposed one, with the deck re-scored
+/// as if it did.
+nonisolated struct DeckCutOption: Identifiable, Hashable, Sendable {
+    /// The deck row's id (a UUID string).
+    let rowID: String
+    let card: CardItem
+    let tag: CardReason
+    let effect: DeckSwapEffect?
+    var id: String { rowID }
+}
+
 /// What the planner makes of a card the user suggests: swap it in for a
 /// card in the list, add it while the list is short, or keep the list as
 /// it is — each with why.
@@ -466,8 +493,9 @@ nonisolated struct DeckProposal: Identifiable, Hashable, Sendable {
         case swap(outRowID: String, out: CardItem, outTag: CardReason, effect: DeckSwapEffect?)
         /// In, with nothing out: the list is short of its size.
         case add(effect: DeckSwapEffect?)
-        /// Not clearly better than the weakest card in the list, which is
-        /// named so the user can judge.
+        /// Not clearly better than the weakest card it would replace
+        /// (a land for a land, a spell for a spell), which is named so
+        /// the user can judge.
         case notBetter(weakest: CardItem?)
         case alreadyInDeck
         case outsideIdentity
@@ -477,47 +505,205 @@ nonisolated struct DeckProposal: Identifiable, Hashable, Sendable {
     let verdict: Verdict
     /// Why the card would help, strongest first (empty when it wouldn't).
     let tags: [CardReason]
+    /// The proposal is a land: it is weighed against the lands.
+    var isLand = false
+    /// What else could come out for it, weakest first — the verdict's own
+    /// cut leads when it is a swap. The planner's pick is a default, not
+    /// the only answer: the user may know the card they want gone.
+    var options: [DeckCutOption] = []
     var id: String { card.id }
     var reason: CardReason? { tags.first }
 }
 
 nonisolated extension DeckPlan {
-    /// Runs the planner with the proposed cards as its only candidates —
-    /// the same scoring the swap table uses, so a proposal is judged the
-    /// way a recommendation is: the strongest proposals claim the weakest
-    /// rows first, a cut never opens a floor, and one card is never cut
-    /// for two proposals. Proposals come back in the order given.
+    /// How many more lands than the floor before a spell is offered a
+    /// land's place.
+    static let landSurplus = 4
+    /// Alternatives offered beside the planner's own cut.
+    static let cutOptions = 5
+
+    /// Judges cards the user offers, in the order given.
+    ///
+    /// Spells run through the planner as its only candidates — the same
+    /// scoring the swap table uses, so a proposal is judged the way a
+    /// recommendation is: the strongest proposals claim the weakest rows
+    /// first, a cut never opens a floor, and one card is never cut for two
+    /// proposals.
+    ///
+    /// Lands are weighed against lands. The planner never cuts a land and
+    /// scores an add by the gaps it fills, so a land offered to a deck
+    /// with enough lands used to be told it was "not clearly better" than
+    /// the weakest *spell*, and a basic was not judged at all. Here a land
+    /// takes the place of the land worth least to the mana base (see
+    /// `landValue`) when it is worth more, never leaving a colour short of
+    /// its sources; while the deck is short of lands it goes through the
+    /// planner like any card that fills a gap, and takes a spell's place.
+    /// A spell that beats nothing is offered a land's place when the deck
+    /// runs `landSurplus` lands over the floor.
     static func propose(_ cards: [DeckCandidate], snapshot: DeckSnapshot, analysis: DeckAnalysis,
                         signals: DeckAnalysisSignals, readings: [String: CardReading]) -> [DeckProposal] {
         let front = CardReading.frontName
-        let inDeck = Set(snapshot.playedItems.map { front($0.card.name) })
+        let played = snapshot.playedItems
+        let inDeck = Set(played.map { front($0.card.name) })
         let identity = Set(snapshot.identity)
         let identityKnown = analysis.isCommander
+        let format = snapshot.format
         var candidateReadings: [String: CardReading] = [:]
         for c in cards { candidateReadings[c.card.id] = CardReading(c.card, identity: snapshot.identity, tags: signals.tags) }
-        let plan = plan(snapshot: snapshot, analysis: analysis, signals: signals, candidates: cards,
-                        readings: readings, candidateReadings: candidateReadings)
+        func reading(_ c: DeckCandidate) -> CardReading { candidateReadings[c.card.id]! }
+        func rowReading(_ item: DeckCardItem) -> CardReading {
+            readings[item.card.id] ?? CardReading(item.card, identity: snapshot.identity, tags: signals.tags)
+        }
+        func effect(out: DeckCardItem?, in c: DeckCandidate) -> DeckSwapEffect? {
+            swapEffect(out: out, in: c, played: played, analysis: analysis, signals: signals, format: format,
+                       identity: snapshot.identity, readings: readings)
+        }
 
-        let weakestRow = plan.keep.min { a, b in a.value.score != b.value.score ? a.value.score < b.value.score : a.key < b.key }?.key
-        let weakest = snapshot.playedItems.first { $0.card.id == weakestRow }?.card
+        let landCount = analysis.composition.first { $0.role == .lands }?.count ?? 0
+        let landFloor = CardRole.lands.floor
+        let size = analysis.size
+        let targetSize = analysis.targetSize ?? size
+        // A format with no size to meet (casual) has room for anything:
+        // what the planner doesn't swap in is simply an add.
+        let noSizeRule = analysis.targetSize == nil
+        let full = !noSizeRule && size >= targetSize
+        // A land goes the planner's way only while lands are a gap.
+        let landsAreShort = analysis.isCommander && landCount < landFloor
+        let weighedAsLand = { (c: DeckCandidate) in reading(c).isLand && full && !landsAreShort }
+
+        let plan = plan(snapshot: snapshot, analysis: analysis, signals: signals,
+                        candidates: cards.filter { !weighedAsLand($0) },
+                        readings: readings, candidateReadings: candidateReadings, allowBasics: true)
         let recs = Dictionary(plan.recommendations.map { ($0.card.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let rowByCardID = Dictionary(played.map { ($0.card.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        // Spells' rows weakest first, for the alternatives.
+        let weakRows = plan.keep.sorted { a, b in a.value.score != b.value.score ? a.value.score < b.value.score : a.key < b.key }
+        let weakest = weakRows.first.flatMap { rowByCardID[$0.key]?.card }
+        let claimed = Set(plan.swaps.map(\.outRowID))
+
+        // The lands, by what each is worth to the mana base, least first.
+        var sources: [ManaColor: Int] = Dictionary(uniqueKeysWithValues: analysis.sources.map { ($0.color, $0.count) })
+        let targets: [ManaColor: Int] = Dictionary(uniqueKeysWithValues: analysis.sources.compactMap { s in s.target.map { (s.color, $0) } })
+        let comboNames = Set(analysis.combos.flatMap { $0.cards.map(front) })
+        func landValue(_ card: CardItem, _ r: CardReading, meta: Double?) -> Double {
+            var value = 0.0
+            for color in r.sources where identity.isEmpty || identity.contains(color) {
+                // A colour at or under its target needs every source it has.
+                if let target = targets[color] { value += (sources[color] ?? 0) <= target ? 2 : 1 } else { value += 1 }
+            }
+            value += Double(r.roles.subtracting([.lands]).count) * 1.5
+            value += Double(r.overlap(with: analysis.engine)) * 2
+            value += (meta.map { $0 * 3 } ?? 0) + DeckAnalysis.popularity(rank: card.edhrecRank)
+            if r.isBasic { value -= 0.5 }
+            if comboNames.contains(front(card.name)) { value += 12 }
+            return (value * 100).rounded() / 100
+        }
+        struct LandRow { let item: DeckCardItem; let reading: CardReading; var value: Double; var left: Int }
+        var lands: [LandRow] = played.filter { $0.board != .commander }.compactMap { item in
+            let r = rowReading(item)
+            guard r.isLand else { return nil }
+            return LandRow(item: item, reading: r, value: landValue(item.card, r, meta: item.card.oracleID.flatMap { signals.meta?[$0] }),
+                           left: item.quantity)
+        }
+        func sortLands() {
+            lands.sort { a, b in
+                if a.value != b.value { return a.value < b.value }
+                if a.reading.isBasic != b.reading.isBasic { return a.reading.isBasic }
+                if a.item.quantity != b.item.quantity { return a.item.quantity > b.item.quantity }
+                return a.item.card.sortKey < b.item.card.sortKey
+            }
+        }
+        sortLands()
+        /// Taking `land` out for `incoming` leaves no colour under its target
+        /// that was at or over it.
+        func keepsColours(_ land: LandRow, for incoming: CardReading?) -> Bool {
+            for color in land.reading.sources {
+                guard let target = targets[color], incoming?.sources.contains(color) != true else { continue }
+                let have = sources[color] ?? 0
+                if have >= target, have - 1 < target { return false }
+            }
+            return true
+        }
+        func landTag(_ land: LandRow) -> CardReason { land.reading.isBasic ? .basicLand : .weakestLand }
+        func landOptions(for c: DeckCandidate, incoming: CardReading?) -> [DeckCutOption] {
+            lands.filter { $0.left > 0 && keepsColours($0, for: incoming) }.prefix(cutOptions).map {
+                DeckCutOption(rowID: $0.item.id.uuidString, card: $0.item.card, tag: landTag($0), effect: effect(out: $0.item, in: c))
+            }
+        }
+        func spellOptions(for c: DeckCandidate, leading: String?) -> [DeckCutOption] {
+            var rows = weakRows.filter { !claimed.contains($0.key) || $0.key == leading }
+            if let leading, let i = rows.firstIndex(where: { $0.key == leading }) { rows.insert(rows.remove(at: i), at: 0) }
+            return rows.prefix(cutOptions).compactMap { key, keep in
+                guard let item = rowByCardID[key] else { return nil }
+                return DeckCutOption(rowID: item.id.uuidString, card: item.card, tag: keep.tag, effect: effect(out: item, in: c))
+            }
+        }
+        func take(_ land: LandRow, for incoming: CardReading) {
+            guard let i = lands.firstIndex(where: { $0.item.id == land.item.id }) else { return }
+            lands[i].left -= 1
+            for color in land.reading.sources { sources[color, default: 0] -= 1 }
+            for color in incoming.sources { sources[color, default: 0] += 1 }
+        }
 
         return cards.map { c in
+            let r = reading(c)
             let tags = recs[c.card.id]?.tags ?? []
-            if inDeck.contains(front(c.card.name)) {
-                return DeckProposal(card: c.card, verdict: .alreadyInDeck, tags: [])
+            // More copies of a basic are always a fair question.
+            if inDeck.contains(front(c.card.name)), !r.isBasic {
+                return DeckProposal(card: c.card, verdict: .alreadyInDeck, tags: [], isLand: r.isLand)
             }
             if identityKnown, !Set(c.card.colorIdentity).isSubset(of: identity) {
-                return DeckProposal(card: c.card, verdict: .outsideIdentity, tags: [])
+                return DeckProposal(card: c.card, verdict: .outsideIdentity, tags: [], isLand: r.isLand)
             }
+
+            if weighedAsLand(c) {
+                let value = landValue(c.card, r, meta: c.metaScore)
+                var why: [CardReason] = []
+                if let short = r.sources.first(where: { color in targets[color].map { (sources[color] ?? 0) < $0 } ?? false }) {
+                    why.append(.source(short))
+                }
+                if let touched = r.touches(analysis.engine).first { why.append(.plan(touched)) }
+                if let m = c.metaScore { why.append(.meta(m)) }
+                let options = landOptions(for: c, incoming: r)
+                guard let cut = lands.first(where: { $0.left > 0 && keepsColours($0, for: r) }), let first = options.first else {
+                    // No land it could take the place of without leaving a
+                    // colour short: nothing to compare it with.
+                    return DeckProposal(card: c.card, verdict: .notBetter(weakest: nil), tags: why, isLand: true)
+                }
+                // The same land again changes nothing.
+                let same = front(cut.item.card.name) == front(c.card.name)
+                if value >= cut.value + 0.5, !same {
+                    take(cut, for: r)
+                    return DeckProposal(card: c.card, verdict: .swap(outRowID: first.rowID, out: first.card, outTag: first.tag, effect: first.effect),
+                                        tags: why, isLand: true, options: options)
+                }
+                return DeckProposal(card: c.card, verdict: .notBetter(weakest: cut.item.card), tags: why, isLand: true,
+                                    options: options.filter { front($0.card.name) != front(c.card.name) })
+            }
+
             if let swap = plan.swaps.first(where: { $0.inCard.id == c.card.id }) {
-                return DeckProposal(card: c.card, verdict: .swap(outRowID: swap.outRowID, out: swap.outCard, outTag: swap.outTag, effect: swap.effect),
-                                    tags: swap.inTags)
+                let rowID = rowByCardID[swap.outRowID]?.id.uuidString ?? swap.outRowID
+                return DeckProposal(card: c.card, verdict: .swap(outRowID: rowID, out: swap.outCard, outTag: swap.outTag, effect: swap.effect),
+                                    tags: swap.inTags, isLand: r.isLand, options: spellOptions(for: c, leading: swap.outRowID))
             }
             if let fill = plan.fills.first(where: { $0.inCard.id == c.card.id }) {
-                return DeckProposal(card: c.card, verdict: .add(effect: fill.effect), tags: fill.tags)
+                return DeckProposal(card: c.card, verdict: .add(effect: fill.effect), tags: fill.tags, isLand: r.isLand)
             }
-            return DeckProposal(card: c.card, verdict: .notBetter(weakest: weakest), tags: tags)
+            if noSizeRule {
+                return DeckProposal(card: c.card, verdict: .add(effect: effect(out: nil, in: c)), tags: tags, isLand: r.isLand)
+            }
+            // A spell that beats no spell: with lands to spare, a land's place.
+            if !r.isLand, analysis.isCommander, landCount - lands.reduce(0, { $0 + ($1.item.quantity - $1.left) }) >= landFloor + landSurplus,
+               let cut = lands.first(where: { $0.left > 0 && keepsColours($0, for: nil) }) {
+                let item = cut.item
+                let option = DeckCutOption(rowID: item.id.uuidString, card: item.card, tag: .landsOver(landCount), effect: effect(out: item, in: c))
+                take(cut, for: r)
+                return DeckProposal(card: c.card, verdict: .swap(outRowID: option.rowID, out: option.card, outTag: option.tag, effect: option.effect),
+                                    tags: tags, options: [option] + spellOptions(for: c, leading: nil))
+            }
+            return DeckProposal(card: c.card, verdict: .notBetter(weakest: weakest), tags: tags, isLand: r.isLand,
+                                options: spellOptions(for: c, leading: nil))
         }
     }
 }

@@ -51,6 +51,8 @@ final class FilterVocabulary {
 
     private func fetch() async {
         let cache = ScryfallCatalogCache.shared
+        let activity = DataActivity.shared
+        activity.begin(.vocabularies)
         var typeEntries: [TypeEntry] = []
         for catalog in ScryfallCatalog.typeLine {
             if let names = try? await cache.catalog(catalog) {
@@ -67,6 +69,10 @@ final class FilterVocabulary {
         let keys = await Task.detached(priority: .userInitiated) {
             (typeEntries.map { Self.fold($0.name) }, words.map(Self.fold), artistNames.map(Self.fold), setList.map { Self.fold($0.displayName) })
         }.value
+        let total = typeEntries.count + words.count + artistNames.count
+        activity.end(.vocabularies, count: total,
+                     note: total == 0 ? "Nothing loaded" : "\(typeEntries.count.formatted()) types, \(words.count.formatted()) keywords, \(artistNames.count.formatted()) artists",
+                     failed: total == 0)
         types = typeEntries; typeKeys = keys.0
         keywords = words; keywordKeys = keys.1
         artists = artistNames; artistKeys = keys.2

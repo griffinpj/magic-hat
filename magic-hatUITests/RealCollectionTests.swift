@@ -111,7 +111,7 @@ final class RealCollectionTests: XCTestCase {
         settle()
         mark = assertNoHangs(since: mark, "first push into the collection")
 
-        let syncing = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Syncing'")).firstMatch
+        let syncing = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Syncing' OR label BEGINSWITH 'Prices'")).firstMatch
         XCTAssertTrue(syncing.waitForExistence(timeout: 15), "hydration runs on entering")
 
         for i in 1...3 {
@@ -142,7 +142,7 @@ final class RealCollectionTests: XCTestCase {
 
     private func sortEveryWay(_ app: XCUIApplication, mark: Int, label: String) -> Int {
         var mark = mark
-        for option in ["Set", "Rarity", "Price (High)", "Quantity", "Recently Added", "Name"] {
+        for option in ["Set", "Rarity", "Price", "Quantity", "Recently Added", "Name"] {
             app.buttons["sort-button"].tap()
             let item = app.buttons[option]
             XCTAssertTrue(item.waitForExistence(timeout: 5), "sort menu shows \(option)")
@@ -213,7 +213,7 @@ final class RealCollectionTests: XCTestCase {
         mark = assertNoHangs(since: mark, "viewer on a set outside the font")
         XCTAssertTrue(app.buttons["viewer-details"].isHittable, "the viewer answers")
         app.buttons["viewer-details"].tap()
-        XCTAssertTrue(app.buttons["Versions"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["detail-segments"].waitForExistence(timeout: 5))
         settle(2)
         assertNoHangs(since: mark, "detail screen for that card")
     }
@@ -287,10 +287,10 @@ final class RealCollectionTests: XCTestCase {
         mark = assertNoHangs(since: mark, "open the viewer")
 
         app.buttons["viewer-details"].tap()
-        XCTAssertTrue(app.buttons["Versions"].waitForExistence(timeout: 10), "detail pushes")
+        XCTAssertTrue(app.descendants(matching: .any)["detail-segments"].waitForExistence(timeout: 10), "detail pushes")
         settle(2)
         mark = assertNoHangs(since: mark, "push the detail screen")
-        app.buttons["Ruling"].tap()
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Rulings'")).firstMatch.tap()
         settle()
         mark = assertNoHangs(since: mark, "rulings tab")
         app.navigationBars.buttons.element(boundBy: 0).tap()

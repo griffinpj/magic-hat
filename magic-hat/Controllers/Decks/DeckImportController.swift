@@ -20,11 +20,12 @@ enum DeckImportController {
     }
 
     /// Resolves every line, locally first and then remotely for the rest.
-    static func resolve(_ lines: [DeckListLine], container: ModelContainer) async throws -> [ResolvedDeckLine] {
+    /// `remote: false` stops at the catalog (tests, and a seeded run).
+    static func resolve(_ lines: [DeckListLine], container: ModelContainer, remote: Bool = true) async throws -> [ResolvedDeckLine] {
         let store = DeckStore.shared(for: container)
         var resolved = try await store.resolve(lines)
         let missing = resolved.filter { !$0.isResolved }.map(\.line)
-        guard !missing.isEmpty else { return resolved }
+        guard !missing.isEmpty, remote else { return resolved }
 
         // Scryfall accepts 75 identifiers per call; name lookups are exact
         // (front-face names work), printings by set + number.
@@ -42,12 +43,45 @@ enum DeckImportController {
                 found.append(contentsOf: response.data)
             }
         }
-        // Names that came back by name only: retry those printings by name.
-        if !found.isEmpty {
-            try? await CardMetaWriter.shared(for: container).apply(cards: found, linkEntries: false)
-            resolved = try await store.resolve(lines)
+        // A printing Scryfall didn't have under that set and number: the
+        // card by its name instead.
+        let foundPrintings = Set(found.map { "\($0.set.lowercased())|\($0.collectorNumber)" })
+        let byNameRetry = missing.filter { line in
+            guard let set = line.setCode, let number = line.collectorNumber else { return false }
+            return !foundPrintings.contains("\(set.lowercased())|\(number)")
+        }.map { ScryfallCardIdentifier(name: $0.name) }
+        for chunk in Array(Set(byNameRetry)).chunked(into: ScryfallClient.collectionBatchSize) {
+            if let response = try? await ScryfallClient.shared.collection(identifiers: chunk) {
+                found.append(contentsOf: response.data)
+            }
         }
-        return resolved
+        guard !found.isEmpty else { return resolved }
+        try? await CardMetaWriter.shared(for: container).apply(cards: found, linkEntries: false)
+        resolved = try await store.resolve(lines)
+        // Scryfall matches names whatever their case or accents; the
+        // catalog lookup is exact. What it still misses is matched here
+        // against what came back.
+        return patch(resolved, with: found)
+    }
+
+    /// Fills unresolved lines from fetched cards: the printing by set and
+    /// number, else the name folded (case, accents, a front face).
+    nonisolated static func patch(_ resolved: [ResolvedDeckLine], with found: [ScryfallCard]) -> [ResolvedDeckLine] {
+        var byPrinting: [String: ScryfallCard] = [:]
+        var byName: [String: ScryfallCard] = [:]
+        for card in found {
+            byPrinting["\(card.set.lowercased())|\(card.collectorNumber)"] = card
+            let folded = CardTextReader.fold(card.name)
+            if byName[folded] == nil { byName[folded] = card }
+        }
+        return resolved.map { line in
+            guard !line.isResolved else { return line }
+            var card: ScryfallCard?
+            if let set = line.line.setCode, let number = line.line.collectorNumber { card = byPrinting["\(set.lowercased())|\(number)"] }
+            if card == nil { card = byName[CardTextReader.fold(line.line.name)] }
+            guard let card else { return line }
+            return ResolvedDeckLine(line: line.line, scryfallID: card.id, oracleID: card.bestOracleID, canonicalName: card.name)
+        }
     }
 
     /// Creates the deck and fills it. `name` wins over the list's own title.

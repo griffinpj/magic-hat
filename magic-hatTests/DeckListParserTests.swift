@@ -54,6 +54,23 @@ struct DeckListParserTests {
         #expect(!list.hasCommander && list.suggestedFormat == .other)
     }
 
+    @Test func readsLooserLines() {
+        func line(_ text: String) -> DeckListLine? { DeckListParser.cardLine(text, board: .main) }
+        #expect(line("Sol Ring x2")?.quantity == 2 && line("Sol Ring x2")?.name == "Sol Ring")
+        #expect(line("- 3 Opt")?.quantity == 3 && line("• Opt")?.name == "Opt")
+        #expect(line("SB: 2 Pyroblast")?.board == .side)
+        #expect(line("2 Brainstorm [STA]")?.setCode == "sta")
+        #expect(line("2 Brainstorm [STA] 13")?.collectorNumber == "13")
+        let tagged = line("1x Rhystic Study (jmp) 169 [Draw] ^Have,#37d67a^")
+        #expect(tagged?.name == "Rhystic Study" && tagged?.setCode == "jmp" && tagged?.collectorNumber == "169")
+        #expect(line("1 Sol Ring (CMM) 410 *E*")?.isEtched == true && line("1 Sol Ring (CMM) 410 *E*")?.isFoil == true)
+        #expect(line("1 Sol Ring *F*")?.isEtched == false)
+        #expect(line("4\tLightning Bolt")?.quantity == 4)
+        #expect(line("2 Smash to Smithereens [foil]")?.isFoil == true)
+        #expect(line("1 X")?.name == "X", "a one-letter name is not a trailing count")
+        #expect(line("1 Borrowing 100,000 Arrows")?.name == "Borrowing 100,000 Arrows")
+    }
+
     @Test func exportRoundTrips() throws {
         let text = "// COMMANDER\n1 Dáin of the Ancient Halls (HOC) 104\n\n// MAINBOARD\n15 Mountain (SOS) 278\n"
         let list = DeckListParser.parse(text)

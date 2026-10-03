@@ -89,8 +89,18 @@ struct RootView: View {
             let arguments = ProcessInfo.processInfo.arguments
             guard phase == .active, !arguments.contains("-uitest-seed"), !arguments.contains("-uitest-real") else { return }
             Task { await sync.resumeIfNeeded(container: modelContext.container) }
-            // An automatic backup, if one is due, well after the first frames.
             let container = modelContext.container
+            // Prices on their cadence, and any card still pending, whether
+            // or not a collection gets opened this session: after the
+            // launch's own loads (the keyboard prewarm at 2s, foil at 2.6s).
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                guard CatalogSyncController.shared.catalogReady else { return }
+                let store = CollectionStore.shared(for: container)
+                guard let due = try? await store.dueForRefresh(stamp: .current), !due.pending.isEmpty || !due.stale.isEmpty else { return }
+                CardHydrationController.shared.sync(pending: due.pending, stale: due.stale, context: container.mainContext)
+            }
+            // An automatic backup, if one is due, well after the first frames.
             Task {
                 try? await Task.sleep(for: .seconds(8))
                 await BackupScheduler.shared.runIfDue(container: container)

@@ -110,7 +110,13 @@ final class ScryfallCatalogCache {
         let task = Task { try await ScryfallClient.shared.sets() }
         inFlightSets = task
         defer { inFlightSets = nil }
-        let value = try await task.value
+        DataActivity.shared.begin(.setList)
+        let value: [ScryfallSet]
+        do { value = try await task.value } catch {
+            DataActivity.shared.end(.setList, note: "Couldn't reach Scryfall", failed: true)
+            throw error
+        }
+        DataActivity.shared.end(.setList, count: value.count, note: "\(value.count.formatted()) sets")
         let entry = Entry(value: value, fetchedAt: Date())
         setList = entry
         await Self.write(entry, to: fileURL("sets"))

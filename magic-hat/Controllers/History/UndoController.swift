@@ -44,13 +44,22 @@ final class UndoController {
         self.container = container
     }
 
-    var canUndo: Bool { !isBusy && log.timeline.nextUndo != nil }
-    var canRedo: Bool { !isBusy && log.timeline.nextRedo != nil }
+    /// Why the next Undo can't run, when it can't (see `HistoryLog.blocked`).
+    var undoBlocker: String? { log.timeline.nextUndo.flatMap { log.blocked[$0] } }
+    /// Why no Redo can run: every way forward is blocked.
+    var redoBlocker: String? {
+        let options = log.timeline.redoOptions
+        guard !options.isEmpty, options.allSatisfy({ log.blocked[$0] != nil }) else { return nil }
+        return options.first.flatMap { log.blocked[$0] }
+    }
 
-    /// "Undo Removed Cards", or nil when there is nothing to undo.
-    var undoTitle: String? { log.nextUndo.map { "Undo \($0.title)" } }
+    var canUndo: Bool { !isBusy && log.timeline.nextUndo != nil && undoBlocker == nil }
+    var canRedo: Bool { !isBusy && log.timeline.nextRedo != nil && redoBlocker == nil }
+
+    /// "Undo Removed Cards" — or why it can't — or nil with nothing to undo.
+    var undoTitle: String? { log.nextUndo.map { action in undoBlocker.map { "Can't undo \(action.title): \($0)" } ?? "Undo \(action.title)" } }
     /// The default Redo — the most recently taken branch at a fork.
-    var redoTitle: String? { log.nextRedo.map { "Redo \($0.title)" } }
+    var redoTitle: String? { log.nextRedo.map { action in redoBlocker.map { "Can't redo \(action.title): \($0)" } ?? "Redo \(action.title)" } }
 
     /// Reads the ledger again. Views call it when a tracker moves.
     func refresh() async {

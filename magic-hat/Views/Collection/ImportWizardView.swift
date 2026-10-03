@@ -52,6 +52,7 @@ struct ImportWizardView: View {
     @State private var isImporting = false
     @State private var isFetchingCards = false
     @State private var progress = ImportProgress()
+    @State private var preview: ImportPreview?
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -164,7 +165,50 @@ struct ImportWizardView: View {
         Form {
             destinationSection
             bindersSection
+            previewSection
         }
+        // The dry run: what the choices above will do, worked out on the
+        // store as they change (keys and quantities only; nothing written).
+        .task(id: previewKey) { await refreshPreview() }
+    }
+
+    private var previewKey: String {
+        "\(resolvedCollectionName ?? "")|\(destination == .new ? "add" : (mode == .add ? "add" : "replace"))|\(selected.sorted().joined(separator: ","))"
+    }
+
+    private var previewSection: some View {
+        Section {
+            if let preview {
+                ForEach(preview.lines, id: \.self) { line in
+                    Text(line)
+                }
+                .font(.subheadline)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Working out what changes…").foregroundStyle(.secondary)
+                }
+                .font(.subheadline)
+            }
+        } header: {
+            Text("What Will Happen")
+        }
+        .accessibilityIdentifier("import-preview")
+    }
+
+    private func refreshPreview() async {
+        let rows = self.rows
+        let selected = self.selected
+        let mode: ImportMode = destination == .new ? .add : self.mode
+        guard let name = resolvedCollectionName else { preview = nil; return }
+        let store = CollectionStore.shared(for: modelContext.container)
+        let isNew = destination == .new && !newNameCollides
+        let existing = isNew ? [:] : ((try? await store.mergeKeyCopies(collectionName: name)) ?? [:])
+        let result = await Task.detached(priority: .userInitiated) {
+            ImportPreview.compute(rows: rows, selectedBinders: selected, collectionName: name, mode: mode, existing: existing)
+        }.value
+        guard !Task.isCancelled else { return }
+        preview = result
     }
 
     @ViewBuilder private var destinationSection: some View {

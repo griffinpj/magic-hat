@@ -181,6 +181,60 @@ struct HistoryTimelineTests {
         #expect(lines[1].forkFrom == nil && !lines[1].isCurrent)
     }
 
+    /// Add, undo it, add something else: the new action is on the current
+    /// line once, the undone one is its own branch, and nothing is listed
+    /// twice — whether the fork is on an earlier action or at the start.
+    @Test func anUndoneActionFollowedByANewOneIsListedOnceEach() {
+        var r = Recorder()
+        let first = r.act()
+        let scanned = r.act()
+        r.undo()
+        let added = r.act()
+        let lines = r.timeline.lines()
+        #expect(lines.map(\.actions) == [[first, added], [scanned]])
+        #expect(lines[1].forkFrom == first)
+        #expect(r.timeline.state(of: scanned) == .undone && r.timeline.state(of: added) == .applied)
+        let window = HistoryLog(timeline: r.timeline).window()
+        #expect(window.current?.rows == [added, first] && window.branches.map(\.rows) == [[scanned]])
+        #expect((window.current!.rows + window.branches.flatMap(\.rows)).count == 3, "three actions, three rows")
+    }
+
+    @Test func aLongHistoryIsCutAndBranchesOffTheCutPartAreHidden() {
+        var r = Recorder()
+        let ids = (0..<100).map { _ in r.act() }
+        // A branch far back (off action 10) and one near the head (off 95).
+        for _ in 0..<89 { r.undo() }
+        let old = r.act()
+        r.undo()
+        r.redo(ids[11])
+        for _ in 0..<84 { r.redo() }          // head = ids[95]
+        let near = (0..<12).map { _ in r.act() }
+        for _ in 0..<12 { r.undo() }
+        r.redo(ids[96])
+        for _ in 0..<3 { r.redo() }           // head = ids[99]
+        let log = HistoryLog(timeline: r.timeline)
+        #expect(log.lines.count == 3)
+
+        let window = log.window(limit: 40)
+        #expect(window.current?.rows.count == 40 && window.current?.rows.first == ids[99] && window.current?.hidden == 60)
+        #expect(window.branches.map(\.id) == [near[0]], "only the branch whose fork is drawn")
+        #expect(window.branches[0].rows == Array(near.reversed().prefix(HistoryLog.branchPreview)) && window.branches[0].hidden == 4)
+        #expect(window.hiddenBranches == 1)
+
+        let expanded = log.window(limit: 40, expanded: [near[0]])
+        #expect(expanded.branches[0].rows.count == 12 && expanded.branches[0].hidden == 0)
+
+        let all = log.window(limit: 100)
+        #expect(all.current?.hidden == 0 && all.hiddenBranches == 0)
+        #expect(all.branches.map(\.id) == [near[0], old])
+
+        // Far back on the timeline with a long redo ahead: the head is drawn.
+        for _ in 0..<90 { r.undo() }
+        let back = HistoryLog(timeline: r.timeline).window(limit: 40)
+        #expect(back.current?.rows.contains(r.timeline.head!) == true)
+        #expect(back.current?.rows.count == 92, "ninety to redo, the head, and one under it")
+    }
+
     @Test func resolutionDoesNotDependOnInputOrder() {
         var r = Recorder()
         let ids = (0..<6).map { _ in r.act() }

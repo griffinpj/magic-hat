@@ -122,6 +122,11 @@ nonisolated struct CardReason: Hashable, Sendable, Codable {
     static let noRole = CardReason(.weak, "No role")
     static let offPlan = CardReason(.weak, "Off plan")
     static let weakest = CardReason(.weak, "Weakest of the list")
+    /// The cut side of a land-for-land swap.
+    static let weakestLand = CardReason(.weak, "Weakest land")
+    static let basicLand = CardReason(.weak, "A basic")
+    /// "41 lands": a land comes out for a spell while there are this many.
+    static func landsOver(_ count: Int) -> CardReason { CardReason(.weak, "\(count) lands") }
     static let outsideIdentity = CardReason(.rule, "Outside identity")
     static func extraCopies(_ n: Int) -> CardReason { CardReason(.rule, n == 1 ? "Extra copy" : "\(n) extra copies") }
 }

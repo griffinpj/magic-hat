@@ -53,7 +53,7 @@ struct HistoryDetailView: View {
         .modifier(SearchWhenLong(isLong: (model.detail?.changeCount ?? 0) > HistoryDetail.visibleLimit, text: $searchText))
         .onChange(of: searchText) { _, text in model.filter(text) }
         .task(id: actionID) { await model.load(actionID, store: .shared(for: modelContext.container)) }
-        .safeAreaBar(edge: .bottom) { if let action { actionBar(action) } }
+        .safeAreaBar(edge: .bottom) { if let action { VStack(spacing: 8) { actionBar(action) } } }
     }
 
     // MARK: Header
@@ -102,6 +102,17 @@ struct HistoryDetailView: View {
             }
             .padding(.vertical, 4)
         }
+        if action.action == .deckDelete {
+            Section {
+                Label {
+                    Text("The deck's list, versions and branches are kept with this record. Undo brings the deck back whole; the builds recorded for it can then be undone and redone again.")
+                        .foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "rectangle.stack").foregroundStyle(.tint)
+                }
+                .font(.subheadline)
+            }
+        }
     }
 
     private func icon(for action: HistoryAction) -> String { action.action.systemImage }
@@ -142,6 +153,17 @@ struct HistoryDetailView: View {
 
     @ViewBuilder private func actionBar(_ action: HistoryAction) -> some View {
         let plan = plan(for: action)
+        let blocker = blocker(for: action)
+        if let blocker {
+            // The first step it would take can't run: said here, and the
+            // button is off, rather than an alert after the tap.
+            Label(blocker, systemImage: "lock.fill")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.orange)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 20)
+                .accessibilityIdentifier("history-detail-blocked")
+        }
         Button {
             Task { await plan.run() }
         } label: {
@@ -157,7 +179,7 @@ struct HistoryDetailView: View {
         }
         .buttonStyle(.glassProminent)
         .controlSize(.large)
-        .disabled(undo.isBusy)
+        .disabled(undo.isBusy || blocker != nil)
         .padding(.horizontal, 16)
         .padding(.bottom, 4)
         .accessibilityIdentifier("history-detail-action")
@@ -168,6 +190,20 @@ struct HistoryDetailView: View {
         let note: String?
         let symbol: String
         let run: () async -> Void
+    }
+
+    /// Why the plan's first step can't run, when it can't: the head's
+    /// undo for anything that starts by undoing, else the first redo.
+    private func blocker(for action: HistoryAction) -> String? {
+        let timeline = undo.log.timeline
+        switch action.state {
+        case .applied:
+            return undo.undoBlocker
+        case .undone:
+            let path = timeline.jumpPath(to: action.actionID)
+            if !path.undos.isEmpty { return undo.undoBlocker }
+            return path.redos.first.flatMap { undo.log.blocked[$0] }
+        }
     }
 
     private func plan(for action: HistoryAction) -> ActionPlan {

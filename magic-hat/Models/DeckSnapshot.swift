@@ -57,6 +57,51 @@ nonisolated enum DeckCardStatus: Hashable, Sendable {
     }
 }
 
+/// A token the deck's cards make, and which cards make it. One row per
+/// token *kind* (name and type line): a 1/1 white Soldier is one token
+/// whether three cards each point at a different printing of it.
+nonisolated struct DeckToken: Identifiable, Hashable, Sendable {
+    /// name|type line.
+    let id: String
+    let name: String
+    let typeLine: String
+    /// A printing of the token the catalog has an image for, when it does.
+    let imageURL: String?
+    let artCropURL: String?
+    /// The deck's cards that make it, by name, in list order.
+    let makers: [String]
+
+    /// "Creature — Soldier" without the leading "Token".
+    var kind: String {
+        let line = typeLine.replacingOccurrences(of: "Token ", with: "")
+        return line.isEmpty ? "Token" : line
+    }
+
+    /// Rolls the makers' tokens up by kind, keeping the first printing
+    /// seen with an image. `makers` are (card name, its tokens).
+    static func collect(_ makers: [(name: String, tokens: [RelatedToken])],
+                        images: [String: (image: String?, art: String?)]) -> [DeckToken] {
+        var order: [String] = []
+        var names: [String: String] = [:]
+        var types: [String: String] = [:]
+        var image: [String: (String?, String?)] = [:]
+        var by: [String: [String]] = [:]
+        for maker in makers {
+            for token in maker.tokens {
+                let key = token.name + "|" + token.typeLine
+                if by[key] == nil { order.append(key); names[key] = token.name; types[key] = token.typeLine }
+                if !(by[key] ?? []).contains(maker.name) { by[key, default: []].append(maker.name) }
+                if image[key]?.0 == nil, let found = images[token.id], found.image != nil { image[key] = (found.image, found.art) }
+            }
+        }
+        return order.map { key in
+            DeckToken(id: key, name: names[key] ?? "", typeLine: types[key] ?? "",
+                      imageURL: image[key]?.0, artCropURL: image[key]?.1, makers: by[key] ?? [])
+        }
+        .sorted { a, b in a.makers.count != b.makers.count ? a.makers.count > b.makers.count : a.name < b.name }
+    }
+}
+
 nonisolated struct DeckSection: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
@@ -74,6 +119,9 @@ nonisolated struct DeckSnapshot: Hashable, Sendable {
     let format: DeckFormat
     let isLocked: Bool
     let notes: String
+    /// The branch the list is on (see DeckVersion); nil before versions
+    /// are first used on the deck.
+    var branchName: String? = nil
     let createdDate: Date
     let updatedDate: Date
     /// Colour identity: the commanders' when there are any, else the
@@ -85,6 +133,8 @@ nonisolated struct DeckSnapshot: Hashable, Sendable {
     let sideboard: [DeckCardItem]
     let maybeboard: [DeckCardItem]
     let stats: DeckStats
+    /// The tokens the played boards make (see DeckToken).
+    var tokens: [DeckToken] = []
 
     var allItems: [DeckCardItem] { commanders + sections.flatMap(\.items) + sideboard + maybeboard }
     var playedItems: [DeckCardItem] { commanders + sections.flatMap(\.items) }
@@ -222,5 +272,17 @@ nonisolated extension CardItem {
         self.edhrecRank = meta?.edhrecRank
         self.purchaseURIs = meta?.purchaseURIs
         self.backImageURL = meta?.backImageNormalURL
+    }
+}
+
+nonisolated enum DeckTokenText {
+    /// "Made by Krenko, Mob Boss", "Made by Krenko, Mob Boss and 2 more".
+    static func makers(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return ""
+        case 1: return "Made by \(names[0])"
+        case 2: return "Made by \(names[0]) and \(names[1])"
+        default: return "Made by \(names[0]) and \(names.count - 1) more"
+        }
     }
 }

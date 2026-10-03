@@ -55,6 +55,10 @@ nonisolated final class CardMeta {
     var colorsRaw: String?
     var colorIdentityRaw: String?
     var artist: String?
+    /// The tokens this card makes, one per line as `id\tname\ttype line`
+    /// (Scryfall's `all_parts` with component "token"); empty for none,
+    /// nil before this build's hydration (`metaVersion` 2 backfills it).
+    var relatedTokensRaw: String?
 
     /// Scryfall market prices (USD). Low/mid tiers are not provided by
     /// Scryfall (TCGplayer only) and are mocked in the UI.
@@ -89,7 +93,10 @@ nonisolated final class CardMeta {
     /// pending, so one hydration pass backfills it — the way `colorsRaw ==
     /// nil` backfilled colours.
     var metaVersion: Int = 0
-    static let currentVersion = 1
+    static let currentVersion = 2
+
+    /// The tokens this card makes, as stored by `apply`.
+    var relatedTokens: [RelatedToken] { RelatedToken.decode(relatedTokensRaw) }
 
     /// Fetched with every field this build keeps. False sends the card
     /// through hydration again.
@@ -135,6 +142,7 @@ nonisolated final class CardMeta {
         colorsRaw = Self.letters(card.bestColors)
         colorIdentityRaw = Self.letters(card.colorIdentity)
         artist = card.artist
+        relatedTokensRaw = RelatedToken.encode(card.tokenParts)
         priceUSD = card.prices?.usd.flatMap(Double.init)
         priceUSDFoil = card.prices?.usdFoil.flatMap(Double.init)
         priceEUR = card.prices?.eur.flatMap(Double.init)
@@ -187,5 +195,26 @@ nonisolated final class CardMeta {
         self.imageWidth = imageWidth
         self.imageHeight = imageHeight
         self.fetchStateRaw = fetchState.rawValue
+    }
+}
+
+/// A token a card makes: Scryfall's id for the token card, its name and
+/// type line ("Token Creature — Soldier"). Stored on the maker's CardMeta.
+nonisolated struct RelatedToken: Hashable, Sendable {
+    let id: String
+    let name: String
+    let typeLine: String
+
+    static func encode(_ parts: [ScryfallRelatedCard]) -> String {
+        parts.map { [$0.id, $0.name, $0.typeLine ?? ""].joined(separator: "\t") }.joined(separator: "\n")
+    }
+
+    static func decode(_ raw: String?) -> [RelatedToken] {
+        guard let raw, !raw.isEmpty else { return [] }
+        return raw.split(separator: "\n").compactMap { line in
+            let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard parts.count >= 2 else { return nil }
+            return RelatedToken(id: String(parts[0]), name: String(parts[1]), typeLine: parts.count > 2 ? String(parts[2]) : "")
+        }
     }
 }

@@ -265,6 +265,66 @@ struct UndoRedoTests {
         #expect((try ModelContext(container).fetch(FetchDescriptor<MTGCollection>()).map(\.name)).contains("Trade"))
     }
 
+    /// Deleting a deck is an action: undo brings it back whole — list,
+    /// versions, the same id — and with it the build before it can be
+    /// undone and redone again.
+    @Test func aDeletedDeckComesBackAndItsBuildsReplayAgain() async throws {
+        let w = try DeckBuilderTests.makeWorld()
+        let ctx = w.container.mainContext
+        let builder = DeckBuilder.shared(for: w.container)
+        let deckID = w.deck.id
+        let key = w.deck.collectionKey
+        let listed = try ModelContext(w.container).fetch(FetchDescriptor<DeckCard>()).count
+        try DeckVersionController.save(deckID: deckID, name: "Kept", context: ctx)
+        _ = try await builder.build(try await builder.plan(deckID: deckID, sourceCollections: nil, includeSideboard: false))
+        _ = try await builder.disassemble(deckID: deckID)
+        try DeckEditController.delete(deckID: deckID, context: ctx)
+        #expect(try ModelContext(w.container).fetch(FetchDescriptor<Deck>()).isEmpty)
+        #expect(try ModelContext(w.container).fetch(FetchDescriptor<DeckVersion>()).isEmpty, "its versions go with it")
+
+        let undo = UndoController(container: w.container)
+        await undo.refresh()
+        #expect(undo.undoTitle == "Undo Deleted Test Deck" && undo.log.blocked.isEmpty)
+        #expect(undo.log.actions.first?.action == .deckDelete && undo.log.actions.first?.cardCount == 0)
+
+        await undo.undo()
+        #expect(undo.error == nil)
+        let back = try #require(try ModelContext(w.container).fetch(FetchDescriptor<Deck>()).first)
+        #expect(back.id == deckID && back.name == "Test Deck" && back.cards.count == listed, "the same deck, its list intact")
+        #expect(try ModelContext(w.container).fetch(FetchDescriptor<DeckVersion>()).map(\.name) == ["Kept"])
+        #expect(try ModelContext(w.container).fetch(FetchDescriptor<DeckBranch>()).count == 1)
+
+        // The disassembly before it undoes now: the deck is there to take the copies.
+        await undo.undo()
+        #expect(undo.error == nil)
+        #expect(try DeckBuilderTests.copies(in: w.container)[key] == 3, "built again")
+
+        // Redo the delete while built: refused, and said before the tap.
+        await undo.redo()                      // the disassembly
+        #expect(try DeckBuilderTests.copies(in: w.container)[key] == nil)
+        await undo.redo()                      // the delete
+        #expect(undo.error == nil)
+        #expect(try ModelContext(w.container).fetch(FetchDescriptor<Deck>()).isEmpty, "deleted again")
+        #expect(!undo.canRedo && undo.canUndo)
+    }
+
+    /// A step that can't run says so before it is offered.
+    @Test func aBlockedUndoIsKnownBeforeItIsTried() async throws {
+        let w = try DeckBuilderTests.makeWorld()
+        let builder = DeckBuilder.shared(for: w.container)
+        _ = try await builder.build(try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false))
+        // The deck gone without a record (as decks deleted before this were).
+        let ctx = ModelContext(w.container)
+        for deck in try ctx.fetch(FetchDescriptor<Deck>()) { ctx.delete(deck) }
+        try ctx.save()
+        let undo = UndoController(container: w.container)
+        await undo.refresh()
+        let head = try #require(undo.log.timeline.nextUndo)
+        #expect(undo.log.blocked[head] == LedgerReplay.ReplayError.deckMissing.errorDescription)
+        #expect(!undo.canUndo && undo.undoBlocker != nil)
+        #expect(undo.undoTitle?.hasPrefix("Can't undo Built") == true)
+    }
+
     @Test func aBuildWhoseDeckIsGoneIsRefusedWholesale() async throws {
         let w = try DeckBuilderTests.makeWorld()
         let builder = DeckBuilder.shared(for: w.container)
@@ -279,7 +339,8 @@ struct UndoRedoTests {
         await undo.undo()
         #expect(undo.error?.contains("no longer exists") == true)
         #expect(try DeckBuilderTests.copies(in: w.container) == built, "nothing moved")
-        #expect(undo.canUndo, "the action is still there to try again")
+        #expect(undo.log.timeline.nextUndo != nil, "the action is still there")
+        #expect(!undo.canUndo && undo.undoBlocker?.contains("no longer exists") == true, "and Undo says why it is off")
     }
 
     @Test func recordsFromBeforeDeckKeysAreNotUndoable() async throws {

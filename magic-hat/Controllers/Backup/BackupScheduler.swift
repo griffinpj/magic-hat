@@ -118,6 +118,7 @@ final class BackupScheduler {
         defer { isBackingUp = false }
         let task = UIApplication.shared.beginBackgroundTask(withName: "backup")
         defer { if task != .invalid { UIApplication.shared.endBackgroundTask(task) } }
+        DataActivity.shared.begin(.backup)
         do {
             let local = try await BackupController.makeBackup(container: container)
             var result = local
@@ -133,9 +134,13 @@ final class BackupScheduler {
             defaults.set(now, forKey: Self.lastKey)
             lastFile = result
             lastError = nil
+            let size = (try? result.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            DataActivity.shared.end(.backup, count: size,
+                                    note: "\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)) · \(folderName ?? "On My iPhone")")
             return result
         } catch {
             lastError = error.localizedDescription
+            DataActivity.shared.end(.backup, note: error.localizedDescription, failed: true)
             return nil
         }
     }

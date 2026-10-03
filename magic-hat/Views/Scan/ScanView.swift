@@ -18,6 +18,13 @@
 //  unsure it stops and asks — "Is this…?" — rather than guessing. Nothing
 //  reaches a collection until the tray is added, in one History action.
 //
+//  By default there is no frame to line a card up with: the whole picture
+//  is read and the card found in it (an outline follows it), so a phone
+//  on a stand works at whatever height it sits. Scan Settings' Card Frame
+//  brings the guide back. "Not This" on the question, or a card nothing
+//  could be found for, leads to typing the name (ScanManualEntry) — the
+//  keyboard button in the control column does too.
+//
 //  With no camera (the simulator) or no permission, the page says so and
 //  offers a photo instead; the same reader runs on it.
 //
@@ -76,6 +83,7 @@ struct ScanView: View {
                     if wants { withAnimation(.snappy) { showPrintings = true }; session.wantsPrintingPicker = false }
                 }
                 .onChange(of: settings.cameraID) { _, id in camera.select(cameraID: id) }
+                .onChange(of: settings.showFrame) { _, _ in cardOutline = nil; updateRegion() }
                 .onChange(of: photo) { _, item in scanPhoto(item) }
         }
     }
@@ -87,22 +95,18 @@ struct ScanView: View {
                 ScanSettingsView()
                     .presentationDetents([.medium, .large])
             }
-            .sheet(item: confirmBinding) { item in confirmSheet(item.match) }
+            .sheet(isPresented: promptBinding) {
+                ScanPromptView(session: session)
+                    .presentationDetents([.medium, .large])
+            }
     }
 
-    private func confirmSheet(_ match: ScanMatch) -> some View {
-        ScanConfirmView(match: match,
-                        onAccept: { session.confirm(match.card, exactPrinting: match.exactPrinting) },
-                        onPick: { name in session.confirm(name: name) },
-                        onReject: { session.dismissPrompt() })
-            .presentationDetents([.medium, .large])
-    }
-
-    private var confirmBinding: Binding<ScanMatchItem?> {
-        Binding(get: {
-            if case .confirm(let match) = session.phase { return ScanMatchItem(match: match) }
-            return nil
-        }, set: { if $0 == nil, case .confirm = session.phase { session.dismissPrompt() } })
+    /// One sheet for the question and the name field: "Not This" turns the
+    /// first into the second in place rather than closing one sheet to
+    /// open another.
+    private var promptBinding: Binding<Bool> {
+        Binding(get: { session.isPrompting },
+                set: { if !$0, session.isPrompting { session.dismissPrompt() } })
     }
 
     @ViewBuilder private var content: some View {
@@ -148,6 +152,9 @@ struct ScanView: View {
     /// The guide, in the screen's coordinates, as laid out.
     @State private var guideFrame: CGRect = .zero
     @State private var screenSize: CGSize = .zero
+    /// Without the guide: where the card was found, in the screen's
+    /// coordinates, for the outline that follows it.
+    @State private var cardOutline: CGRect?
 
     /// Laid out, not computed: the total and status, then the guide taking
     /// whatever room is left, then the card panel — so none of them can
@@ -166,9 +173,15 @@ struct ScanView: View {
             }
             .ignoresSafeArea()
             .onGeometryChange(for: CGSize.self, of: { $0.size }) { screenSize = $0; updateRegion() }
-            GuideMask(guide: guideFrame, tint: guideTint)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            Group {
+                if settings.showFrame {
+                    GuideMask(guide: guideFrame, tint: guideTint)
+                } else if let cardOutline {
+                    CardOutline(rect: cardOutline, tint: guideTint)
+                }
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
             ViewThatFits(in: .vertical) {
                 portraitLayout
                 landscapeLayout
@@ -238,15 +251,28 @@ struct ScanView: View {
         let size = screenSize
         guard size.width > 0, guideFrame.width > 0 else { return }
         // The sensor is 1920 × 1080; upright, it is portrait when the view is.
-        let image = size.width > size.height ? CGSize(width: 1920, height: 1080) : CGSize(width: 1080, height: 1920)
-        camera.region = CardCamera.guideRegion(guide: guideFrame, in: size, imageSize: image)
+        // With the frame, the guide; without, everything on screen.
+        let read = settings.showFrame ? guideFrame : CGRect(origin: .zero, size: size)
+        camera.region = CardCamera.guideRegion(guide: read, in: size, imageSize: uprightImageSize)
+        camera.findsCard = !settings.showFrame
+    }
+
+    private var uprightImageSize: CGSize {
+        screenSize.width > screenSize.height ? CGSize(width: 1920, height: 1080) : CGSize(width: 1080, height: 1920)
+    }
+
+    private func take(_ frame: RecognizedFrame) {
+        session.ingest(frame.lines, layout: frame.layout)
+        guard !settings.showFrame else { return }
+        let outline = frame.card.map { CardCamera.viewRect(region: $0, in: screenSize, imageSize: uprightImageSize) }
+        if outline != cardOutline { withAnimation(.snappy(duration: 0.2)) { cardOutline = outline } }
     }
 
     private var guideTint: Color {
         switch session.phase {
         case .looking: return .white
         case .reading, .matching: return .yellow
-        case .confirm, .skipped: return .orange
+        case .confirm, .skipped, .unmatched, .manual: return .orange
         case .added, .again: return .green
         }
     }
@@ -274,14 +300,23 @@ struct ScanView: View {
 
     private var statusText: String? {
         switch session.phase {
-        case .looking: return session.tray.isEmpty ? "Hold a card inside the frame" : nil
+        case .looking:
+            guard session.tray.isEmpty else { return nil }
+            return settings.showFrame ? "Hold a card inside the frame" : "Point the camera at a card"
         case .reading(let name): return "Reading “\(name)”…"
         case .matching(let name): return name.isEmpty ? "Looking it up…" : "Looking up \(name)…"
         case .confirm(let match): return "Is this \(match.card.name)?"
         case .added(let card): return "Added \(card.name)"
         case .again(let card): return "\(card.name) again — tap +1 for another copy"
         case .skipped(let name): return "\(name) isn't in the locked sets"
+        case .unmatched(let name): return name.isEmpty ? "Couldn't read this card — tap to type its name" : "Couldn't place “\(name)” — tap to type its name"
+        case .manual: return nil
         }
+    }
+
+    private var isUnmatched: Bool {
+        if case .unmatched = session.phase { return true }
+        return false
     }
 
     @ViewBuilder private var statusPill: some View {
@@ -292,6 +327,7 @@ struct ScanView: View {
                 case .added: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 case .again: Image(systemName: "equal.circle.fill").foregroundStyle(.green)
                 case .confirm, .skipped: Image(systemName: "questionmark.circle.fill").foregroundStyle(.orange)
+                case .unmatched, .manual: Image(systemName: "keyboard").foregroundStyle(.orange)
                 case .looking: Image(systemName: "viewfinder")
                 }
                 Text(statusText)
@@ -301,7 +337,11 @@ struct ScanView: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            // A card that couldn't be placed: the pill is the way to type it.
+            .onTapGesture { if isUnmatched { session.beginManual() } }
+            .accessibilityAddTraits(isUnmatched ? .isButton : [])
+            .glassEffect(isUnmatched ? .regular.interactive() : .regular, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             // Clear of the control column on either side, so it stays centred.
             .padding(.horizontal, 76)
             .transition(.opacity)
@@ -344,6 +384,7 @@ struct ScanView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Scan a Photo")
+                sideButton("Type a Card Name", systemImage: "keyboard", id: "scan-type") { session.beginManual() }
                 sideButton("Scan Settings", systemImage: "gearshape", id: "scan-settings") { showSettings = true }
             }
             .padding(4)
@@ -394,7 +435,8 @@ struct ScanView: View {
     private func startIfReady() {
         guard access == .granted, isVisible, !Self.isDemo else { return }
         let session = self.session
-        camera.onLines = { lines in session.ingest(lines) }
+        camera.onFrame = { frame in take(frame) }
+        updateRegion()
         camera.start()
     }
 
@@ -403,16 +445,12 @@ struct ScanView: View {
         Task {
             defer { photo = nil }
             guard let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) else { return }
-            let lines = await Task.detached(priority: .userInitiated) { CardCamera.recognize(image: image) }.value
-            await session.scan(photoLines: lines)
+            let frame = await Task.detached(priority: .userInitiated) { CardCamera.recognizeFrame(image: image) }.value
+            await session.scan(photo: frame)
         }
     }
 }
 
-struct ScanMatchItem: Identifiable {
-    let match: ScanMatch
-    var id: String { match.card.id }
-}
 
 // MARK: - The card panel
 
@@ -696,72 +734,230 @@ private struct GuideMask: View {
     }
 }
 
-// MARK: - Confirm
+// MARK: - The question and the name field
+
+/// The card found without the guide: an outline in the scanner's colour.
+private struct CardOutline: View {
+    let rect: CGRect
+    let tint: Color
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: rect.width * 0.05, style: .continuous)
+            .strokeBorder(tint, lineWidth: 3)
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+            .animation(.easeInOut(duration: 0.2), value: tint)
+            .transition(.opacity)
+    }
+}
+
+/// The sheet over the camera while the scanner needs an answer: "Is this
+/// …?" (Yes adds it, a name looks that one up, Not This goes on to the
+/// name field) or the name field itself. One sheet, so the second follows
+/// the first in place.
+private struct ScanPromptView: View {
+    let session: ScanSession
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                switch session.phase {
+                case .confirm(let match):
+                    ScanConfirmView(match: match,
+                                    onAccept: { session.confirm(match.card, exactPrinting: match.exactPrinting) },
+                                    onPick: { name in session.confirm(name: name) },
+                                    onReject: { withAnimation { session.reject() } },
+                                    onSkip: { session.dismissPrompt() })
+                case .manual(let text):
+                    ScanManualEntry(initialText: text,
+                                    onPick: { card in session.confirm(card, exactPrinting: false) },
+                                    onCancel: { session.dismissPrompt() })
+                default:
+                    Color.clear
+                }
+            }
+        }
+    }
+}
 
 /// "Is this …?": the card Scryfall found, and the other names the reading
-/// might be. Yes adds it; a name looks that one up; No keeps scanning.
+/// might be. Three ways out, each its own: Yes adds it; "No, Type Its
+/// Name" goes to the name field; Skip (the bar's cancel) just carries on
+/// scanning, this card left alone while it stays in view.
 private struct ScanConfirmView: View {
     let match: ScanMatch
     let onAccept: () -> Void
     let onPick: (String) -> Void
     let onReject: () -> Void
-
-    @Environment(\.dismiss) private var dismiss
+    let onSkip: () -> Void
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    let item = CardItem(scryfallCard: match.card, owned: false)
-                    CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio, cornerRadius: 12, targetWidth: 240)
-                        .frame(width: 180)
-                        .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
-                    VStack(spacing: 4) {
-                        Text(match.card.name).font(.title3.weight(.semibold))
-                        Text("\(match.card.setName) · #\(match.card.collectorNumber)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button {
-                        onAccept()
-                        dismiss()
-                    } label: {
-                        Label("Yes, Add It", systemImage: "plus")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .accessibilityIdentifier("scan-confirm-yes")
-                    if !match.alternatives.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Or is it…").font(.subheadline.weight(.semibold))
-                            FlowLayout {
-                                ForEach(match.alternatives, id: \.self) { name in
-                                    Button(name) {
-                                        onPick(name)
-                                        dismiss()
-                                    }
+        ScrollView {
+            VStack(spacing: 16) {
+                let item = CardItem(scryfallCard: match.card, owned: false)
+                CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio, cornerRadius: 12, targetWidth: 240)
+                    .frame(width: 180)
+                    .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                VStack(spacing: 4) {
+                    Text(match.card.name).font(.title3.weight(.semibold))
+                    Text("\(match.card.setName) · #\(match.card.collectorNumber)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Button(action: onAccept) {
+                    Label("Yes, Add It", systemImage: "plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .accessibilityIdentifier("scan-confirm-yes")
+                Button(action: onReject) {
+                    Label("No, Type Its Name", systemImage: "keyboard")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .accessibilityIdentifier("scan-confirm-type")
+                if !match.alternatives.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Or is it…").font(.subheadline.weight(.semibold))
+                        FlowLayout {
+                            ForEach(match.alternatives, id: \.self) { name in
+                                Button(name) { onPick(name) }
                                     .buttonStyle(.bordered)
                                     .buttonBorderShape(.capsule)
-                                }
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(20)
+        }
+        .navigationTitle("Is This the Card?")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Skip", role: .cancel, action: onSkip)
+                    .accessibilityIdentifier("scan-confirm-no")
+            }
+        }
+    }
+}
+
+/// The card's name, typed: Scryfall's matches as you type (names starting
+/// with the text first), one tap takes a card into the tray, where its
+/// printing, finish and count are set as for any scan.
+private struct ScanManualEntry: View {
+    let initialText: String
+    let onPick: (ScryfallCard) -> Void
+    let onCancel: () -> Void
+
+    @State private var text = ""
+    @State private var results: [ScryfallCard] = []
+    @State private var isSearching = false
+    @State private var failed = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Card name", text: $text)
+                        .focused($focused)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.words)
+                        .submitLabel(.search)
+                        .accessibilityIdentifier("scan-manual-field")
+                    if isSearching { ProgressView().controlSize(.small) }
+                    if !text.isEmpty {
+                        Button("Clear", systemImage: "xmark.circle.fill", action: clear)
+                            .labelStyle(.iconOnly)
+                            .foregroundStyle(.tertiary)
+                            .buttonStyle(.plain)
                     }
                 }
-                .padding(20)
+            } footer: {
+                if !initialText.isEmpty {
+                    Text("The scanner read “\(initialText)”. Fix it, or type the name.")
+                }
             }
-            .navigationTitle("Is This the Card?")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Not This", role: .cancel) {
-                        onReject()
-                        dismiss()
+            Section {
+                if results.isEmpty, !isSearching, text.trimmingCharacters(in: .whitespaces).count >= 2 {
+                    Text(failed ? "Couldn't reach Scryfall. Check the connection and try again." : "No card matches.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(results, id: \.id) { card in
+                    Button { onPick(card) } label: {
+                        CardRowLead(item: CardItem(scryfallCard: card, owned: false)) {
+                            Text(card.bestTypeLine ?? card.setName)
+                        }
+                        .contentShape(Rectangle())
                     }
-                    .accessibilityIdentifier("scan-confirm-no")
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("scan-manual-result-\(card.name)")
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollDismissesKeyboard(.interactively)
+        .navigationTitle("Type the Card's Name")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .accessibilityIdentifier("scan-manual-cancel")
+            }
+        }
+        .onAppear {
+            text = initialText
+            focused = true
+        }
+        .task(id: text) { await search() }
+    }
+
+    private func clear() { text.removeAll() }
+
+    /// Debounced; a newer keystroke cancels an older search.
+    private func search() async {
+        let typed = text.trimmingCharacters(in: .whitespaces)
+        guard typed.count >= 2 else { results = []; return }
+        try? await Task.sleep(for: .milliseconds(300))
+        guard !Task.isCancelled else { return }
+        isSearching = true
+        defer { isSearching = false }
+        do {
+            let page = try await ScryfallClient.shared.search(query: Self.query(for: typed), unique: "cards", order: "edhrec", direction: "asc")
+            guard !Task.isCancelled else { return }
+            var cards = Array(page.cards.prefix(40))
+            // Nothing holds every word as typed (a misread letter): the
+            // closest name, as the scanner itself asks for it.
+            if cards.isEmpty, let close = try? await ScryfallClient.shared.named(fuzzy: typed) { cards = [close] }
+            guard !Task.isCancelled else { return }
+            results = Self.ranked(cards, typed: typed)
+            failed = false
+        } catch {
+            guard !Task.isCancelled else { return }
+            results = []
+            failed = true
+        }
+    }
+
+    /// Each word must be in the name; a misread letter still finds the
+    /// card through the words that were read right.
+    nonisolated static func query(for typed: String) -> String {
+        typed.split(separator: " ").map { "name:\($0.filter { $0.isLetter || $0.isNumber || $0 == "'" || $0 == "-" })" }
+            .filter { $0 != "name:" }.joined(separator: " ")
+    }
+
+    /// Names starting with the text first, then the closest names.
+    nonisolated static func ranked(_ cards: [ScryfallCard], typed: String) -> [ScryfallCard] {
+        let folded = CardTextReader.fold(typed)
+        return cards.enumerated().sorted { a, b in
+            let pa = CardTextReader.fold(a.element.name).hasPrefix(folded), pb = CardTextReader.fold(b.element.name).hasPrefix(folded)
+            if pa != pb { return pa }
+            return a.offset < b.offset
+        }.map(\.element)
     }
 }

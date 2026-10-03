@@ -78,9 +78,87 @@ struct ScanTests {
             ("0141/0280 C" as NSString).draw(at: CGPoint(x: 34, y: 812), withAttributes: small)
             ("M11 • EN" as NSString).draw(at: CGPoint(x: 34, y: 842), withAttributes: small)
         }
-        let lines = CardCamera.recognize(image: image)
-        let reading = CardTextReader.read(lines, knownSets: ["m11"])
-        #expect(reading.name == "Lightning Bolt", "\(lines.map(\.text))")
-        #expect(reading.setCode == "m11" && reading.collectorNumber == "141", "\(lines.map { "\($0.text) \($0.box)" })")
+        let frame = CardCamera.recognizeFrame(image: image)
+        #expect(frame.layout == .card, "a photo cropped to the card is the card")
+        let reading = CardTextReader.read(frame.lines, knownSets: ["m11"], layout: frame.layout)
+        #expect(reading.name == "Lightning Bolt", "\(frame.lines.map(\.text))")
+        #expect(reading.setCode == "m11" && reading.collectorNumber == "141", "\(frame.lines.map { "\($0.text) \($0.box)" })")
+    }
+
+    /// A card drawn small and off-centre on a dark table, `scale` of the
+    /// picture's height.
+    private func table(cardHeight scale: CGFloat, at origin: CGPoint, border: UIColor = .white, ink: UIColor = .black) -> UIImage {
+        let size = CGSize(width: 1080, height: 1920)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            UIColor(white: 0.12, alpha: 1).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+            let h = size.height * scale, w = h * 63 / 88
+            let card = CGRect(x: origin.x * size.width, y: origin.y * size.height, width: w, height: h)
+            border.setFill()
+            UIBezierPath(roundedRect: card, cornerRadius: w * 0.04).fill()
+            let unit = h / 880
+            let title: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 38 * unit), .foregroundColor: ink]
+            ("Lightning Bolt" as NSString).draw(at: CGPoint(x: card.minX + 44 * unit, y: card.minY + 40 * unit), withAttributes: title)
+            let body: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 26 * unit), .foregroundColor: ink]
+            ("Instant" as NSString).draw(at: CGPoint(x: card.minX + 44 * unit, y: card.minY + 500 * unit), withAttributes: body)
+            ("Lightning Bolt deals 3 damage" as NSString).draw(at: CGPoint(x: card.minX + 44 * unit, y: card.minY + 560 * unit), withAttributes: body)
+            let small: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 20 * unit, weight: .semibold), .foregroundColor: ink]
+            ("0141/0280 C" as NSString).draw(at: CGPoint(x: card.minX + 34 * unit, y: card.minY + 812 * unit), withAttributes: small)
+            ("M11 • EN" as NSString).draw(at: CGPoint(x: card.minX + 34 * unit, y: card.minY + 842 * unit), withAttributes: small)
+        }
+    }
+
+    /// No frame to hold the card in: it is found in the picture, at
+    /// whatever size and place, and read as if it filled a guide.
+    @Test func aCardAnywhereInThePictureIsFoundAndRead() throws {
+        for (scale, origin) in [(0.55, CGPoint(x: 0.12, y: 0.2)), (0.4, CGPoint(x: 0.4, y: 0.45)), (0.7, CGPoint(x: 0.05, y: 0.08))] {
+            let image = table(cardHeight: scale, at: origin)
+            let ci = try #require(CIImage(image: image))
+            // Part of the picture is off screen, as the preview's crop is.
+            let visible = CGRect(x: 0.03, y: 0, width: 0.94, height: 1)
+            let frame = CardCamera.recognizeFrame(ci, orientation: .up, visible: visible)
+            let card = try #require(frame.card, "the rectangle detector finds the card at \(scale)")
+            #expect(frame.layout == .card)
+            #expect(abs(card.height - scale) < 0.06 && abs(card.minX - origin.x) < 0.04, "\(card)")
+            #expect(abs((1 - card.maxY) - origin.y) < 0.04, "Vision's origin is the bottom left: \(card)")
+            let reading = CardTextReader.read(frame.lines, knownSets: ["m11"], layout: frame.layout)
+            #expect(reading.name == "Lightning Bolt", "\(scale): \(frame.lines.map(\.text))")
+            #expect(reading.setCode == "m11" && reading.collectorNumber == "141", "\(scale): \(frame.lines.map { "\($0.text) \($0.box)" })")
+        }
+    }
+
+    /// No edges to find (the card's border is the table's colour): the
+    /// text alone places the title and the info block.
+    @Test func aCardWithNoEdgesIsReadFromItsText() throws {
+        let image = table(cardHeight: 0.55, at: CGPoint(x: 0.2, y: 0.2), border: UIColor(white: 0.12, alpha: 1), ink: .white)
+        let ci = try #require(CIImage(image: image))
+        let frame = CardCamera.recognizeFrame(ci, orientation: .up, visible: CGRect(x: 0, y: 0, width: 1, height: 1))
+        #expect(frame.card == nil && frame.layout == .picture)
+        let reading = CardTextReader.read(frame.lines, knownSets: ["m11"], layout: frame.layout)
+        #expect(reading.name == "Lightning Bolt", "\(frame.lines.map(\.text))")
+        #expect(reading.setCode == "m11" && reading.collectorNumber == "141", "\(frame.lines.map { "\($0.text) \($0.box)" })")
+    }
+
+    @Test func thePictureLayoutFindsTheBlockByWhatItSays() {
+        // A card low and right in the picture, another card's title above it.
+        let lines = [
+            line("Some Other Card", x: 0.05, y: 0.93, w: 0.3, h: 0.02),
+            line("Lightning Bolt", x: 0.52, y: 0.60, w: 0.2, h: 0.018),
+            line("Instant", x: 0.52, y: 0.40, w: 0.1, h: 0.012),
+            line("ONE with the storm, deal 3 damage.", x: 0.52, y: 0.33, w: 0.3, h: 0.012),
+            line("0141/0280 C", x: 0.51, y: 0.222, w: 0.08, h: 0.008),
+            line("M11 • EN", x: 0.51, y: 0.21, w: 0.06, h: 0.008),
+        ]
+        let reading = CardTextReader.read(lines, knownSets: ["m11", "one"], layout: .picture)
+        #expect(reading.name == "Lightning Bolt", "the title over the info block, not the topmost text in the picture")
+        #expect(reading.setCode == "m11" && reading.collectorNumber == "141" && reading.language == "en" && reading.foil == false)
+        let bare = CardTextReader.read(Array(lines.prefix(3)), knownSets: ["m11"], layout: .picture)
+        #expect(bare.name == "Some Other Card" && bare.setCode == nil, "no block: the topmost name")
+        let back = CardCamera.viewRect(region: CardCamera.guideRegion(guide: CGRect(x: 40, y: 100, width: 200, height: 280),
+                                                                         in: CGSize(width: 390, height: 844), imageSize: CGSize(width: 1080, height: 1920)),
+                                       in: CGSize(width: 390, height: 844), imageSize: CGSize(width: 1080, height: 1920))
+        #expect(abs(back.minX - 40) < 0.5 && abs(back.minY - 100) < 0.5 && abs(back.width - 200) < 0.5 && abs(back.height - 280) < 0.5)
     }
 }

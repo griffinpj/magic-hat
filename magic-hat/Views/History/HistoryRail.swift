@@ -21,6 +21,8 @@ nonisolated enum RailDot: Hashable, Sendable {
     case applied, undone, head
     /// The foot of a branch's card: where it joins the action it splits from.
     case junction
+    /// The foot of a cut list: older actions carry on, not drawn.
+    case more
 }
 
 nonisolated struct RailMark: Hashable, Sendable {
@@ -54,8 +56,9 @@ struct HistoryRail: View {
                 context.stroke(path, with: .color(color.opacity(style == .dashed ? 0.6 : 1)),
                                style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: dash))
             }
-            if let above = mark.above { stroke(above, from: 0, to: y - radius - (mark.dot == .junction ? 0.5 : 2)) }
-            if let below = mark.below { stroke(below, from: y + radius + 2, to: size.height) }
+            let gap: CGFloat = mark.dot == .more ? 5 : 0
+            if let above = mark.above { stroke(above, from: 0, to: y - radius - gap - (mark.dot == .junction ? 0.5 : 2)) }
+            if let below = mark.below { stroke(below, from: y + radius + gap + 2, to: size.height) }
 
             if mark.stub {
                 let branch = Color(uiColor: .secondaryLabel)
@@ -78,6 +81,11 @@ struct HistoryRail: View {
             case .head:
                 context.fill(Path(ellipseIn: dotRect), with: .color(color))
                 context.stroke(Path(ellipseIn: dotRect.insetBy(dx: -3.5, dy: -3.5)), with: .color(color.opacity(0.5)), lineWidth: 1.5)
+            case .more:
+                for offset in [-5.0, 0.0, 5.0] {
+                    let dot = CGRect(x: x - 1.25, y: y + offset - 1.25, width: 2.5, height: 2.5)
+                    context.fill(Path(ellipseIn: dot), with: .color(color.opacity(0.7)))
+                }
             case .junction:
                 let small = dotRect.insetBy(dx: 1.5, dy: 1.5)
                 context.fill(Path(ellipseIn: small), with: .color(Color(uiColor: .secondarySystemGroupedBackground)))

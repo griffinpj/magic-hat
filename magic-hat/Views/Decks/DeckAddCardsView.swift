@@ -62,12 +62,26 @@ struct DeckAddCardsView: View {
     /// Remembered per scope, as the collection's and a deck's sorts are.
     @AppStorage("deck.add.sort.all") private var sortAllRaw = DeckCardSort.relevance.rawValue
     @AppStorage("deck.add.sort.recommended") private var sortRecommendedRaw = DeckCardSort.relevance.rawValue
+    @AppStorage("deck.add.sort.all.direction") private var sortAllDirectionRaw = ""
+    @AppStorage("deck.add.sort.recommended.direction") private var sortRecommendedDirectionRaw = ""
     private func sort(for scope: DeckSearchScope) -> DeckCardSort {
-        DeckCardSort(rawValue: scope == .all ? sortAllRaw : sortRecommendedRaw) ?? .relevance
+        DeckCardSort(stored: scope == .all ? sortAllRaw : sortRecommendedRaw) ?? .relevance
+    }
+    private func direction(for scope: DeckSearchScope) -> SortDirection {
+        let stored = scope == .all
+            ? DeckCardSort.direction(sortRaw: sortAllRaw, directionRaw: sortAllDirectionRaw)
+            : DeckCardSort.direction(sortRaw: sortRecommendedRaw, directionRaw: sortRecommendedDirectionRaw)
+        return stored ?? sort(for: scope).defaultDirection
     }
     private var sort: DeckCardSort { sort(for: scope) }
-    private func setSort(_ option: DeckCardSort) {
-        if scope == .all { sortAllRaw = option.rawValue } else { sortRecommendedRaw = option.rawValue }
+    private var sortDirection: SortDirection { direction(for: scope) }
+    /// A new order starts its own way; nil keeps the sort and sets the way.
+    private func setSort(_ option: DeckCardSort, direction: SortDirection? = nil) {
+        if scope == .all {
+            sortAllRaw = option.rawValue; sortAllDirectionRaw = direction?.rawValue ?? ""
+        } else {
+            sortRecommendedRaw = option.rawValue; sortRecommendedDirectionRaw = direction?.rawValue ?? ""
+        }
     }
     @State private var identityFilter = true
     /// The "In collection" chip: only what is owned.
@@ -193,6 +207,8 @@ struct DeckAddCardsView: View {
             .onChange(of: session.board) { _, _ in runSearch(immediately: true) }
             .onChange(of: sortAllRaw) { _, _ in runSearch(immediately: true) }
             .onChange(of: sortRecommendedRaw) { _, _ in runSearch(immediately: true) }
+            .onChange(of: sortAllDirectionRaw) { _, _ in runSearch(immediately: true) }
+            .onChange(of: sortRecommendedDirectionRaw) { _, _ in runSearch(immediately: true) }
             .onChange(of: analysis.plan?.id) { _, _ in mergeRecommendations() }
             .onChange(of: analysis.synergyVersion) { _, _ in refreshRecommended(immediately: true) }
             .task(id: deckTracker.revision) { await loadDeck() }
@@ -323,6 +339,8 @@ struct DeckAddCardsView: View {
     /// checked. Remembered per scope while the sheet is open.
     private var sortButton: some View {
         SortButton(options: DeckCardSort.allCases, selected: sort, title: \.rawValue, icon: \.systemImage,
+                   // Relevance is the list's own order; a direction on it means nothing.
+                   direction: sort == .relevance ? nil : sortDirection, onDirection: { setSort(sort, direction: $0) },
                    onSelect: { setSort($0) }, identifier: "deck-search-sort")
     }
 
@@ -547,8 +565,9 @@ struct DeckAddCardsView: View {
     private func effectiveQuery() -> CardSearchQuery {
         var q = query
         q.text = searchText
-        q.sort = sort.scryfall.sort
-        q.direction = sort.scryfall.direction
+        let scryfall = sort.scryfall(sortDirection)
+        q.sort = scryfall.sort
+        q.direction = scryfall.direction
         if usesIdentity, identityFilter {
             q.useColorIdentity = true
             if identity.isEmpty {
@@ -580,13 +599,14 @@ struct DeckAddCardsView: View {
             let typed = q.trimmedText
             let limit = Self.browseLimit
             let sort = self.sort
+            let direction = self.sortDirection
             collectionTask = Task.detached(priority: .userInitiated) {
                 if !immediately { try? await Task.sleep(for: .milliseconds(150)) }
                 guard !Task.isCancelled else { return }
-                // Sorted before the browse limit, so "Price (High)" lists
+                // Sorted before the browse limit, so Price lists
                 // the priciest cards owned, not the first 400 by name.
                 let results = sort.apply(Self.groupOwned(q.isEmpty ? all : all.filter { q.matches($0) }, typed: typed),
-                                         card: \.card)
+                                         card: \.card, direction: direction)
                 let shown = q.isEmpty ? Array(results.prefix(limit)) : results
                 let cards = CardItemList(shown.map(\.card))
                 let owned = Dictionary(shown.map { ($0.card.id, $0.ownedCopies) }, uniquingKeysWith: { a, _ in a })
@@ -615,6 +635,7 @@ struct DeckAddCardsView: View {
         let recsIn = recommendedShown
         let ownedOnly = self.ownedOnly
         let sort = sort(for: .recommended)
+        let direction = direction(for: .recommended)
         recommendedTask = Task.detached(priority: .userInitiated) {
             if !immediately { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
@@ -624,14 +645,14 @@ struct DeckAddCardsView: View {
                 if inDeck.contains(key) && !keeps(pick.card) { return false }
                 if ownedOnly && pick.ownedCopies == 0 && !keeps(pick.card) { return false }
                 return q.isEmpty || q.matches(pick.card)
-            }, card: \.card)
+            }, card: \.card, direction: direction)
             // The synergy list leads; a card on it is not listed twice.
             let led = Set(picks.map { DeckAddSession.key(of: $0.card) })
             let rows = sort.apply(recsIn.filter { rec in
                 if led.contains(DeckAddSession.key(of: rec.card)) { return false }
                 if ownedOnly && !rec.isOwned && !keeps(rec.card) { return false }
                 return q.isEmpty || q.matches(rec.card)
-            }, card: \.card)
+            }, card: \.card, direction: direction)
             let synergyList = CardItemList(picks.map(\.card))
             let synergyReasons = Dictionary(picks.map { ($0.card.id, $0.reason) }, uniquingKeysWith: { a, _ in a })
             let synergyOwned = Dictionary(picks.map { ($0.card.id, $0.ownedCopies) }, uniquingKeysWith: { a, _ in a })

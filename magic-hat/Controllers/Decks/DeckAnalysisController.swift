@@ -91,8 +91,9 @@ final class DeckAnalysisController {
         self.deckID = deckID
     }
 
-    /// Whether anything outside may be asked. Never in a seeded UI test.
-    static var allowsNetwork: Bool { !UITestSeed.isSeededRun }
+    /// Whether anything outside may be asked: Settings' Online Signals,
+    /// and never in a seeded UI test.
+    static var allowsNetwork: Bool { !UITestSeed.isSeededRun && AppSettings.onlineAnalysis }
 
     var sourcesLine: String {
         var bits: [String] = []

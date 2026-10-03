@@ -31,6 +31,11 @@ struct ListTests {
         let list = try await store.snapshot(collectionName: "Wishlist", sort: .name)
         #expect(list.items.map(\.name) == ["Alpha", "Beta"])
         #expect(list.items.allSatisfy { $0.inList && $0.isEntry }, "editable rows, marked as a list's")
+        #expect(list.items.map(\.inCollection) == [true, false], "Alpha is owned in Main; Beta is only wanted")
+        let stamp = StoreStamp(change: 1, hydration: 1)
+        _ = try await store.overview(stamp: stamp)
+        let cached = try await store.snapshot(collectionName: "Wishlist", sort: .name, stamp: stamp)
+        #expect(cached.items.map(\.inCollection) == [true, false], "the same from the shared rows")
 
         let all = try await store.snapshot(collectionName: CollectionScope.allKey, sort: .name)
         #expect(all.items.map(\.name) == ["Alpha"], "All Collection is what is owned")
@@ -43,6 +48,22 @@ struct ListTests {
         #expect(try await store.ownedScryfallIDs() == ["a"])
         #expect(try await store.ownedIndex().copiesByKey == ["o-a": 2])
         #expect(try await store.collectionNames(kind: .collection) == ["Main"])
+    }
+
+    /// The same cards put on a list and then added to a collection are
+    /// two rows that say where: the place leads, and the list's is marked.
+    @Test func historyTellsAListAddFromACollectionAdd() async throws {
+        let container = try world()
+        let ctx = container.mainContext
+        let card = TestSupport.card(id: "z", name: "Zeta")
+        try CollectionEditController.add(.init(printing: PrintingSelection(item: card), collectionName: "Wishlist", quantity: 2), context: ctx)
+        try CollectionEditController.add(.init(printing: PrintingSelection(item: card), collectionName: "Main", quantity: 2), context: ctx)
+        let log = try await CollectionStore(modelContainer: container).history()
+        let onList = try #require(log.actions.first { $0.scopes == ["Wishlist"] })
+        let owned = try #require(log.actions.first { $0.scopes == ["Main"] })
+        #expect(onList.title == owned.title, "the same title: the detail has to tell them apart")
+        #expect(onList.isListOnly && onList.detail == "Wishlist (list)")
+        #expect(!owned.isListOnly && owned.detail == "Main")
     }
 
     @Test func aDeckIsNeverBuiltFromAList() async throws {
@@ -87,8 +108,8 @@ struct ListImportTests {
             ctx.insert(meta)
         }
         try ctx.save()
-        let list = DeckListParser.parse("2 Sol Ring (C21) 263\n1 Lightning Bolt *F*\n")
-        let result = try await CollectionImportView.importText(list, into: "Wants", container: container)
+        let file = CardListReader.read("2 Sol Ring (C21) 263\n1 Lightning Bolt *F*\n")
+        let result = try await CollectionImportController.importCards(file.cards, into: "Wants", container: container, remote: false)
         #expect(result.copies == 3 && result.unresolved.isEmpty)
         let rows = try ModelContext(container).fetch(FetchDescriptor<CollectionEntry>())
         #expect(rows.count == 2 && rows.allSatisfy { $0.collectionName == "Wants" })

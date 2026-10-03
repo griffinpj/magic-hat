@@ -8,6 +8,12 @@
 //  blur never becomes a lookup. A sure match goes into the tray (a haptic,
 //  and a sound unless it's off); an unsure one stops and asks.
 //
+//  Asked once. "Not This" is remembered for as long as the card stays in
+//  view — the same reading is not looked up and offered again — and leads
+//  straight to typing the card's name (`.manual`); a card nothing could be
+//  found for says so (`.unmatched`) and offers the same. Both forget when
+//  the card leaves the picture.
+//
 //  A card is never counted twice by accident. The card just scanned is
 //  ignored while it stays in the guide, and scanning the same printing
 //  again right after it — the same card held a second time, or a glare
@@ -74,6 +80,11 @@ final class ScanSession {
         case again(CardItem)
         /// Found, but outside the sets scanning is locked to.
         case skipped(String)
+        /// Read, but no card could be settled on (nothing found, or the
+        /// user said "Not This"): typing its name is offered.
+        case unmatched(String)
+        /// The user is typing the card's name; the text read, to start from.
+        case manual(String)
     }
 
     private(set) var phase: Phase = .looking
@@ -84,8 +95,18 @@ final class ScanSession {
     var isEditing = false
     var isPaused: Bool {
         if isEditing { return true }
-        if case .confirm = phase { return true }
-        return false
+        switch phase {
+        case .confirm, .manual: return true
+        default: return false
+        }
+    }
+
+    /// The sheet over the camera: the question, or the name field.
+    var isPrompting: Bool {
+        switch phase {
+        case .confirm, .manual: return true
+        default: return false
+        }
     }
 
     let settings: ScanSettings
@@ -101,6 +122,11 @@ final class ScanSession {
     /// a second while it sits in the guide.
     private var failed: (key: String, at: Date)?
     private var emptySince: Date?
+    /// Names the user turned down for the card in view (the name read and
+    /// the card offered): a reading close to one is not asked about again.
+    private var rejected: [String] = []
+    /// The reading the question on screen came from.
+    private var pendingReading: ScanReading?
 
     init(settings: ScanSettings) {
         self.settings = settings
@@ -135,26 +161,45 @@ final class ScanSession {
         return true
     }
 
+    /// Whether a reading is one the user already said no to.
+    nonisolated static func isRejected(_ reading: ScanReading, rejected: [String]) -> Bool {
+        guard let name = reading.name else { return false }
+        return rejected.contains { CardTextReader.similarity($0, name) >= 0.8 }
+    }
+
     /// One analysed frame.
-    func ingest(_ lines: [RecognizedLine]) {
+    func ingest(_ lines: [RecognizedLine], layout: CardTextReader.Layout = .card) {
         guard !isPaused else { return }
-        let reading = CardTextReader.read(lines, knownSets: knownSets)
+        let reading = CardTextReader.read(lines, knownSets: knownSets, layout: layout)
         guard reading.name != nil else {
-            // A clear guide for over a second: the next card may be anything.
+            // Nothing to read for over a second: the next card may be anything.
             if emptySince == nil { emptySince = Date() }
             if let since = emptySince, Date().timeIntervalSince(since) > 1.2 {
                 recent.removeAll()
+                rejected.removeAll()
                 if matchingKey == nil { phase = .looking }
             }
             return
         }
         emptySince = nil
+        // The card the user said "Not This" about, still in view: not
+        // looked up and not asked again — typing its name is on offer.
+        if Self.isRejected(reading, rejected: rejected) {
+            if matchingKey == nil { phase = .unmatched(reading.name ?? "") }
+            return
+        }
         // The card just taken, still in the guide (or back in it): nothing
         // to do — another copy is the +1.
         if Self.isSameAsLast(reading, last: lastTaken) {
             if case .added = phase {} else if case .again = phase {} else if let current {
                 phase = .again(current.card)
             }
+            return
+        }
+
+        // Looked up a moment ago and not found: say so rather than read on.
+        if let failed, failed.key == reading.key, Date().timeIntervalSince(failed.at) < 4 {
+            if matchingKey == nil { phase = .unmatched(reading.name ?? "") }
             return
         }
 
@@ -166,7 +211,6 @@ final class ScanSession {
             return
         }
         guard matchingKey != reading.key else { return }
-        if let failed, failed.key == reading.key, Date().timeIntervalSince(failed.at) < 4 { return }
         matchingKey = reading.key
         phase = .matching(reading.name ?? "")
         matchTask?.cancel()
@@ -184,14 +228,16 @@ final class ScanSession {
         switch outcome {
         case .nothing:
             failed = (reading.key, Date())
-            phase = .looking
+            phase = .unmatched(reading.name ?? "")
         case .outsideLockedSets(let name):
             failed = (reading.key, Date())
             phase = .skipped(name)
         case .match(let match):
             switch match.confidence {
             case .sure: accept(match.card, exactPrinting: match.exactPrinting, reading: reading)
-            case .unsure: phase = .confirm(match)
+            case .unsure:
+                pendingReading = reading
+                phase = .confirm(match)
             }
         }
     }
@@ -201,26 +247,56 @@ final class ScanSession {
         accept(card, exactPrinting: exactPrinting, reading: nil)
     }
 
+    /// Another name picked from the question's alternatives; if Scryfall
+    /// can't place it either, the name field opens on it.
     func confirm(name: String) {
+        if case .confirm(let match) = phase { remember(rejected: match) }
         phase = .matching(name)
         Task {
             if let card = try? await ScryfallClient.shared.named(fuzzy: name) {
                 accept(card, exactPrinting: false, reading: nil)
             } else {
-                phase = .looking
+                phase = .manual(name)
             }
         }
     }
 
+    /// "Not This": remembered while the card stays in view, and on to
+    /// typing its name, starting from what was read.
+    func reject() {
+        guard case .confirm(let match) = phase else { return }
+        remember(rejected: match)
+        phase = .manual(pendingReading?.name ?? "")
+    }
+
+    /// The name field, opened by hand (the keyboard button, or the
+    /// "couldn't place it" pill).
+    func beginManual() {
+        if case .unmatched(let name) = phase { phase = .manual(name) } else { phase = .manual("") }
+    }
+
+    /// The sheet closed without an answer: scanning carries on, and the
+    /// card just asked about is not asked about again while it stays.
     func dismissPrompt() {
-        if case .confirm(let match) = phase { lastTaken = (match.card.name, nil) }
-        phase = .looking
+        if case .confirm(let match) = phase {
+            remember(rejected: match)
+            phase = .unmatched(pendingReading?.name ?? match.card.name)
+        } else {
+            phase = .looking
+        }
+        pendingReading = nil
+    }
+
+    private func remember(rejected match: ScanMatch) {
+        rejected.append(match.card.name)
+        if let read = pendingReading?.name { rejected.append(read) }
+        recent.removeAll()
     }
 
     /// A still photo: read once, no voting — it can't be blurry twice.
-    func scan(photoLines lines: [RecognizedLine]) async {
-        let reading = CardTextReader.read(lines, knownSets: knownSets)
-        guard let name = reading.name else { phase = .looking; return }
+    func scan(photo frame: RecognizedFrame) async {
+        let reading = CardTextReader.read(frame.lines, knownSets: knownSets, layout: frame.layout)
+        guard let name = reading.name else { phase = .unmatched(""); return }
         phase = .matching(name)
         handle(await ScanMatcher.match(reading, options: settings.matchOptions), reading: reading)
     }
@@ -234,10 +310,12 @@ final class ScanSession {
         let finishes = CardFinish.fromScryfall(card.finishes)
         var finish: CardFinish = .normal
         if reading?.foil == true, finishes.contains(.foil) { finish = .foil }
-        else if settings.preferFoil, finishes.contains(.foil) { finish = .foil }
+        else if settings.preferFoil || AppSettings.defaultFinish == .foil, finishes.contains(.foil) { finish = .foil }
         else if !finishes.contains(.normal), let only = finishes.first { finish = only }
         let language = reading?.language ?? AppSettings.cardLanguage
         lastTaken = (card.name, "\(card.set.lowercased())|\(card.collectorNumber)")
+        rejected.removeAll()
+        pendingReading = nil
 
         if let head = tray.first, head.printing.scryfallID == printing.scryfallID {
             phase = .again(head.card)
@@ -318,7 +396,7 @@ final class ScanSession {
         let requests = tray.map { item in
             CollectionEditController.AddRequest(
                 printing: item.printing, collectionName: collection, quantity: item.quantity, finish: item.finish,
-                condition: CardCondition.nearMint.rawValue, language: item.language,
+                condition: AppSettings.defaultCondition, language: item.language,
                 purchasePrice: item.price
             )
         }

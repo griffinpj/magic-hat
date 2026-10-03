@@ -85,6 +85,10 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     /// A row on a list (a wishlist): browsed and edited like an owned row,
     /// never counted as owned. Set by the store, which knows the kinds.
     var inList = false
+    /// For a list's row: some printing of the card is owned, in a
+    /// collection or a built deck — the wishlist's "already have it".
+    /// Set by the store alongside `inList`.
+    var inCollection = false
 
     var powerToughness: String? {
         guard let power, let toughness else { return nil }

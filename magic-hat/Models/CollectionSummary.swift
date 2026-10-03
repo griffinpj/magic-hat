@@ -19,7 +19,31 @@ nonisolated struct CollectionSummary: Identifiable, Hashable, Sendable, Codable 
     let totalValue: Double
     /// Highest-value cards, for the thumbnail fan.
     let highlights: [Highlight]
+    // What the tab says beyond the count and the value. Optional, so an
+    // overview saved before they existed (LastOverview) still decodes.
+    /// Copies in a foil or etched finish.
+    var foils: Int? = nil
+    /// Distinct sets.
+    var sets: Int? = nil
+    /// What was paid for the rows that carry a price in the display
+    /// currency, and what those same rows are worth now.
+    var paidValue: Double? = nil
+    var marketOfPaid: Double? = nil
+    /// Copies by colour: "W" … "G", "M" for more than one colour, "C" for
+    /// none — each card counted once.
+    var colorCounts: [String: Int]? = nil
+    /// On a list: copies of cards owned somewhere, in any printing.
+    var ownedCopies: Int? = nil
     var id: String { name }
+
+    /// Up or down against what was paid, over the rows that know it.
+    var gainLoss: (amount: Double, percent: Double)? {
+        guard let paid = paidValue, paid > 0, let market = marketOfPaid else { return nil }
+        return (market - paid, (market - paid) / paid * 100)
+    }
+
+    /// The colour keys in the order a bar draws them.
+    static let colorOrder = ["W", "U", "B", "R", "G", "M", "C"]
 
     struct Highlight: Identifiable, Hashable, Sendable, Codable {
         let id: String

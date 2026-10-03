@@ -21,13 +21,20 @@ struct DeckCardSortTests {
             card("Crypt", cost: "{0}", price: 50, rarity: "rare"),
             card("Dash", cost: "{R}", price: 1, rarity: "mythic"),
         ]
-        func names(_ sort: DeckCardSort) -> [String] { sort.apply(rows, card: { $0 }).map(\.name) }
+        func names(_ sort: DeckCardSort, _ direction: SortDirection? = nil) -> [String] {
+            sort.apply(rows, card: { $0 }, direction: direction).map(\.name)
+        }
         #expect(names(.relevance) == ["Bolt", "Anger", "Crypt", "Dash"])
         #expect(names(.name) == ["Anger", "Bolt", "Crypt", "Dash"])
         #expect(names(.manaValue) == ["Crypt", "Bolt", "Dash", "Anger"])
-        #expect(names(.priceHigh) == ["Crypt", "Bolt", "Dash", "Anger"], "unpriced last")
-        #expect(names(.priceLow) == ["Bolt", "Dash", "Crypt", "Anger"], "unpriced last")
+        #expect(names(.price) == ["Crypt", "Bolt", "Dash", "Anger"], "unpriced last")
+        #expect(names(.price, .ascending) == ["Bolt", "Dash", "Crypt", "Anger"], "unpriced last")
+        #expect(names(.name, .descending) == ["Dash", "Crypt", "Bolt", "Anger"])
+        #expect(names(.manaValue, .descending) == ["Anger", "Bolt", "Dash", "Crypt"])
         #expect(names(.rarity) == ["Dash", "Crypt", "Anger", "Bolt"])
-        #expect(DeckCardSort.priceHigh.scryfall.sort == .price && DeckCardSort.priceHigh.scryfall.direction == .descending)
+        #expect(DeckCardSort.price.scryfall().sort == .price && DeckCardSort.price.scryfall().direction == .descending)
+        #expect(DeckCardSort.price.scryfall(.ascending).direction == .ascending)
+        #expect(DeckCardSort(stored: "Price (Low)") == .price)
+        #expect(DeckCardSort.direction(sortRaw: "Price (Low)", directionRaw: "") == .ascending)
     }
 }

@@ -67,7 +67,9 @@ struct CollectionCardsView: View {
 
     /// Remembered across launches and collections.
     @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
-    private var sort: CardSort { CardSort(rawValue: sortRaw) ?? .name }
+    /// Which way it runs; empty is the sort's own direction.
+    @AppStorage("collection.sort.direction") private var sortDirectionRaw: String = ""
+    private var order: CardOrder { CardOrder(sortRaw: sortRaw, directionRaw: sortDirectionRaw) }
 
     /// How many cards ahead of the visible tile to prefetch.
     private let lookahead = 30
@@ -169,7 +171,7 @@ struct CollectionCardsView: View {
         .task(id: "\(collectionName)|\(tracker.revision)") {
             await load(thenSync: true)
         }
-        .onChange(of: sortRaw) { _, _ in applySort() }
+        .onChange(of: order) { _, _ in applySort() }
     }
 
     // MARK: Toolbars
@@ -282,7 +284,7 @@ struct CollectionCardsView: View {
     /// for anything stale — both from ids the store already computed, so no
     /// extra store round-trips on the main thread.
     private func load(thenSync: Bool) async {
-        let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: sort, stamp: .current)) ?? .empty
+        let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: order.sort, direction: order.direction, stamp: .current)) ?? .empty
         guard !Task.isCancelled else { return }
         items = CardItemList(snapshot.items)
         applyFilter()
@@ -290,11 +292,14 @@ struct CollectionCardsView: View {
         prefetch(around: 0)
 
         guard thenSync, !snapshot.items.isEmpty else { return }
-        await hydrator.hydrate(pending: snapshot.pendingIDs, context: modelContext)
-        await hydrator.refreshPrices(stale: snapshot.stalePriceIDs, context: modelContext)
+        // The run belongs to the controller: leaving this screen doesn't
+        // cut a price refresh short. Awaiting its end here only serves the
+        // re-sort below.
+        hydrator.sync(pending: snapshot.pendingIDs, stale: snapshot.stalePriceIDs, context: modelContext)
+        await hydrator.syncTask?.value
         guard !Task.isCancelled else { return }
         // Sync finished: now a full re-sort is welcome (prices/rarity landed).
-        if let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort, stamp: .current) {
+        if let fresh = try? await store.snapshot(collectionName: collectionName, sort: order.sort, direction: order.direction, stamp: .current) {
             items = CardItemList(fresh.items)
             applyFilter()
         }
@@ -309,12 +314,12 @@ struct CollectionCardsView: View {
     private func applySort() {
         sortTask?.cancel()
         scrollToTop &+= 1
-        let sort = self.sort
+        let order = self.order
         let all = items.items
         sortTask = Task {
             try? await Task.sleep(for: .milliseconds(16))
             guard !Task.isCancelled else { return }
-            let sorted = await Task.detached(priority: .userInitiated) { CardItemList(CardSorting.sorted(all, by: sort)) }.value
+            let sorted = await Task.detached(priority: .userInitiated) { CardItemList(CardSorting.sorted(all, by: order)) }.value
             guard !Task.isCancelled else { return }
             items = sorted
             applyFilter()
@@ -337,7 +342,7 @@ struct CollectionCardsView: View {
     /// The merge (a dictionary of every card, then a pass over the order)
     /// runs off the main actor; only the assignment lands there.
     private func refreshInPlace() async {
-        guard let fresh = try? await store.snapshot(collectionName: collectionName, sort: sort, stamp: .current),
+        guard let fresh = try? await store.snapshot(collectionName: collectionName, sort: order.sort, direction: order.direction, stamp: .current),
               !Task.isCancelled else { return }
         let current = items.items
         let next = await Task.detached(priority: .userInitiated) { () -> CardItemList in
@@ -389,8 +394,10 @@ struct CollectionCardsView: View {
 
 
     private var sortButton: some View {
-        SortButton(options: CardSort.allCases, selected: sort, title: \.rawValue, icon: \.systemImage,
-                   onSelect: { sortRaw = $0.rawValue })
+        SortButton(options: CardSort.allCases, selected: order.sort, title: \.rawValue, icon: \.systemImage,
+                   direction: order.direction,
+                   onDirection: { sortRaw = order.sort.rawValue; sortDirectionRaw = $0.rawValue },
+                   onSelect: { sortRaw = $0.rawValue; sortDirectionRaw = "" })
     }
 }
 
@@ -404,7 +411,7 @@ private struct SyncPill: View {
         if hydrator.isSyncing {
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("Syncing \(hydrator.syncedCount)/\(hydrator.syncTotal)")
+                Text("\(hydrator.syncLabel) \(hydrator.syncedCount)/\(hydrator.syncTotal)")
                     .font(.caption.weight(.medium))
                     .monospacedDigit()
             }

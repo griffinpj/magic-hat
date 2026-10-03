@@ -408,10 +408,25 @@ detail screen and actions as an owned card:
   inside the pushed screen sits *below* the navigation and tab bars (Back
   and the tab pill stay live through the dim), gives VoiceOver no way out,
   and can't use the toolbar API.
-- `CardDetailView` — hero art header, gameplay text, Versions/Ruling tabs,
-  and all printings (grouped by set) with owned indicators. Mapping the
-  printings to cards and filtering/grouping them (per keystroke in
-  "Filter sets") run on a detached task — a basic land has hundreds.
+- `CardDetailView` — in the order the questions come: the art as a hero
+  with the name, cost, type, P/T and the printing it was opened on (set ·
+  number · rarity · artist) over its foot; the rules text as a card; one
+  scrolling row of chips (mana value, the formats it is legal in, EDHREC
+  rank); then Printings | Rulings as a segmented control. The navigation
+  title is empty while the hero shows (white text over busy art read
+  badly) and appears once it has scrolled away (`onScrollGeometryChange`).
+  Printings are grouped by set, newest set first, each set a rounded
+  container drawn row by row (`RowPosition` rounds the right corners, so
+  the LazyVStack stays flat and lazy) with the set's code and year in its
+  header; a row shows its number, its treatment ("Borderless",
+  "Showcase", "Extended Art" … from `ScryfallCard.treatment`, out of
+  `frame_effects` / `border_color` / `full_art` / `promo_types`), the
+  prices of the finishes it comes in, "Viewing" on the one opened, and
+  when owned the copies and how many are foil (`ownedItems` by the ids on
+  screen). An Owned chip filters to owned printings; the field filters
+  sets; a line says "4 printings in 2 sets · from $0.06". Mapping the
+  printings to cards and filtering/grouping them (per keystroke) run on a
+  detached task — a basic land has hundreds.
 - Present the viewer with `.fullScreenCover(item:)` over a
   `CardViewerSession` — the items, the current id and any deck target
   travel *in the item*. Reading them from the presenter's other `@State`
@@ -765,12 +780,23 @@ covers the number field. The landing and collection search fields use
 above a long scroll view starts hidden until the user pulls down.
 
 **All Collection.** The Collections tab leads with an overview card
-(cards, market value, and the share built into decks) and a synthetic
-"All Collection" — `CollectionScope.allKey`, a scope the store understands
-rather than an `MTGCollection` row — that lists every owned row across
-every collection and every built deck, each labelled with where it lives.
-Its row is the name alone: count, value and the card fan would repeat
-the overview card above it. The rows are glass cards pushed through a
+that *is* All Collection — `CollectionScope.allKey`, a scope the store
+understands rather than an `MTGCollection` row, every owned row across
+every collection and every built deck, each labelled with where it lives
+— so the card opens it (a bare "All Collection" row under it used to say
+nothing the card didn't). The card: cards and market value; up or down
+since bought (`CollectionSummary.gainLoss`: the rows that carry a price
+paid in the display currency, against what those rows are worth now); a
+`ColorBar` of the whole collection (each card once: its colour, gold for
+more than one, grey for none; Magic's palette deepened to read on glass);
+and unique · sets · foils · in decks. Each collection card carries its
+own facts beside the fan (sets, foils) and a thin colour bar along its
+foot; a list says how many of its cards are already owned
+(`ownedCopies`, from `CardItem.inCollection`); an empty one says what to
+do instead of "0 cards · —". Headings ("Collections", "Lists") carry the
+count past one. All of it comes from the one pass `summary(name:rows:)`
+already makes per stamp; the new fields are optional so a `LastOverview`
+saved before them still decodes. The rows are glass cards pushed through a
 `NavigationStack(path:)` from plain Buttons, not `NavigationLink`s — a
 link in a List draws a disclosure chevron beside the card — and the card
 carries a `contentShape`, since as a Button's label only its drawn text
@@ -824,6 +850,10 @@ already built; a DeckStore made on its own (tests) counts for itself.
 Writes: `DeckEditController` (main context; list edits write no audit,
 a list is a wish), `DeckBuilder` (background; moves copies, audits them).
 `DeckChangeTracker` is bumped by list edits, both trackers by builds.
+A list's rows also carry `CardItem.inCollection` — some printing of the
+card is owned, in a collection or a built deck (the store marks them from
+the owned rows' oracle ids): the tile shows the green check and the
+viewer "In collection", as a search hit does.
 A stepper or "+" shows its new count on the tap: `DeckAddSession`
 updates its rows as it writes, and the deck list keeps a written count
 until a snapshot dated at or after the write arrives — the re-read of
@@ -942,6 +972,116 @@ copies (a shopping list), which boards; then Share Text, Share File
 Language and tokens are not offered: the list holds English names and no
 token rows. `DeckExportOptions` + `DeckListParser.export(_:options:)`.
 
+## Deck versions
+
+A deck list has its own history, separate from History (which is the
+ledger of *copies*; a list is a wish, edited in bursts, restored by
+replacing rows). It is git's model in a deck's words (`Models/DeckVersion`):
+the list is the working tree; a **Version** (`DeckVersion`) is a commit —
+the whole list as JSON, its parent, a name or a note; a **Branch**
+(`DeckBranch`) is a name pointing at its newest version; `Deck
+.currentBranchID` is HEAD; **Unsaved Changes** is the list against the
+branch's tip. Two departures from git, both deliberate: there is no
+detached HEAD — **Restore** saves a *new* version holding the old list, so
+a branch only grows and nothing is orphaned — and **Switch** never
+refuses: what is unsaved is saved as an automatic version on the branch
+being left. New Branch carries unsaved changes along (`checkout -b`), or
+starts at any version. Deleting a branch removes the versions only it
+reached (`DeckVersionTree.unreachable`). Automatic versions (before a
+switch, a restore or a branch; when the deck is built, if it keeps
+versions) are folded away past twenty, re-parenting the child so the chain
+stays whole. Lists compare by card and board, never printing
+(`DeckListDiff`: added, removed, count changed, moved between boards).
+
+**A built deck's cards follow its list.** A list-changing action on a
+deck that is built — Switch, Restore, Discard, a branch from an older
+version — goes through `DeckVersionController.changingList`: the deck is
+taken apart, the list changes, and it is built again from the collections
+it was built from (`DeckBuilder.builtState`: the rows' sources, and the
+sideboard if it was built) — two History actions, Disassembled and Built,
+each undoable there. Changing only the list left the old list's cards in
+the deck's hidden collection with no row to show them, and Build never
+sent them home. A locked deck is refused before a card moves, and a
+branch name is checked first. Switch asks first on a built deck ("Switch
+and Rebuild"); every confirmation says the cards will move; a pill shows
+while it runs and the toast says what was built and what is missing
+("On Main · rebuilt 95, 3 missing"). Saving, renaming and a branch from
+the list as it stands move nothing.
+
+Writes are `DeckVersionController` (main context, like every list edit; no
+ledger records). Within one write, a list just replaced is saved from the
+rows it was replaced *with*: the relationship still lists rows deleted a
+line earlier until the context saves. Reads are `DeckStore.versions(deckID:)`
+— branches with "2 versions of its own · 1 behind" against the current
+one, the current branch's versions newest first with a tag where another
+branch sits or forks — and `compare(deckID:from:to:)` (`DeckListRef`:
+working, a version, the one before it, a branch), which also totals cards,
+lands, value and average mana value on each side.
+
+`DeckVersionsView` (the deck's "…" menu and Details page): Unsaved
+Changes (the counts, a tap for the diff, Discard), Branches (Current, or
+Switch; swipe and long-press for Rename, Compare, Delete; New Branch…),
+Versions on <branch> on History's rail. Save Version… is the one
+prominent button, in the bottom bar, only when there is something to
+save; its alert takes an optional name. A version's page
+(`DeckVersionCompareView`) is its changes against the one before, Restore
+This Version in the bottom bar, Rename / New Branch from Here / Compare
+with Current List in its menu. **Pushed with destination links and
+`navigationDestination(item:)`, never `NavigationLink(value:)`**: the
+Decks tab's stack has a typed path (`[DeckRoute]`), which drops values of
+another type silently. An "i" in the bar opens `DeckVersionsGuideView`
+(History's guide shape, `GuideRow`): versions, branches, then Versions and
+the History tab set side by side point by point (what each keeps, scope,
+when it records, going back, branches), what stays separate (list edits
+are never in History; versions never move cards) and where they meet
+(building, deleting the deck, backups). History's own guide points to it.
+Versions travel in backups (`deck-versions.json`,
+`deck-branches.json`) and with a deleted deck's History record.
+`DeckVersionTests`, `DeckVersionFlowTests` (UI).
+
+## Playtest and tokens
+
+**Playtest** (`Models/Playtest.swift`, `Views/Decks/DeckPlaytestView`):
+goldfishing, from the deck's "…" menu and its Details page, as a full
+screen. `PlaytestState` is a plain value — library, hand, battlefield,
+graveyard, exile, command zone; `newGame` (shuffle, draw seven),
+`draw`, a London `mulligan` (seven again, then `pendingBottom` cards to
+`bottom(_:)`), `nextTurn` (untap all, draw one), `toggleTap`,
+`move(_:to:libraryEnd:)`, `play` — built from a `DeckSnapshot` (every
+mainboard copy a `PlaytestCard`, commanders in the command zone). It
+shuffles with any `RandomNumberGenerator`, so `PlaytestTests` seed one
+(`SeededGenerator`, SplitMix64) and assert copies are conserved through
+every move. No rules engine: it is a table that keeps count, and it
+writes nothing. The screen: the battlefield on top (lands row, spells
+row; tap to tap, hold for the other zones and View Card), a status line
+(turn, library, untapped lands as "Mana", graveyard and exile buttons
+opening a `ZoneSheet`), the hand along the bottom with the command zone
+beside it (tap to play/cast; during a mulligan, tap to bottom, with a
+banner counting down), and a labelled glass action bar — Draw,
+Mulligan (turn one only), Next Turn — not a toolbar's icons, which read
+as nothing at a table. `PlaytestFlowTests` plays a seeded game.
+
+**Tokens** — Scryfall's `all_parts` with `component == "token"` is kept
+on the maker's `CardMeta.relatedTokensRaw` (`RelatedToken`, one per
+line; `metaVersion` 2 backfills it through hydration, and the bulk
+ingest shares `apply`). `DeckStore.snapshot` rolls the played boards'
+tokens up by kind (`DeckToken.collect`: name + type line, so a Soldier
+from three cards is one row, with the first printing the catalog has an
+image for — tokens are in `default_cards`) into `DeckSnapshot.tokens`,
+and Details lists them ("Tokens · n": art, name, kind, "Made by X and 2
+more"). `DeckTokenTests`.
+
+**Import dry run** — `ImportPreview` (Models, pure): the selected rows'
+copies, how many land as new rows and how many merge into rows the
+destination already has by `mergeKey` (duplicates within the file count
+once, as on import), and what Replace removes first. The wizard shows it
+as "What Will Happen", recomputed on the store
+(`CollectionStore.mergeKeyCopies`) as the destination, mode or binders
+change; a brand-new collection merges nothing. The generic sheet shows
+"Already in this collection: n" by name (`entryNames`). `UITEST_WIZARD_FILE`
+opens the wizard on a file in a seeded run, since a test can't drive the
+document picker. `ImportPreviewTests`, `SettingsImportTour`.
+
 ## Deck analysis, recommendations, synergies
 
 Ported from magicians-united's `deckcheck.php` (rules of thumb over
@@ -1045,6 +1185,9 @@ oracle text, no model) and kept pure so it runs off-main and under test:
 
 ## Set symbols and foil
 
+Every set symbol draws at `SetSymbolView.scale` (1.2) times the size it
+is asked for — one number, so they grew together when they read small.
+
 Set symbols are **text**, from the bundled Keyrune font (`Resources/keyrune.ttf`,
 SIL OFL; `keyrune-map.json` generated from Keyrune's CSS). Registered at
 runtime with CoreText, so no Info.plist entry. Promo/token codes (`p…`, `t…`)
@@ -1109,10 +1252,12 @@ The sheet stays open after Add so several printings can go in; a success
 haptic marks each. `EditEntryView` reuses `EntryFormSections`.
 
 The viewer's info panel never changes shape between cards: four rows of
-fixed height, every one always present — the name line ("In collection"
-trailing), the set line (language and condition chips trailing when
-owned), the mana cost row (empty for a land), the price line (the added
-date trailing). A row that came and went, or a chip row only owned cards
+fixed height, every one always present — the name line (the copies as a
+trailing "×2", or "In collection"; a leading "1×" used to cost the name
+its room), the set line (language and condition chips trailing when
+owned), the mana cost row (empty for a land, the added date trailing —
+the one row with room), the price line. The name row is one accessibility
+element (`viewer-name`: "Card 0, 2 copies, In collection"). A row that came and went, or a chip row only owned cards
 had, shifted everything below it as the pager moved.
 
 The viewer's bottom toolbar: Details (absent when the viewer was opened
@@ -1222,6 +1367,50 @@ existed, which carry the display label "Deck: Name" instead of the deck's
 key (`DeckBuilder` now records `deck:<uuid>`; History labels it). Deck
 *list* edits write no ledger and are not undoable — a list is a wish.
 
+**A long history is shown through a window** (`HistoryLog.window`,
+`HistoryWindow`): the newest forty actions of the current line — never
+fewer than reach the head and one applied row under it — with a Show
+Earlier row (how many more, and how many branches split from them), each
+other branch's newest eight with Show All, and *no branch whose fork is
+not drawn*: a card saying "splits from" an action that isn't on screen
+points nowhere, so it comes into view with its fork. `HistoryLog.action`
+is a dictionary lookup (a scan per row made a long list quadratic), and
+the List is re-identified when the log's set of lines changes (not the
+window's: Show Earlier bringing a branch into view must not throw the
+list to the top), so a row that changes section (an undone action
+becoming a branch when something new follows it) is drawn fresh rather
+than animated across.
+`UITEST_HISTORY_COUNT` seeds a long ledger with an old and a near branch
+for `ChangesTour`.
+
+**A row says where before it says what.** `HistoryAction.detail` leads
+with the place ("Main · Sol Ring, Counterspell and 1 more"): the line is
+cut at the row's width, and the place is what tells two actions on the
+same cards apart. A list is marked ("Wants (list)"), and an action that
+only touched lists shows its count plain with "on list" under it, not the
+green of copies gained — putting eleven cards on a wishlist and later
+adding the same eleven to a collection read as one action listed twice.
+
+**A step that can't run says so first.** `LedgerReplay.blocker` is the
+replay's own checks with no writes; `CollectionStore.history()` asks it
+for the next Undo and each Redo on offer and the log carries the reasons
+(`HistoryLog.blocked`; the check skips the CardMeta fetch a replay needs
+for rows it makes — on an import's thousands of cards that was its cost).
+The row wears a lock and the reason, the toolbar's
+Undo/Redo and the detail screen's button are off with it as their label
+(`UndoController.undoBlocker` / `redoBlocker`), instead of an alert after
+the tap.
+
+**Deleting a deck is an action** (`AuditAction.deckDelete`): one record
+with a zero delta — the ledger's sum is untouched — whose `payload` is the
+whole deck (`DeletedDeck`: the deck row, its list, its versions and
+branches, as the backup's records). Undo puts it back with the same id, so
+every build History holds against it names a deck that exists again and
+can be replayed; redo deletes it again (refused while it is built). A
+built deck is still disassembled first, as its own action. Creating a
+collection and deleting an empty one are still not actions.
+`docs/deck-versioning.md` has the reasoning.
+
 Tests: `HistoryTimelineTests` (the rules; ten actions, undo five, two
 new, undo two, redo the original five; forks at the root; jump paths),
 `UndoRedoTests` (rows return intact, the fork with both branches reached
@@ -1258,8 +1447,30 @@ actions, renaming and clearing.
   replaced a second unbounded `@Query` over every `CardMeta` row plus a
   dictionary join rebuilt on each change.
 - **Prices go stale, metadata does not.** `CardMeta.pricesUpdatedAt` drives
-  `refreshStalePrices`, which re-fetches only cards older than
-  `CardHydrationController.priceTTL` (6h) through the same batched endpoint.
+  `refreshPrices`, which re-fetches only cards older than
+  `DataPolicy.priceTTL` (the Refresh Prices setting: 6h/12h/24h/manual)
+  through the same batched endpoint.
+- **The sync is the controller's, not a screen's.**
+  `CardHydrationController.sync(pending:stale:context:)` runs metadata
+  then prices as one owned `Task` (`syncTask`); the grid asks for it and
+  awaits `syncTask?.value` only for its post-sync re-sort. It used to be
+  the grid's own `.task(id: collection|revision)`: backing out cancelled
+  a half-done price refresh and every write restarted it. `RootView`
+  starts the same sync 5s after every foreground from
+  `CollectionStore.dueForRefresh(stamp:)` (owned cards pending or past
+  the cadence, off the row cache), so prices move on the cadence whether
+  or not a collection is opened; skipped under `-uitest-*` so perf runs
+  match. See `docs/data-loading-audit.md` for the inventory.
+- **`DataActivity` (Utils) logs every load kind** (`DataTask`: catalog,
+  rulings, card data, prices, backup, analysis signals, vocabularies,
+  set list): the last run (start, end, count, note, failed) in
+  UserDefaults, the current run's progress in memory. Loaders call
+  `begin`/`progress`/`end`, or `skip` for a check that found nothing
+  ("Checked · up to date"). Settings › Card Data › Data Activity
+  (`DataActivityView`) shows what runs now with a bar, one row per load
+  ("2 hours ago · 3,846 cards · 41s"), and a detail with what it is, when
+  it runs (read from the live settings) and the last run. `UITestSeed`
+  seeds the log (`seedForTesting`); `SettingsImportTour` shoots it.
 - Images live on disk (Caches/), not in SwiftData, to keep the store small.
   Two tiers: the bytes on disk, decoded tiles in memory by URL and size.
   `CardGridView` warms the next 30 tiles' images as tiles appear
@@ -1412,8 +1623,29 @@ preference is a UserDefaults key in `AppSettings` (Utils), bound with
 - **Card Data** — the catalog's build date, `CatalogSyncController
   .checkForUpdates()` (manifest only, compares builds and ignores the
   weekly interval) and `updateNow` (downloads what differs, in place with
-  the sync bar — never the first-launch screen), cellular, and a price
-  refresh of every owned card.
+  the sync bar — never the first-launch screen), **Update Automatically**
+  (`autoCatalogRefresh`: off, the BGProcessingTask is never scheduled),
+  cellular, a price refresh of every owned card (`force: true`, so it
+  runs on cellular too), and Data Activity (above).
+- **Adding** — default condition and finish (`defaultCondition`,
+  `defaultFinish`) for the Add sheet, quick add and the scan tray.
+- **Show Prices** (`showPrices`, the `\.showsPrices` environment set in
+  `MainTabView`): off, the tile caption keeps the count, the overview
+  card shows unique cards instead of value, and the viewer, detail
+  screen, deck rows and reason lines drop their price — for a phone on a
+  table. The seed clears every settings key at launch: UserDefaults
+  persist between simulator runs, and a tour that failed with Show
+  Prices off left the next run without prices.
+- **Prices** — the refresh cadence (`PriceRefreshCadence`: 6h, 12h,
+  daily, manually; `DataPolicy.priceTTL` reads it, and changing it bumps
+  the tracker so the stores re-read what counts as stale) and Prices
+  over Cellular (`refreshPrices` skips on a metered path unless forced).
+- **Images** — Images over Cellular (`ImageLoader` refuses the network
+  with `ImageLoadError.meteredNetwork`; what is on disk still shows) and
+  Clear Image Cache with its size (`diskUsage`/`clearCache`).
+- **Deck Analysis** — Online Signals (`onlineAnalysis`:
+  `DeckAnalysisController.allowsNetwork`; off, the analysis is the local
+  reading alone and every screen says so).
 - **Backup & Restore** and **About** (version, contact —
   `AboutInfo.contactEmail` is a placeholder to replace — privacy policy,
   disclaimer, acknowledgements, all in-app text).
@@ -1476,13 +1708,21 @@ count, never one per tile: 3,800 tiles each observing the selection.
 
 `SortButton` (Views/Cards) is the only sort control on card lists: a
 floating glass circle bottom-trailing, the options with the current one
-checked, and Ascending/Descending where the source orders both ways
-(Scryfall). Collection grid (`CardSort`: Name, Mana Value, Price High/Low,
-Rarity, Set, Quantity, Recently Added), a deck's list and its add sheet
-(`DeckCardSort`), search results and a set's cards (`SearchSort`). Icons
-come from `SortIcon`, so an order has one symbol everywhere. All persist
-(`collection.sort`, `deck.sort`, `deck.add.sort.all|recommended`; Scryfall's
-in the query). The Decks tab's sort is a Files-style View Options menu,
+checked, then Ascending and Descending, the current way checked — every
+list sorts both ways. Collection grid (`CardSort`: Name, Mana Value, Price,
+Rarity, Set, Quantity, Recently Added; `CardOrder` is a sort plus its
+`SortDirection`, and the store's snapshot cache is keyed on both), a
+deck's list and its add sheet (`DeckCardSort`), search results and a set's
+cards (`SearchSort`). Picking another sort starts it its own way
+(`defaultDirection`: prices, rarity, quantity and dates from the top,
+names from A); ties always fall to name A–Z, and cards with no price or
+date come last either way. Icons come from `SortIcon`, so an order has one
+symbol everywhere. All persist (`collection.sort`, `deck.sort`,
+`deck.add.sort.all|recommended`, each with a `.direction` key that is
+empty for the sort's own way; Scryfall's in the query). The stored
+"Price (High)" / "Price (Low)" from before the direction was its own
+choice still read (`CardOrder(sortRaw:directionRaw:)`,
+`DeckCardSort(stored:)`). The Decks tab's sort is a Files-style View Options menu,
 because it sorts decks, not cards.
 
 `CardStore` (Models/BuyLink) builds TCGplayer Mass Entry
@@ -1501,14 +1741,27 @@ only one).
 ## Scan
 
 The Scan tab (Views/Scan, Controllers/Scan, `Utils/CardCamera`), camera
-first in ManaBox's shape with native chrome: the picture edge to edge, a
-card-shaped guide, the tray's total in a glass capsule, a glass control
-column (review, light, photo, settings), and the card just scanned in a
+first in ManaBox's shape with native chrome: the picture edge to edge,
+the tray's total in a glass capsule, a glass control column (review,
+light, photo, type a name, settings), and the card just scanned in a
 glass panel at the bottom. The layout is laid out, not computed — pills,
-then the guide taking the room left, then the panel (landscape: panel
-beside the guide) — and the guide's measured frame feeds the dimming mask
-and Vision's `regionOfInterest` (`CardCamera.guideRegion`, through the
-preview's aspect-fill).
+then the room left, then the panel (landscape: panel beside it).
+
+**No frame by default** (`ScanSettings.showFrame`, off): a phone on a
+stand never lines a card up with a box drawn on the screen. The whole
+visible picture is read (`CardCamera.findsCard`): Vision's rectangle
+detector finds the card — upright, a card's proportions, any size,
+anywhere — the text is read inside that rectangle (so lines are measured
+against the card exactly as from a guide, `Layout.card`), and an outline
+follows it. With no rectangle (a white border on a white tray) all the
+text is read and `CardTextReader.readPicture` works from what the lines
+say (`Layout.picture`): the info block is the line with a real set code
+and a language or number, the collector number on it or just above, the
+title the topmost line above and over it. Rectangle results are
+normalised to the region of interest, like text boxes. With Card Frame
+on, the guide's measured frame feeds the dimming mask and Vision's
+`regionOfInterest` (`CardCamera.guideRegion`, through the preview's
+aspect-fill; `viewRect` is its reverse, for the outline).
 
 The camera session and Vision (`VNRecognizeTextRequest`, accurate, no
 language correction) run on the camera's own queue, ~4 frames a second,
@@ -1524,6 +1777,20 @@ set read), sure at ≥ 0.88 similarity, otherwise it asks. The printing is
 then narrowed by `printingQuery` — the number alone, the locked sets,
 promos out — through one `unique:prints` search. `.outsideLockedSets` skips
 a card with a message.
+
+**Asked once.** "Not This" (`reject`) is remembered while the card stays
+in view — the name read and the card offered; a reading within 0.8 of
+either is not looked up or asked again (it used to match the offered
+card's name only, so a misread title re-prompted forever) — and turns the
+sheet into the name field in place (`Phase.manual`, one sheet for both:
+`ScanPromptView`). The question's bar has Skip (carry on scanning, this
+card left alone) and its body "No, Type Its Name" — two different ways
+out, not the same one twice. A card nothing was found for is `.unmatched`: the
+status pill says so and is the button to type it; the keyboard button in
+the control column opens the same field. `ScanManualEntry` searches
+Scryfall as you type (each word in the name, then the fuzzy match), and a
+tap puts the card in the tray like any scan. Forgotten when the card
+leaves the picture.
 
 `ScanSession`: two of three frames must agree before a lookup; the card
 just taken is ignored while it stays (`isSameAsLast`: same name and no
@@ -1544,10 +1811,31 @@ counts and the in-place edits; `visionReadsADrawnCard` runs Vision on a
 rendered card.
 
 A collection's or list's "…" menu (and an empty list's placeholder) has
-Import: pasted or typed list text, a .txt, or a ManaBox .csv
-(`CollectionImportView`). Text resolves like a deck import and lands as one
-`addMany` action; a CSV goes through `ImportController` in add mode, every
-binder into this collection or list. Unfound names are listed.
+Import (`CollectionImportView`): pasted text or a file, whatever made it.
+`CardListReader` (Models/CardListFile) tells the shape from the text,
+never the file's name: a **table** (commas, semicolons or tabs; quoted
+fields; a BOM; Excel's `sep=` line) whose columns are found by header
+name across ManaBox, Moxfield, Archidekt, Deckbox, Dragon Shield,
+TCGplayer, Delver Lens, Deckstats, MTGGoldfish, Card Kingdom/CardSphere
+and a spreadsheet of one's own (or no header: a count and a name); an
+**MTGO .dek**; or a **text list** in any shape `DeckListParser` reads —
+which now also takes "Name x4", bullets, "SB:", "[M10]" as a set, tabs,
+Archidekt's "[Category]" and "^tags^", and `*E*` for etched. The sheet
+says what it found (format, rows, copies, foils, how many name their
+printing) before anything is added, and links to a page of every
+supported shape with a sample. `CollectionImportController` matches each
+row by the best thing it carries — Scryfall id, set + number, name in the
+set it names (a set given by name is looked up in `/sets`), name — the
+catalog first, Scryfall for the rest (case and accents folded:
+`DeckImportController.patch`), keeps the row's finish, condition,
+language and price paid, and adds everything as one `addMany` action. A
+ManaBox export still goes through `ImportController` (it keeps ManaBox's
+ids and dates). Unfound names are listed. The Collections tab's menu has
+Import a File… and Paste a List…: a ManaBox export goes to the wizard,
+anything else to the same sheet with a picker for the collection or list
+(`CollectionImportView(collectionName: nil)`) — before, the tab only ever
+took ManaBox and refused the rest. The sample files in
+`magic-hatTests/Fixtures/import-*` are the contract (`CardListFileTests`).
 
 ## Search: Sets, and/or
 
@@ -1595,9 +1883,25 @@ responses.
 planner run with the user's picks as its only candidates, so a proposal is
 judged exactly as a recommendation (swap for a named card with the
 re-score, add while short, not clearly better than the weakest — named —
-already in, outside identity). `DeckProposeView` (Try Cards, from Swaps and
-the menu) re-judges as picks change. Swaps are hidden when a deck is
-locked.
+already in, outside identity). A **land is weighed against the lands**: the planner
+never cuts a land, so a land offered to a deck with enough of them used
+to be compared with the weakest *spell* (and a basic was not judged at
+all). `propose` takes the place of the land worth least to the mana base
+(`landValue`: the colours it makes that are at or under their target, its
+utility, overlap, meta, popularity; a basic a little less) when the pick
+is worth more, never leaving a colour short; while lands are under the
+floor it goes the planner's way and takes a spell's place; and a spell
+that beats no spell is offered a land's place when the deck runs
+`landSurplus` (4) over the floor. A format with no size (casual) has room:
+what isn't swapped is an add. Every proposal carries `options` — the
+planner's cut first, then the next-weakest rows, each re-scored
+(`swapEffect`) — because the planner's cut is a default. `DeckProposeView`
+(Try Cards, from Swaps and the menu) shows one thing at a time: typing
+shows results only, Try returns to the picks with the new one on top; a
+pick is a card of its own (what comes in, what goes out as a menu of the
+other cuts, the re-score, one button), and a pick that beats nothing can
+be swapped in anyway by choosing what leaves. Swaps are hidden when a deck
+is locked.
 
 ## Viewer: flip, smoothness, landscape
 

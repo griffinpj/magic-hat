@@ -112,13 +112,31 @@ enum DeckEditController {
         try context.fetch(FetchDescriptor<DeckFolder>(predicate: #Predicate { $0.id == id })).first
     }
 
-    /// Deletes the list. The caller disassembles first if the deck is
-    /// built — the physical cards must go home before their deck vanishes.
+    /// Deletes the deck: its list, versions and branches. The caller
+    /// disassembles first if the deck is built — the physical cards must
+    /// go home before their deck vanishes. It is a History action
+    /// (`.deckDelete`, no copies moved) carrying the whole deck, so Undo
+    /// brings it back, and with it the builds History holds against it.
     static func delete(deckID: UUID, context: ModelContext) throws {
         guard let deck = try fetch(deckID, context: context) else { return }
-        context.delete(deck)
+        let record = AuditRecord(actionID: UUID(), action: .deckDelete, scryfallID: "", cardName: deck.name,
+                                 collectionName: deck.collectionKey, finish: .normal, condition: "", quantityDelta: 0,
+                                 collectionEntryID: nil)
+        record.payload = try DeletedDeck(deck, in: context).encoded()
+        context.insert(record)
+        try remove(deck, in: context)
         try context.save()
         DeckChangeTracker.shared.bump()
+        // History lists it.
+        CollectionChangeTracker.shared.bump()
+    }
+
+    /// The deck and what hangs off it, off `context` (no save).
+    nonisolated static func remove(_ deck: Deck, in context: ModelContext) throws {
+        let id = deck.id
+        for version in try context.fetch(FetchDescriptor<DeckVersion>(predicate: #Predicate { $0.deckID == id })) { context.delete(version) }
+        for branch in try context.fetch(FetchDescriptor<DeckBranch>(predicate: #Predicate { $0.deckID == id })) { context.delete(branch) }
+        context.delete(deck)
     }
 
     static func rename(deckID: UUID, to name: String, context: ModelContext) throws {
