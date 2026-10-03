@@ -25,6 +25,10 @@ struct CardImageView: View {
 
     @Environment(\.displayScale) private var displayScale
 
+    /// Set to the art's colours once the image is in (see `ArtTint`), for
+    /// a parent that glows with them; nil when nobody asked.
+    var tint: Binding<ArtTint?>? = nil
+
     @State private var image: UIImage?
     @State private var didFail = false
 
@@ -73,6 +77,12 @@ struct CardImageView: View {
         .aspectRatio(aspectRatio, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: urlString) { await load() }
+        .onChange(of: image, initial: true) { _, _ in reportTint() }
+    }
+
+    private func reportTint() {
+        guard let tint, let urlString, let found = ImageMemoryCache.shared.tint(urlString) else { return }
+        if tint.wrappedValue != found { tint.wrappedValue = found }
     }
 
     /// Only a card shown large gets a spinner. A ProgressView is a UIKit

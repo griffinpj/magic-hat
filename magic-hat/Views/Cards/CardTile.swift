@@ -56,6 +56,10 @@ struct CardTile: View, Equatable {
 
     @ScaledMetric(relativeTo: .caption2) private var symbolSize: CGFloat = 12
     @Environment(\.showsPrices) private var showsPrices
+    /// The art's colours once its image is decoded (`CardImageView` sets
+    /// it); the cell glows with them. A warmed tile reads the cache in its
+    /// first frame instead.
+    @State private var tint: ArtTint?
 
     static func == (lhs: CardTile, rhs: CardTile) -> Bool {
         let l = lhs.item, r = rhs.item
@@ -90,20 +94,35 @@ struct CardTile: View, Equatable {
             }
             .padding(.horizontal, Self.inset)
             .padding(.top, Self.inset)
-            .background {
-                RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous)
-                    .fill(.clear)
-                    .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous))
-            }
+            .background { cell }
         } else {
             image
+        }
+    }
+
+    /// The glass cell, lit by the art: a gradient of the art's top and
+    /// bottom colours sits *behind* the glass, so the material does what
+    /// it does to anything behind it — the colour softens and bleeds to
+    /// the rim — and the glass itself takes a faint tint of the mix. No
+    /// blur of our own: a gradient and a tint are a fill each, so the
+    /// grid scrolls as it did (`testGridScrollDoesNotHitch`).
+    private var cell: some View {
+        let shape = RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous)
+        let glow = tint ?? item.imageURL.flatMap { ImageMemoryCache.shared.tint($0) }
+        return ZStack {
+            if let glow {
+                shape.fill(LinearGradient(colors: [glow.topColor, glow.bottomColor], startPoint: .top, endPoint: .bottom))
+                    .opacity(0.55)
+            }
+            shape.fill(.clear)
+                .glassEffect(glow.map { .regular.tint($0.midColor.opacity(0.22)) } ?? .regular, in: shape)
         }
     }
 
     @ViewBuilder private var image: some View {
         // Sheen on foils, static here so the grid never redraws for it.
         let art = CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio,
-                                targetWidth: targetWidth, foil: isFoil)
+                                targetWidth: targetWidth, foil: isFoil, tint: showsCaption ? $tint : nil)
             .overlay(alignment: .center) { placeholderName }
         if let zoom {
             art.matchedTransitionSource(id: item.id, in: zoom)
