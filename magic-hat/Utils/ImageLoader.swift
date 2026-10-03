@@ -68,7 +68,7 @@ actor ImageLoader {
     /// Bytes on disk, for Settings.
     nonisolated func diskUsage() -> Int64 {
         let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey]
-        let files = (try? fm.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: keys)) ?? []
+        let files = (try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: keys)) ?? []
         return files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: Set(keys)).totalFileAllocatedSize) ?? 0) }
     }
 

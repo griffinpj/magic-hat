@@ -29,6 +29,7 @@
 //
 
 import Foundation
+import os
 import SwiftData
 import BackgroundTasks
 import UIKit
@@ -503,19 +504,22 @@ final class CatalogSyncController {
         let activity = DataActivity.shared
         let task = Self.activityTask(dataset)
         if !activity.isRunning(task) { activity.begin(task) }
-        var rows = 0
+        // The row count the ingest reports last, read back here on the
+        // main actor; the progress closure is Sendable and may not mutate.
+        let counter = OSAllocatedUnfairLock(initialState: 0)
         do {
             try await BulkIngester.ingest(file: file, dataset: dataset, container: container) { done in
+                counter.withLock { $0 = done }
                 Task { @MainActor in
                     CatalogSyncController.shared.phase = .ingesting(dataset, done: done)
                     DataActivity.shared.progress(task, done: done)
                 }
-                rows = done
             }
         } catch {
-            activity.end(task, count: rows, note: "Couldn't add \(dataset.displayName)", failed: true)
+            activity.end(task, count: counter.withLock { $0 }, note: "Couldn't add \(dataset.displayName)", failed: true)
             throw error
         }
+        let rows = counter.withLock { $0 }
         activity.end(task, count: rows, note: "\(rows.formatted()) \(dataset == .rulings ? "rulings" : "cards") · build \(Self.buildLabel(version))")
         defaults.set(version, forKey: versionKey(dataset))
         defaults.set(Date(), forKey: ingestedAtKey(dataset))

@@ -25,7 +25,7 @@ final class NetworkMonitor {
 
     /// The same, readable off the main actor (the image loader, the price
     /// refresh), kept by the path handler under a lock.
-    private static let meteredNow = OSAllocatedUnfairLock(initialState: false)
+    private nonisolated static let meteredNow = OSAllocatedUnfairLock(initialState: false)
     nonisolated static var isMeteredNow: Bool { meteredNow.withLock { $0 } }
 
     private let monitor = NWPathMonitor()

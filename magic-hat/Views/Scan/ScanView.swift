@@ -434,7 +434,6 @@ struct ScanView: View {
 
     private func startIfReady() {
         guard access == .granted, isVisible, !Self.isDemo else { return }
-        let session = self.session
         camera.onFrame = { frame in take(frame) }
         updateRegion()
         camera.start()
