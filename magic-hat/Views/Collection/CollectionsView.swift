@@ -10,8 +10,13 @@
 //
 //  The rows are glass cards that push through a navigation path, not
 //  NavigationLinks: a link in a List draws a disclosure chevron beside the
-//  card, and the card is the whole affordance. All Collection is its name
-//  alone — its count and value are the overview card right above it.
+//  card, and the card is the whole affordance. The overview card *is* All
+//  Collection: its totals are that scope's, so the card opens it — there
+//  used to be a bare "All Collection" row under it saying nothing the
+//  card didn't. The overview says more than two numbers: up or down since
+//  bought (over the rows that know what was paid), the colours of the
+//  whole collection as a bar, unique cards, sets, foils and the share in
+//  decks — all from the one pass the store already makes per stamp.
 //
 
 import SwiftUI
@@ -39,6 +44,15 @@ struct CollectionsView: View {
     @State private var parsedRows: [ManaBoxRow] = []
     @State private var parsedBinders: [ImportWizardView.BinderCount] = []
     @State private var showingWizard = false
+    /// A file that isn't a ManaBox export: read by CardListReader, into a
+    /// collection or list chosen in the sheet.
+    @State private var genericFile: GenericFile?
+    struct GenericFile: Identifiable {
+        let text: String
+        let name: String
+        var id: String { name }
+    }
+    @State private var showingTextImport = false
     @State private var importError: String?
     @State private var isParsing = false
     /// Starts as the last overview saved (see `LastOverview`), so the
@@ -57,6 +71,7 @@ struct CollectionsView: View {
     /// The grid's sort, so the overview pass can leave each collection's
     /// snapshot ready in that order.
     @AppStorage("collection.sort") private var sortRaw: String = CardSort.name.rawValue
+    @AppStorage("collection.sort.direction") private var sortDirectionRaw: String = ""
 
     private var errorBinding: Binding<Bool> {
         Binding(get: { importError != nil }, set: { if !$0 { importError = nil } })
@@ -78,7 +93,7 @@ struct CollectionsView: View {
         summaryTask = Task {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
-            let sort = CardSort(rawValue: sortRaw) ?? .name
+            let order = CardOrder(sortRaw: sortRaw, directionRaw: sortDirectionRaw)
             let stamp = StoreStamp.current
             if let fresh = try? await store.overview(stamp: stamp), !Task.isCancelled {
                 overview = fresh
@@ -91,7 +106,7 @@ struct CollectionsView: View {
                 LastOverview.save(fresh)
             }
             guard !Task.isCancelled else { return }
-            try? await store.prewarmSnapshots(sort: sort, stamp: stamp)
+            try? await store.prewarmSnapshots(order: order, stamp: stamp)
         }
     }
 
@@ -129,8 +144,15 @@ struct CollectionsView: View {
                         Button {
                             showingFileImporter = true
                         } label: {
-                            Label("Import…", systemImage: "square.and.arrow.down")
+                            Label("Import a File…", systemImage: "square.and.arrow.down")
                         }
+                        .accessibilityIdentifier("collections-import-file")
+                        Button {
+                            showingTextImport = true
+                        } label: {
+                            Label("Paste a List…", systemImage: "doc.on.clipboard")
+                        }
+                        .accessibilityIdentifier("collections-import-text")
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
@@ -140,12 +162,18 @@ struct CollectionsView: View {
             .overlay { if isParsing || isDeleting { busyOverlay(isDeleting ? "Deleting…" : "Reading file…") } }
             .fileImporter(
                 isPresented: $showingFileImporter,
-                allowedContentTypes: [.commaSeparatedText, .plainText, .text],
+                allowedContentTypes: [.commaSeparatedText, .tabSeparatedText, .plainText, .text, .utf8PlainText, .xml, .data],
                 allowsMultipleSelection: false
             ) { result in
                 handleFile(result)
             }
             .sheet(isPresented: $showingSettings) { SettingsView() }
+            .sheet(isPresented: $showingTextImport) {
+                CollectionImportView(collectionName: nil, isList: false)
+            }
+            .sheet(item: $genericFile) { file in
+                CollectionImportView(collectionName: nil, isList: false, fileText: file.text, fileName: file.name)
+            }
             .sheet(isPresented: $showingWizard) {
                 ImportWizardView(
                     rows: parsedRows,
@@ -174,6 +202,13 @@ struct CollectionsView: View {
                 Text(importError ?? "")
             }
             .task(id: tracker.revision) { scheduleSummaries(delay: .zero) }
+            // The wizard over a file the UI test names, since a test can't
+            // drive the document picker (`FeatureTour`'s import shots).
+            .task {
+                guard UITestSeed.isSeededRun,
+                      let path = ProcessInfo.processInfo.environment["UITEST_WIZARD_FILE"], !path.isEmpty else { return }
+                handleFile(.success([URL(fileURLWithPath: path)]))
+            }
             // Observed in a child, not with onChange here: reading the
             // revision in this body re-rendered the tab — and re-created the
             // import sheet's content — on every hydration batch.
@@ -249,10 +284,18 @@ struct CollectionsView: View {
         List {
             if let overview {
                 if overview.all.totalCopies > 0 {
-                    LibraryOverviewCard(overview: overview)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 10, trailing: 16))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
+                    // Everything owned, in one grid: collections and built
+                    // decks alike. The card is the way in.
+                    Button {
+                        path.append(CollectionScope.allKey)
+                    } label: {
+                        LibraryOverviewCard(overview: overview)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 10, trailing: 16))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                    .accessibilityIdentifier("collection-all")
                 }
             } else {
                 // The totals are one pass over every owned row, off the main
@@ -263,29 +306,16 @@ struct CollectionsView: View {
                     .listRowSeparator(.hidden)
                     .listRowBackground(Color.clear)
             }
-            // Everything in one grid: collections and built decks alike.
-            Button {
-                path.append(CollectionScope.allKey)
-            } label: {
-                CollectionCard(summary: nil, name: CollectionScope.allName, showsValue: false)
-            }
-            .buttonStyle(.plain)
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .accessibilityIdentifier("collection-all")
-            ForEach(ownedCollections) { collection in
-                collectionRow(collection)
+            if !ownedCollections.isEmpty {
+                heading("Collections", count: ownedCollections.count)
+                ForEach(ownedCollections) { collection in
+                    collectionRow(collection)
+                }
             }
             if !lists.isEmpty {
                 // Lists: cards wanted, not held. Their own heading, below
                 // everything that counts toward the totals above.
-                Text("Lists")
-                    .font(.title3.weight(.semibold))
-                    .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 2, trailing: 16))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                    .accessibilityAddTraits(.isHeader)
+                heading("Lists", count: lists.count)
                 ForEach(lists) { list in
                     collectionRow(list)
                 }
@@ -304,6 +334,25 @@ struct CollectionsView: View {
         } message: {
             Text("Removes every card in it. The change is recorded in History.")
         }
+    }
+
+    /// A section's title with its count, in the large-title's voice.
+    private func heading(_ title: String, count: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+            if count > 1 {
+                Text("\(count)")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 18, leading: 20, bottom: 2, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 
     private func collectionRow(_ collection: MTGCollection) -> some View {
@@ -357,6 +406,8 @@ struct CollectionsView: View {
                     parsedRows = rows
                     parsedBinders = binders
                     showingWizard = true
+                case .other(let text, let name):
+                    genericFile = GenericFile(text: text, name: name)
                 case .failure(let message):
                     importError = message
                 }
@@ -366,21 +417,28 @@ struct CollectionsView: View {
 
     private enum ParseOutcome: Sendable {
         case rows([ManaBoxRow], binders: [ImportWizardView.BinderCount])
+        /// Not a ManaBox export: any other list or table, for the generic sheet.
+        case other(text: String, name: String)
         case failure(String)
     }
 
-    /// Reads and parses the CSV off the main thread so picking a large file
-    /// never stalls the UI. Returns rows or a user-facing error message.
+    /// Reads and parses the file off the main thread so picking a large
+    /// file never stalls the UI. A ManaBox export becomes rows for the
+    /// wizard (it keeps ManaBox's ids and dates); anything else — another
+    /// app's CSV, a list, an MTGO .dek — is read by CardListReader in the
+    /// import sheet, which used to be reachable only from inside a
+    /// collection.
     private static func parse(url: URL) async -> ParseOutcome {
         await Task.detached(priority: .userInitiated) {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
                 let data = try Data(contentsOf: url)
-                guard let text = String(data: data, encoding: .utf8)
-                        ?? String(data: data, encoding: .isoLatin1) else {
+                guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16)
+                        ?? String(data: data, encoding: .windowsCP1252) ?? String(data: data, encoding: .isoLatin1) else {
                     return .failure("Couldn't read the file as text.")
                 }
+                guard CardListReader.read(text).isManaBox else { return .other(text: text, name: url.lastPathComponent) }
                 let rows = try CSVParser.parseManaBox(text)
                 guard !rows.isEmpty else {
                     return .failure("No card rows found in the file.")
@@ -414,36 +472,71 @@ struct LibraryLoadingCard: View {
 struct LibraryOverviewCard: View {
     let overview: CollectionOverview
 
+    @Environment(\.showsPrices) private var showsPrices
+    private var all: CollectionSummary { overview.all }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Text(CollectionScope.allName)
+                    .font(.headline)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
             HStack(alignment: .firstTextBaseline) {
-                stat(overview.all.totalCopies.formatted(), "cards", id: "library-cards")
+                stat(all.totalCopies.formatted(), "cards", id: "library-cards")
                 Spacer(minLength: 12)
-                stat(Self.money(overview.all.totalValue), "market value", id: "library-value", alignment: .trailing)
-            }
-            if overview.deckCopies > 0 {
-                VStack(alignment: .leading, spacing: 6) {
-                    GeometryReader { geo in
-                        HStack(spacing: 2) {
-                            Capsule().fill(.tint)
-                                .frame(width: max(4, geo.size.width * overview.deckFraction))
-                            Capsule().fill(.quaternary)
-                        }
-                    }
-                    .frame(height: 6)
-                    HStack {
-                        legend(.tint, "\(overview.deckCopies.formatted()) in decks")
-                        Spacer()
-                        legend(.quaternary, "\(overview.collectionCopies.formatted()) in collections")
-                    }
+                if showsPrices {
+                    stat(Self.money(all.totalValue), "market value", id: "library-value", alignment: .trailing)
+                } else {
+                    stat(all.uniqueCards.formatted(), "unique", id: "library-unique", alignment: .trailing)
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(overview.deckCopies) cards in decks, \(overview.collectionCopies) in collections")
             }
+            if showsPrices, let change = all.gainLoss, change.amount != 0 {
+                gainLine(change)
+            }
+            if let counts = all.colorCounts, !counts.isEmpty {
+                ColorBar(counts: counts)
+                    .frame(height: 8)
+            }
+            Text(factsLine)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .monospacedDigit()
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
+
+    /// "▲ $412 · +5.3% since bought", green up, red down — the rows that
+    /// know what was paid, against what they are worth today.
+    private func gainLine(_ change: (amount: Double, percent: Double)) -> some View {
+        let up = change.amount > 0
+        return HStack(spacing: 5) {
+            Image(systemName: up ? "arrow.up.right" : "arrow.down.right")
+                .font(.caption.weight(.bold))
+            Text("\(PriceFormat.whole(abs(change.amount))) · \(PriceFormat.percent(change.percent)) since bought")
+                .font(.subheadline.weight(.medium))
+                .monospacedDigit()
+        }
+        .foregroundStyle(up ? Color.green : Color.red)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("library-change")
+    }
+
+    /// "3,861 unique · 118 sets · 212 foils · 1,012 in decks".
+    private var factsLine: String {
+        var parts = ["\(all.uniqueCards.formatted()) unique"]
+        if let sets = all.sets, sets > 0 { parts.append("\(sets.formatted()) \(sets == 1 ? "set" : "sets")") }
+        if let foils = all.foils, foils > 0 { parts.append("\(foils.formatted()) \(foils == 1 ? "foil" : "foils")") }
+        if overview.deckCopies > 0 { parts.append("\(overview.deckCopies.formatted()) in decks") }
+        return parts.joined(separator: " · ")
     }
 
     private func stat(_ value: String, _ label: String, id: String, alignment: HorizontalAlignment = .leading) -> some View {
@@ -456,15 +549,6 @@ struct LibraryOverviewCard: View {
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func legend(_ fill: some ShapeStyle, _ text: String) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(fill).frame(width: 7, height: 7)
-            Text(text)
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
 
     private static func money(_ value: Double) -> String {

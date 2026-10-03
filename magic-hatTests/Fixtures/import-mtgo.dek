@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Deck xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <NetDeckID>0</NetDeckID>
+  <PreconstructedDeckID>0</PreconstructedDeckID>
+  <Cards CatID="65382" Quantity="4" Sideboard="false" Name="Ragavan, Nimble Pilferer" Annotation="0" />
+  <Cards CatID="36322" Quantity="4" Sideboard="false" Name="Lightning Bolt" Annotation="0" />
+  <Cards CatID="81211" Quantity="2" Sideboard="true" Name="Fire &amp; Ice" Annotation="0" />
+</Deck>

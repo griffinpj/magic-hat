@@ -61,7 +61,7 @@ actor CollectionStore: ModelActor {
     private var rowsCache: (stamp: StoreStamp, rows: [Row])?
 
     nonisolated struct Row: Sendable {
-        let item: CardItem
+        var item: CardItem
         /// On a list: shown in that list, never counted as owned.
         var inList: Bool { item.inList }
         /// No fetched metadata yet (or stored before colours were kept).
@@ -121,6 +121,20 @@ actor CollectionStore: ModelActor {
         try allRows(stamp: stamp).filter { !$0.inList }
     }
 
+    /// Owned cards whose prices are older than the cadence, and owned
+    /// cards still pending metadata — what the app-level refresh runs on
+    /// (`RootView`), so prices move on the cadence whether or not a
+    /// collection is opened.
+    func dueForRefresh(stamp: StoreStamp? = nil) throws -> (pending: [String], stale: [String]) {
+        var pending = Set<String>()
+        var stale = Set<String>()
+        for row in try ownedRows(stamp: stamp) {
+            if row.pending { pending.insert(row.item.scryfallID) }
+            if row.stale { stale.insert(row.item.scryfallID) }
+        }
+        return (Array(pending), Array(stale))
+    }
+
     private static func rows(of entries: [CollectionEntry], labels: [String: String], lists: Set<String> = []) -> [Row] {
         let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
         let currency = AppSettings.currency
@@ -137,7 +151,22 @@ actor CollectionStore: ModelActor {
             let stale = fetched && (meta?.pricesUpdatedAt ?? .distantPast) < cutoff
             rows.append(Row(item: item, pending: !fetched, stale: stale))
         }
+        if !lists.isEmpty { markOwned(&rows, ownedKeys: ownedKeys(of: rows)) }
         return rows
+    }
+
+    /// The card keys (oracle id, else Scryfall id) of every owned row.
+    private static func ownedKeys(of rows: [Row]) -> Set<String> {
+        Set(rows.lazy.filter { !$0.inList }.map { $0.item.oracleID ?? $0.item.scryfallID })
+    }
+
+    /// A list's rows say whether the card is already owned somewhere, in
+    /// any printing: the tile and the viewer mark it "In collection".
+    private static func markOwned(_ rows: inout [Row], ownedKeys: Set<String>) {
+        guard !ownedKeys.isEmpty else { return }
+        for i in rows.indices where rows[i].inList {
+            rows[i].item.inCollection = ownedKeys.contains(rows[i].item.oracleID ?? rows[i].item.scryfallID)
+        }
     }
 
     /// Every card in a collection, sorted, plus what still needs fetching.
@@ -145,8 +174,10 @@ actor CollectionStore: ModelActor {
     /// included, each labelled with where it lives.
     /// Pass the caller's `stamp` to use (and fill) the cache; without one
     /// the fetch is always fresh, which is what tests want.
-    func snapshot(collectionName: String, sort: CardSort, stamp: StoreStamp? = nil) throws -> CollectionSnapshot {
-        let key = "\(collectionName)|\(sort.rawValue)"
+    func snapshot(collectionName: String, sort: CardSort, direction: SortDirection? = nil,
+                  stamp: StoreStamp? = nil) throws -> CollectionSnapshot {
+        let order = CardOrder(sort, direction)
+        let key = "\(collectionName)|\(order.key)"
         if let hit = cached(key, stamp) { return hit }
         let rows: [Row]
         if CollectionScope.isAll(collectionName) {
@@ -157,14 +188,21 @@ actor CollectionStore: ModelActor {
             // One collection, nothing shared to reuse: fetch just its rows.
             var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
             descriptor.relationshipKeyPathsForPrefetching = [\.card]
-            rows = Self.rows(of: try modelContext.fetch(descriptor), labels: [:], lists: try listNames())
+            let lists = try listNames()
+            var fetched = Self.rows(of: try modelContext.fetch(descriptor), labels: [:], lists: lists)
+            // A list read on its own still says what is owned: that needs
+            // the owned rows, which a collection's own read does not.
+            if lists.contains(collectionName) {
+                Self.markOwned(&fetched, ownedKeys: Self.ownedKeys(of: try ownedRows(stamp: stamp)))
+            }
+            rows = fetched
         }
-        let snapshot = Self.snapshot(of: rows, sort: sort)
+        let snapshot = Self.snapshot(of: rows, order: order)
         if let stamp { snapshots[key] = (stamp, snapshot) }
         return snapshot
     }
 
-    private static func snapshot(of rows: [Row], sort: CardSort) -> CollectionSnapshot {
+    private static func snapshot(of rows: [Row], order: CardOrder) -> CollectionSnapshot {
         var pending = Set<String>()
         var stale = Set<String>()
         for row in rows {
@@ -172,7 +210,7 @@ actor CollectionStore: ModelActor {
             if row.stale { stale.insert(row.item.scryfallID) }
         }
         return CollectionSnapshot(
-            items: CardSorting.sorted(rows.map(\.item), by: sort),
+            items: CardSorting.sorted(rows.map(\.item), by: order),
             pendingIDs: Array(pending),
             stalePriceIDs: Array(stale)
         )
@@ -185,10 +223,12 @@ actor CollectionStore: ModelActor {
     /// every background save.
     func history() throws -> HistoryLog {
         var descriptor = FetchDescriptor<AuditRecord>(sortBy: [SortDescriptor(\.timestamp, order: .reverse)])
+        // Not the payload: a deleted deck's record carries the whole deck.
         descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.quantityDelta, \.collectionName, \.binderName,
                                         \.actionRaw, \.undoesActionID, \.scryfallID, \.cardName]
         let records = try modelContext.fetch(descriptor)
         let names = try deckNames()
+        let lists = try listNames()
         let grouped = Dictionary(grouping: records, by: \.actionID)
         var steps: [HistoryStep] = []
         steps.reserveCapacity(grouped.count)
@@ -222,6 +262,12 @@ actor CollectionStore: ModelActor {
             for record in recs {
                 copies[record.scryfallID, default: (record.cardName, 0)].copies += abs(record.quantityDelta)
             }
+            // A deleted deck is named by its record; it has no cards to count.
+            if kind == .deckDelete {
+                deckName = recs[0].cardName
+                copies = [:]
+                scopes = []
+            }
             let ranked = copies.values.sorted { a, b in
                 if a.copies != b.copies { return a.copies > b.copies }
                 return a.name < b.name
@@ -240,13 +286,24 @@ actor CollectionStore: ModelActor {
                 cardNames: Array(cardNames),
                 deckName: deckName,
                 replaced: recs.contains { $0.action == .importReplace },
-                destination: kind == .move ? recs.first { $0.quantityDelta > 0 }?.collectionName : nil
+                destination: kind == .move ? recs.first { $0.quantityDelta > 0 }?.collectionName : nil,
+                listScopes: scopes.intersection(lists)
             ))
         }
         actions.sort { $0.timestamp > $1.timestamp }
         let branchNames = Dictionary(try modelContext.fetch(FetchDescriptor<HistoryBranchName>()).map { ($0.actionID, $0.name) },
                                      uniquingKeysWith: { a, _ in a })
-        return HistoryLog(actions: actions, timeline: timeline, names: branchNames)
+        // What Undo and Redo would do next, tried without doing it: a step
+        // that can't run is known before it is offered. Two or three
+        // actions, here on the store's queue.
+        var blocked: [UUID: String] = [:]
+        if let next = timeline.nextUndo, let why = LedgerReplay.blocker(actionID: next, direction: .undo, in: modelContext) {
+            blocked[next] = why.errorDescription
+        }
+        for option in timeline.redoOptions {
+            if let why = LedgerReplay.blocker(actionID: option, direction: .redo, in: modelContext) { blocked[option] = why.errorDescription }
+        }
+        return HistoryLog(actions: actions, timeline: timeline, names: branchNames, blocked: blocked)
     }
 
     /// One action's changes, merged per printing and grouped by the
@@ -359,16 +416,16 @@ actor CollectionStore: ModelActor {
     /// in `sort`, so the tap that follows the tab is a lookup. Its own call
     /// rather than part of `overview`: the totals are what the tab draws
     /// and land first; the sorts follow, over the rows the overview built.
-    func prewarmSnapshots(sort: CardSort, stamp: StoreStamp) throws {
+    func prewarmSnapshots(order: CardOrder, stamp: StoreStamp) throws {
         let names = try collectionNames()
         let keys = [CollectionScope.allKey] + names
-        guard !keys.allSatisfy({ snapshots["\($0)|\(sort.rawValue)"]?.stamp == stamp }) else { return }
+        guard !keys.allSatisfy({ snapshots["\($0)|\(order.key)"]?.stamp == stamp }) else { return }
         let rows = try allRows(stamp: stamp)
         let byCollection = Dictionary(grouping: rows, by: \.item.collectionName)
         for name in names {
-            snapshots["\(name)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: byCollection[name] ?? [], sort: sort))
+            snapshots["\(name)|\(order.key)"] = (stamp, Self.snapshot(of: byCollection[name] ?? [], order: order))
         }
-        snapshots["\(CollectionScope.allKey)|\(sort.rawValue)"] = (stamp, Self.snapshot(of: rows.filter { !$0.inList }, sort: sort))
+        snapshots["\(CollectionScope.allKey)|\(order.key)"] = (stamp, Self.snapshot(of: rows.filter { !$0.inList }, order: order))
     }
 
     /// The Collections tab: every collection and list, the whole library
@@ -407,21 +464,48 @@ actor CollectionStore: ModelActor {
     private static func summary(name: String, rows: [Row]) -> CollectionSummary {
         var total = 0.0
         var valued: [(value: Double, item: CardItem)] = []
+        var foils = 0
+        var sets = Set<String>()
+        var paid = 0.0
+        var marketOfPaid = 0.0
+        var colors: [String: Int] = [:]
+        var ownedCopies = 0
+        let currency = AppSettings.currency.code
         for row in rows {
-            let value = value(of: row.item)
+            let item = row.item
+            let value = value(of: item)
             total += value
-            if value > 0 { valued.append((value, row.item)) }
+            if value > 0 { valued.append((value, item)) }
+            if item.finish != .normal { foils += item.quantity }
+            if !item.setCode.isEmpty { sets.insert(item.setCode) }
+            // A price paid in the display currency (ManaBox writes "USD";
+            // an Add writes none, meaning the display currency).
+            let paidIn = item.purchaseCurrency.flatMap { $0.isEmpty ? nil : $0 } ?? currency
+            if let price = item.purchasePrice, price > 0, paidIn.uppercased() == currency {
+                paid += price * Double(item.quantity)
+                marketOfPaid += value
+            }
+            let key: String = item.colors.count > 1 ? "M" : (item.colors.first?.rawValue ?? "C")
+            colors[key, default: 0] += item.quantity
+            if item.inCollection { ownedCopies += item.quantity }
         }
         let top = valued.sorted { $0.value > $1.value }.prefix(5).map {
             CollectionSummary.Highlight(id: $0.item.id, imageURL: $0.item.imageURL, aspectRatio: $0.item.aspectRatio)
         }
-        return CollectionSummary(
+        var summary = CollectionSummary(
             name: name,
             uniqueCards: rows.count,
             totalCopies: rows.reduce(0) { $0 + $1.item.quantity },
             totalValue: total,
             highlights: Array(top)
         )
+        summary.foils = foils
+        summary.sets = sets.count
+        summary.paidValue = paid
+        summary.marketOfPaid = marketOfPaid
+        summary.colorCounts = colors
+        summary.ownedCopies = ownedCopies
+        return summary
     }
 
     /// Every card in the real collections — decks' rows left out — one item
@@ -507,6 +591,23 @@ actor CollectionStore: ModelActor {
         var descriptor = FetchDescriptor<CollectionEntry>()
         descriptor.propertiesToFetch = [\.setCode]
         return Set(try modelContext.fetch(descriptor).map { $0.setCode.lowercased() })
+    }
+
+    /// The card names a collection holds, folded (lowercase), for the
+    /// generic import sheet's "already here" count.
+    func entryNames(collectionName: String) throws -> Set<String> {
+        var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
+        descriptor.propertiesToFetch = [\.name]
+        return Set(try modelContext.fetch(descriptor).map { $0.name.lowercased() })
+    }
+
+    /// The destination's rows as merge key → copies, for `ImportPreview`.
+    func mergeKeyCopies(collectionName: String) throws -> [String: Int] {
+        let entries = try modelContext.fetch(FetchDescriptor<CollectionEntry>(
+            predicate: #Predicate { $0.collectionName == collectionName }))
+        var out: [String: Int] = [:]
+        for entry in entries { out[entry.mergeKey, default: 0] += entry.quantity }
+        return out
     }
 
     /// Collection names present on entries (for backfilling MTGCollection

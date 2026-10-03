@@ -36,6 +36,13 @@ nonisolated enum AuditAction: String, Codable, Sendable, CaseIterable {
     /// Copies moved between collections and lists (pairs of −n / +n), from
     /// a multi-select.
     case move
+    /// A deck deleted. No copies move (a built deck is disassembled first,
+    /// its own action): one record with a zero delta, the deck's key as
+    /// its collection, its name as the card name, and the deck — its
+    /// fields, list, versions and branches — in `payload`, so an undo
+    /// brings it back whole. With it back, the builds recorded against it
+    /// can be replayed again.
+    case deckDelete
     /// A user action reversed; `undoesActionID` names it.
     case undo
     /// An undone action applied again; `undoesActionID` names it.
@@ -48,6 +55,7 @@ nonisolated enum AuditAction: String, Codable, Sendable, CaseIterable {
     var systemImage: String {
         switch self {
         case .deckBuild, .deckDisassemble: return "rectangle.stack"
+        case .deckDelete: return "trash"
         case .move: return "arrow.right.circle"
         case .manualAdd: return "plus.circle"
         case .manualRemove: return "minus.circle"
@@ -139,6 +147,9 @@ nonisolated final class AuditRecord {
     /// brings a deleted list back makes it a list again; nil (a collection
     /// or a deck) for everything else.
     var collectionKindRaw: String?
+    /// What a record that moves no copies carries instead: for
+    /// `.deckDelete`, the deleted deck (`DeletedDeck`, JSON).
+    var payload: Data?
 
     var action: AuditAction {
         get { AuditAction(rawValue: actionRaw) ?? .manualAdd }

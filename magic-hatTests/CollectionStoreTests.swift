@@ -29,7 +29,7 @@ struct CollectionStoreTests {
         try ctx.save()
 
         let store = CollectionStore.shared(for: container)
-        let snapshot = try await store.snapshot(collectionName: "Main", sort: .priceHigh)
+        let snapshot = try await store.snapshot(collectionName: "Main", sort: .price)
 
         #expect(snapshot.items.map(\.name) == ["Fresh", "Stale", "Pending"])
         #expect(Set(snapshot.pendingIDs) == ["pending"])

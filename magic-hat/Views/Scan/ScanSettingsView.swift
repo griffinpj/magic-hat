@@ -32,6 +32,17 @@ struct ScanSettingsView: View {
                 }
 
                 Section {
+                    Toggle(isOn: $settings.showFrame) {
+                        Label("Card Frame", systemImage: "viewfinder")
+                    }
+                    .accessibilityIdentifier("scan-settings-frame")
+                } header: {
+                    Text("Scan Area")
+                } footer: {
+                    Text("Off, the whole picture is read and the card is found wherever it lies — for a phone on a stand, or cards on a table. On, a card-shaped frame is drawn and only what is inside it is read.")
+                }
+
+                Section {
                     Toggle(isOn: $settings.quickMode) {
                         Label("Quick Mode", systemImage: "bolt")
                     }

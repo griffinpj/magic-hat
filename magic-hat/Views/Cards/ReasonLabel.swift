@@ -43,12 +43,13 @@ struct ReasonDetailLine: View {
     let reason: CardReason
     let price: Double?
     let owned: Bool
+    @Environment(\.showsPrices) private var showsPrices
 
     var body: some View {
         HStack(spacing: 6) {
             ReasonLabel(reason: reason)
             Spacer(minLength: 4)
-            if let price {
+            if showsPrices, let price {
                 Text(PriceFormat.compact(price)).fixedSize()
             }
             if owned {

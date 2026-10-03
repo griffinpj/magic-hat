@@ -78,6 +78,19 @@ nonisolated extension ScryfallPrices {
 }
 
 /// A Scryfall card object (subset of fields).
+/// One entry of a card's `all_parts`.
+nonisolated struct ScryfallRelatedCard: Codable, Sendable, Hashable {
+    let id: String
+    let component: String
+    let name: String
+    let typeLine: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, component, name
+        case typeLine = "type_line"
+    }
+}
+
 nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     let id: String
     let oracleID: String?
@@ -109,10 +122,25 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
     let finishes: [String]?
     let promo: Bool?
     let lang: String?
+    /// How the printing is dressed: "showcase", "extendedart", "etched",
+    /// "inverted", … (Scryfall's `frame_effects`), its border, whether the
+    /// art fills the card, and promo kinds ("prerelease", "serialized").
+    let frameEffects: [String]?
+    let borderColor: String?
+    let fullArt: Bool?
+    let promoTypes: [String]?
+    /// The cards this one is tied to: the tokens it makes (`component ==
+    /// "token"`), meld parts, combo pieces. Only present when there are any.
+    let allParts: [ScryfallRelatedCard]?
 
     enum CodingKeys: String, CodingKey {
         case id, name, set, rarity, layout, power, toughness, prices, legalities, loyalty, colors, artist
         case finishes, promo, lang
+        case allParts = "all_parts"
+        case frameEffects = "frame_effects"
+        case borderColor = "border_color"
+        case fullArt = "full_art"
+        case promoTypes = "promo_types"
         case colorIdentity = "color_identity"
         case oracleID = "oracle_id"
         case setName = "set_name"
@@ -126,6 +154,35 @@ nonisolated struct ScryfallCard: Codable, Identifiable, Sendable {
         case purchaseURIs = "purchase_uris"
         case imageURIs = "image_uris"
         case cardFaces = "card_faces"
+    }
+
+    /// The tokens (and emblems) this card makes, itself left out: Scryfall
+    /// lists a token's own entry in its parts.
+    var tokenParts: [ScryfallRelatedCard] {
+        (allParts ?? []).filter { $0.component == "token" && $0.id != id }
+    }
+
+    /// What sets this printing apart from a plain one, as a short label —
+    /// "Borderless", "Showcase", "Extended Art", "Serialized" — or nil for
+    /// the regular frame. One label: the first that applies, in the order
+    /// a collector names them.
+    var treatment: String? {
+        let effects = Set(frameEffects ?? [])
+        let promos = Set(promoTypes ?? [])
+        if promos.contains("serialized") { return "Serialized" }
+        if borderColor == "borderless" { return "Borderless" }
+        if effects.contains("showcase") { return "Showcase" }
+        if effects.contains("extendedart") { return "Extended Art" }
+        if effects.contains("etched") { return "Etched" }
+        if effects.contains("inverted") { return "Inverted" }
+        if effects.contains("shatteredglass") { return "Shattered Glass" }
+        if fullArt == true { return "Full Art" }
+        if promos.contains("prerelease") { return "Prerelease" }
+        if promos.contains("promopack") { return "Promo Pack" }
+        if promos.contains("buyabox") { return "Buy-a-Box" }
+        if promo == true { return "Promo" }
+        if borderColor == "gold" { return "Gold Border" }
+        return nil
     }
 
     /// Best available image URIs: top-level, else the first face's.

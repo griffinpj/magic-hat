@@ -37,11 +37,17 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
     let replaced: Bool
     /// For a move: where the copies went.
     var destination: String? = nil
+    /// The scopes that are lists (wanted, not owned). Putting cards on a
+    /// list and adding the same cards to a collection are otherwise the
+    /// same title and the same count — two rows that read as a duplicate.
+    var listScopes: Set<String> = []
+    /// Every copy it touched is on a list: nothing owned changed.
+    var isListOnly: Bool { !scopes.isEmpty && scopes.allSatisfy(listScopes.contains) }
     var id: UUID { actionID }
 
     init(actionID: UUID, timestamp: Date, added: Int, removed: Int, scopes: [String], action: AuditAction,
          state: HistoryState, cardCount: Int = 0, cardNames: [String] = [], deckName: String? = nil, replaced: Bool = false,
-         destination: String? = nil) {
+         destination: String? = nil, listScopes: Set<String> = []) {
         self.actionID = actionID
         self.timestamp = timestamp
         self.added = added
@@ -54,6 +60,7 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
         self.deckName = deckName
         self.replaced = replaced
         self.destination = destination
+        self.listScopes = listScopes
     }
 
     var isApplied: Bool { state == .applied }
@@ -71,6 +78,7 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
             return cardCount == 1 && cardNames.count == 1 ? "Removed \(cardNames[0])" : "Removed \(cards)"
         case .deckBuild: return "Built \(deckName ?? "Deck")"
         case .deckDisassemble: return "Disassembled \(deckName ?? "Deck")"
+        case .deckDelete: return "Deleted \(deckName ?? "Deck")"
         case .move:
             return cardCount == 1 && cardNames.count == 1 ? "Moved \(cardNames[0])" : "Moved \(cards)"
         case .undo: return "Undo"
@@ -78,13 +86,16 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
         }
     }
 
-    /// The second line: which cards, and where.
+    /// The second line: where, then which cards. The place leads because
+    /// the line is cut at the row's width, and the place is what tells two
+    /// actions on the same cards apart ("Wants (list)" against "Main").
     var detail: String {
-        var parts: [String] = []
+        var parts: [String] = [placeLine]
         if let names = namesLine { parts.append(names) }
-        parts.append(placeLine)
         return parts.joined(separator: " · ")
     }
+
+    private func shown(_ scope: String) -> String { listScopes.contains(scope) ? "\(scope) (list)" : scope }
 
     private var cards: String { cardCount == 1 ? "1 Card" : "\(cardCount.formatted()) Cards" }
 
@@ -100,16 +111,17 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
     /// "from Main" for a build, "to Main" for a disassembly, the
     /// collections otherwise.
     private var placeLine: String {
+        if action == .deckDelete { return "Deck · its list and versions come back with Undo" }
         let deckLabel = deckName.map { "Deck: \($0)" }
         let others = scopes.filter { $0 != deckLabel && $0 != "Deleted deck" }
         switch action {
-        case .deckBuild where !others.isEmpty: return "from \(others.joined(separator: ", "))"
-        case .deckDisassemble where !others.isEmpty: return "to \(others.joined(separator: ", "))"
+        case .deckBuild where !others.isEmpty: return "from \(others.map(shown).joined(separator: ", "))"
+        case .deckDisassemble where !others.isEmpty: return "to \(others.map(shown).joined(separator: ", "))"
         case .move:
-            guard let destination else { return scopes.joined(separator: ", ") }
+            guard let destination else { return scopes.map(shown).joined(separator: ", ") }
             let from = scopes.filter { $0 != destination }
-            return from.isEmpty ? "to \(destination)" : "\(from.joined(separator: ", ")) → \(destination)"
-        default: return scopes.joined(separator: ", ")
+            return from.isEmpty ? "to \(shown(destination))" : "\(from.map(shown).joined(separator: ", ")) → \(shown(destination))"
+        default: return scopes.map(shown).joined(separator: ", ")
         }
     }
 }
@@ -123,17 +135,27 @@ nonisolated struct HistoryLog: Hashable, Sendable {
     /// Names by the action they were set on (a line's tip at the time).
     let names: [UUID: String]
     let lines: [HistoryLine]
+    /// Why the next Undo, or a Redo on offer, can't run as things stand
+    /// (a deck that is gone, copies no longer there), by action — checked
+    /// when the log is read, so the row and the button say it up front.
+    let blocked: [UUID: String]
+    /// Where each action sits in `actions`: a row looks its action up, and
+    /// a scan per row made a long history quadratic.
+    private let index: [UUID: Int]
 
-    init(actions: [HistoryAction] = [], timeline: HistoryTimeline = HistoryTimeline(), names: [UUID: String] = [:]) {
+    init(actions: [HistoryAction] = [], timeline: HistoryTimeline = HistoryTimeline(), names: [UUID: String] = [:],
+         blocked: [UUID: String] = [:]) {
+        self.blocked = blocked
         self.actions = actions
         self.timeline = timeline
         self.names = names
         self.lines = timeline.lines()
+        self.index = Dictionary(actions.enumerated().map { ($1.actionID, $0) }, uniquingKeysWith: { a, _ in a })
     }
 
     func action(_ id: UUID?) -> HistoryAction? {
-        guard let id else { return nil }
-        return actions.first { $0.actionID == id }
+        guard let id, let i = index[id] else { return nil }
+        return actions[i]
     }
 
     var nextUndo: HistoryAction? { action(timeline.nextUndo) }
@@ -200,5 +222,74 @@ nonisolated struct HistoryLog: Hashable, Sendable {
     /// When anything on the line last happened.
     func latest(on line: HistoryLine) -> Date? {
         line.actions.compactMap { action($0)?.timestamp }.max()
+    }
+}
+
+// MARK: - The window a long history is shown through
+
+/// What the History list draws of a long history: the newest part of the
+/// current line, and only the branches that hang off something drawn. A
+/// branch whose fork lies further back than the window is not shown — a
+/// card saying "splits from" an action that isn't on screen points
+/// nowhere — and comes into view with it when the window grows.
+nonisolated struct HistoryWindow: Hashable, Sendable {
+    struct Section: Hashable, Sendable, Identifiable {
+        let line: HistoryLine
+        /// Newest first.
+        let rows: [UUID]
+        /// Older actions of the line not drawn.
+        let hidden: Int
+        var id: UUID { line.id }
+    }
+
+    let current: Section?
+    let branches: [Section]
+    /// Branches left out because where they split from isn't drawn.
+    let hiddenBranches: Int
+
+    /// The lines drawn, in order: what the list's identity is keyed on.
+    var structure: [UUID] { (current.map { [$0.id] } ?? []) + branches.map(\.id) }
+}
+
+nonisolated extension HistoryLog {
+    /// Rows of the current line drawn before "Show Earlier".
+    static let pageSize = 40
+    /// Rows of another branch drawn before "Show All".
+    static let branchPreview = 8
+
+    /// `limit` rows of the current line, newest first — never fewer than
+    /// reach the head, so what Undo and Redo act on is always drawn — and
+    /// the branches splitting from a drawn row, each cut to its newest
+    /// `branchPreview` rows unless its id is in `expanded`.
+    func window(limit: Int = HistoryLog.pageSize, expanded: Set<UUID> = []) -> HistoryWindow {
+        var drawn = Set<UUID>()
+        var current: HistoryWindow.Section?
+        var wholeCurrentDrawn = true
+        if let line = currentLine {
+            let newestFirst = Array(line.actions.reversed())
+            // Everything ahead of the head, the head, and one applied row
+            // under it at least.
+            let ahead = line.actions.count - timeline.applied.count
+            let count = min(newestFirst.count, max(limit, ahead + 2))
+            let rows = Array(newestFirst.prefix(count))
+            drawn.formUnion(rows)
+            wholeCurrentDrawn = count == newestFirst.count
+            current = HistoryWindow.Section(line: line, rows: rows, hidden: newestFirst.count - count)
+        }
+        var branches: [HistoryWindow.Section] = []
+        var hiddenBranches = 0
+        // `otherLines` lists a branch after the line it hangs from, so one
+        // pass sees a branch's host before the branch.
+        for line in otherLines {
+            let anchored: Bool
+            if let fork = line.forkFrom { anchored = drawn.contains(fork) } else { anchored = wholeCurrentDrawn }
+            guard anchored else { hiddenBranches += 1; continue }
+            let newestFirst = Array(line.actions.reversed())
+            let count = expanded.contains(line.id) ? newestFirst.count : min(newestFirst.count, Self.branchPreview)
+            let rows = Array(newestFirst.prefix(count))
+            drawn.formUnion(rows)
+            branches.append(HistoryWindow.Section(line: line, rows: rows, hidden: newestFirst.count - count))
+        }
+        return HistoryWindow(current: current, branches: branches, hiddenBranches: hiddenBranches)
     }
 }

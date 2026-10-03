@@ -44,7 +44,7 @@ final class HistoryFlowTests: XCTestCase {
         let confirm = app.buttons.matching(NSPredicate(format: "label CONTAINS 'from Test Collection'")).firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()
-        XCTAssertTrue(app.staticTexts["3× Card 10"].waitForExistence(timeout: 10), "viewer steps on")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'viewer-name' AND label CONTAINS 'Card 10' AND label CONTAINS '3 copies'")).firstMatch.waitForExistence(timeout: 10), "viewer steps on")
         app.buttons["viewer-close"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10))
 
@@ -83,7 +83,7 @@ final class HistoryFlowTests: XCTestCase {
         XCTAssertTrue(addConfirm.waitForExistence(timeout: 10))
         addConfirm.tap()
         app.buttons["add-card-done"].tap()
-        XCTAssertTrue(app.staticTexts["2× Card 0"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'viewer-name' AND label CONTAINS 'Card 0' AND label CONTAINS '2 copies'")).firstMatch.waitForExistence(timeout: 10))
         app.buttons["viewer-close"].tap()
 
         // The fork: the undone removal is its own branch now, nothing to
@@ -148,7 +148,7 @@ final class HistoryFlowTests: XCTestCase {
         app.tabBars.buttons["Collection"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForExistence(timeout: 10), "the removal is undone on this branch")
         app.staticTexts["Card 0"].firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["2× Card 0"].waitForExistence(timeout: 10), "and the add applied")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier == 'viewer-name' AND label CONTAINS 'Card 0' AND label CONTAINS '2 copies'")).firstMatch.waitForExistence(timeout: 10), "and the add applied")
         app.buttons["viewer-close"].tap()
 
         // One more action on the named branch: it keeps the name, and the

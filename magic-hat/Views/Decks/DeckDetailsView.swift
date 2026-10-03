@@ -16,6 +16,8 @@ struct DeckDetailsView: View {
     let onBuild: () -> Void
     let onDisassemble: () -> Void
     let onExport: () -> Void
+    let onVersions: () -> Void
+    let onPlaytest: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.modelContext) private var modelContext
@@ -25,11 +27,14 @@ struct DeckDetailsView: View {
     @State private var error: String?
 
     init(snapshot: DeckSnapshot, onBuild: @escaping () -> Void, onDisassemble: @escaping () -> Void,
-         onExport: @escaping () -> Void, onDelete: @escaping () -> Void) {
+         onExport: @escaping () -> Void, onVersions: @escaping () -> Void, onPlaytest: @escaping () -> Void,
+         onDelete: @escaping () -> Void) {
         self.snapshot = snapshot
         self.onBuild = onBuild
         self.onDisassemble = onDisassemble
         self.onExport = onExport
+        self.onVersions = onVersions
+        self.onPlaytest = onPlaytest
         self.onDelete = onDelete
         _name = State(initialValue: snapshot.name)
         _notes = State(initialValue: snapshot.notes)
@@ -80,6 +85,32 @@ struct DeckDetailsView: View {
                 }
             }
 
+            if !snapshot.tokens.isEmpty {
+                Section {
+                    ForEach(snapshot.tokens) { token in
+                        HStack(spacing: 12) {
+                            CardArtThumb(artURL: token.artCropURL, fallbackURL: token.imageURL)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(token.name)
+                                Text(token.kind)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                Text(DeckTokenText.makers(token.makers))
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("deck-token-\(token.name)")
+                    }
+                } header: {
+                    Text("Tokens · \(snapshot.tokens.count)")
+                } footer: {
+                    Text("What to bring to the table: every token a card in the deck makes.")
+                }
+            }
+
             Section("Notes") {
                 TextEditor(text: $notes)
                     .frame(minHeight: 100)
@@ -92,6 +123,36 @@ struct DeckDetailsView: View {
                 LabeledContent("Built", value: snapshot.isBuilt ? "\(snapshot.builtCopies) of \(snapshot.mainCopies) cards" : "Not built")
                 LabeledContent("Created", value: snapshot.createdDate.formatted(date: .abbreviated, time: .omitted))
                 LabeledContent("Updated", value: snapshot.updatedDate.formatted(date: .abbreviated, time: .shortened))
+            }
+
+            Section {
+                Button(action: onVersions) {
+                    HStack {
+                        Label("Versions", systemImage: "arrow.triangle.branch")
+                        Spacer()
+                        // Which branch the list is on, once there is more
+                        // than the one the deck started with.
+                        if let branch = snapshot.branchName, branch != DeckBranch.defaultName {
+                            Text(branch).foregroundStyle(.secondary)
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .foregroundStyle(.primary)
+                .accessibilityIdentifier("deck-versions")
+            } footer: {
+                Text("Save the list at points you want to keep, compare any two, and keep other takes on the deck as branches.")
+            }
+
+            Section {
+                Button("Playtest", systemImage: "hand.draw", action: onPlaytest)
+                    .disabled(snapshot.mainCopies == 0)
+                    .accessibilityIdentifier("deck-playtest")
+            } footer: {
+                Text("Shuffle up and draw: goldfish the deck on a table that keeps count. Nothing is written.")
             }
 
             Section {

@@ -209,6 +209,9 @@ struct DeckBuildSheet: View {
             let outcome = try await DeckBuilder.shared(for: modelContext.container).build(plan)
             CollectionChangeTracker.shared.bump()
             DeckChangeTracker.shared.bump()
+            // The list as built is a point worth keeping, on a deck that
+            // keeps versions.
+            DeckVersionController.autosaveIfTracking(deckID: deckID, note: "Built", context: modelContext)
             result = outcome
         } catch {
             self.error = error.localizedDescription

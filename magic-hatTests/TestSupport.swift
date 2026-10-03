@@ -74,7 +74,7 @@ enum TestSupport {
         let schema = Schema([
             MTGCollection.self, CollectionEntry.self, CardMeta.self,
             AuditRecord.self, HistoryBranchName.self, CardRuling.self, SavedSearch.self,
-            Deck.self, DeckCard.self, DeckFolder.self,
+            Deck.self, DeckCard.self, DeckFolder.self, DeckVersion.self, DeckBranch.self,
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
         return try ModelContainer(for: schema, configurations: [config])

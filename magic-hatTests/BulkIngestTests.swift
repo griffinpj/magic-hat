@@ -78,7 +78,7 @@ struct BulkIngestTests {
         let known = Set(try container.mainContext.fetch(FetchDescriptor<CardMeta>())
             .filter { $0.fetchState == .fetched }.map(\.scryfallID))
         let snapshot = try await CollectionStore.shared(for: container)
-            .snapshot(collectionName: "Library", sort: .priceHigh)
+            .snapshot(collectionName: "Library", sort: .price)
 
         #expect(snapshot.items.count == 3846)
         #expect(Set(snapshot.pendingIDs).isDisjoint(with: known))

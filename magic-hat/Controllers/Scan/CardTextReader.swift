@@ -50,6 +50,78 @@ nonisolated enum CardTextReader {
     static let titleBand: ClosedRange<CGFloat> = 0.84...1.0
     static let infoBand: ClosedRange<CGFloat> = 0.0...0.12
 
+    /// What the lines' boxes are measured against.
+    enum Layout: Sendable {
+        /// The card itself (the guide, or the card found in the picture):
+        /// the title and the info block are where a card has them.
+        case card
+        /// The whole picture, the card somewhere in it: the info block is
+        /// found by what it says, the title by where it sits above it.
+        case picture
+    }
+
+    static func read(_ lines: [RecognizedLine], knownSets: Set<String>, layout: Layout) -> ScanReading {
+        layout == .card ? read(lines, knownSets: knownSets) : readPicture(lines, knownSets: knownSets)
+    }
+
+    /// A card somewhere in the picture, its edges not found. The info
+    /// block gives itself away — a line with a real set code, and the
+    /// collector number on it or on the line just above. The title is the
+    /// topmost line of text above that block and roughly over it (within a
+    /// card's width of its left edge, going by the block's own size);
+    /// with no block read, simply the topmost line that reads as a name.
+    static func readPicture(_ lines: [RecognizedLine], knownSets: Set<String>) -> ScanReading {
+        var reading = ScanReading()
+        let ordered = lines.sorted { $0.box.maxY > $1.box.maxY }
+
+        var infoLine: RecognizedLine?
+        for line in ordered.reversed() {    // from the bottom up
+            guard let code = setCode(in: line.text, knownSets: knownSets) else { continue }
+            // The set line is a short one: a code, a mark, a language.
+            // Rules text that happens to hold a set code ("ONE" …) is not.
+            guard language(in: line.text, after: code) != nil || collectorNumber(in: line.text) != nil else { continue }
+            infoLine = line
+            reading.setCode = code
+            reading.language = language(in: line.text, after: code)
+            reading.foil = foilMark(in: line.text, after: code)
+            break
+        }
+        if let info = infoLine {
+            let height = max(info.box.height, 0.004)
+            // The number line sits directly above the set line, left-aligned with it.
+            let above = lines.filter {
+                $0.box.minY >= info.box.minY - height * 0.5 && $0.box.minY <= info.box.maxY + height * 2.5
+                    && abs($0.box.minX - info.box.minX) < height * 6
+            }.sorted { $0.box.minY < $1.box.minY }
+            for line in above {
+                if let number = collectorNumber(in: line.text) { reading.collectorNumber = number; break }
+            }
+            if reading.collectorNumber == nil { reading.setCode = nil; reading.language = nil; reading.foil = nil }
+        }
+
+        // The info text is about 1.6% of a card's height; a card is about
+        // 0.72 as wide as it is tall in its own units — a rough card width
+        // from the block, to keep the title search over this card.
+        let titles = ordered.filter { line in
+            guard line.confidence >= 0.3 else { return false }
+            if let info = infoLine {
+                guard line.box.minY > info.box.maxY else { return false }
+                let reach = max(info.box.height * 45, 0.12)
+                return line.box.minX > info.box.minX - reach * 0.25 && line.box.minX < info.box.minX + reach
+            }
+            return true
+        }
+        for line in titles {
+            let cleaned = cleanTitle(line.text)
+            if cleaned.count >= 3 {
+                reading.name = cleaned
+                reading.nameConfidence = line.confidence
+                break
+            }
+        }
+        return reading
+    }
+
     static func read(_ lines: [RecognizedLine], knownSets: Set<String>) -> ScanReading {
         var reading = ScanReading()
 

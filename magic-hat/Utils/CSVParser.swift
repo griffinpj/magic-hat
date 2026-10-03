@@ -16,7 +16,9 @@ nonisolated enum CSVParser {
     /// is a single Swift `Character` (grapheme cluster), so matching on
     /// Characters would swallow line breaks and collapse the file into one
     /// giant row. Scalars keep `\r` and `\n` separate.
-    static func parse(_ text: String) -> [[String]] {
+    /// `delimiter` is a comma unless the file says otherwise (semicolons
+    /// from a spreadsheet in a comma-decimal locale, tabs from a TSV).
+    static func parse(_ text: String, delimiter: Unicode.Scalar = ",") -> [[String]] {
         var rows: [[String]] = []
         var field = ""
         var record: [String] = []
@@ -38,7 +40,7 @@ nonisolated enum CSVParser {
         }
 
         let quote: Unicode.Scalar = "\""
-        let comma: Unicode.Scalar = ","
+        let comma = delimiter
         let newline: Unicode.Scalar = "\n"
         let carriage: Unicode.Scalar = "\r"
 

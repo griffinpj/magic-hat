@@ -44,7 +44,10 @@ nonisolated final class ImageMemoryCache: @unchecked Sendable {
     func set(_ image: UIImage, _ key: String) {
         cache.setObject(image, forKey: key as NSString, cost: Self.cost(of: image))
     }
+    func removeAll() { cache.removeAllObjects() }
 }
+
+nonisolated enum ImageLoadError: Error { case meteredNetwork }
 
 actor ImageLoader {
     static let shared = ImageLoader()
@@ -62,6 +65,24 @@ actor ImageLoader {
         try? fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
     }
 
+    /// Bytes on disk, for Settings.
+    nonisolated func diskUsage() -> Int64 {
+        let keys: [URLResourceKey] = [.totalFileAllocatedSizeKey]
+        let files = (try? fm.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: keys)) ?? []
+        return files.reduce(0) { $0 + Int64((try? $1.resourceValues(forKeys: Set(keys)).totalFileAllocatedSize) ?? 0) }
+    }
+
+    /// Removes every cached image, on disk and in memory. They stream back
+    /// as cards are shown.
+    func clearCache() {
+        for task in inFlight.values { task.cancel() }
+        inFlight.removeAll()
+        if let files = try? fm.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil) {
+            for file in files { try? fm.removeItem(at: file) }
+        }
+        ImageMemoryCache.shared.removeAll()
+    }
+
     /// Loads a card image downsampled to `maxPixel` (longest edge, in pixels).
     /// Order: memory → disk bytes → network. Reading and decoding run off
     /// the main thread and off this actor (see `decodeFile`).
@@ -76,6 +97,9 @@ actor ImageLoader {
         let file = fileURL(for: urlString)
         let task = Task<UIImage, Error> { [http] in
             if let onDisk = await Self.decodeFile(file, maxPixel: maxPixel) { return onDisk }
+            // Settings can keep images off cellular: what is on disk shows,
+            // the rest waits for Wi-Fi (the tile keeps its placeholder).
+            guard AppSettings.imagesOnCellular || !NetworkMonitor.isMeteredNow else { throw ImageLoadError.meteredNetwork }
             guard let url = URL(string: urlString) else { throw HTTPError.badURL }
             // Card images are on the general (10/sec) limit family.
             let downloaded = try await http.requestData(url: url, rateLimit: .other)

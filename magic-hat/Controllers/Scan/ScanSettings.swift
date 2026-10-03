@@ -27,6 +27,7 @@ final class ScanSettings {
         static let playSounds = "scan.playSounds"
         static let showTotal = "scan.showTotal"
         static let ignoreLowValues = "scan.ignoreLowValues"
+        static let showFrame = "scan.showFrame"
     }
 
     /// The camera's unique id; nil is the default (see CardCamera).
@@ -45,6 +46,12 @@ final class ScanSettings {
     /// Leave cards under 1 (dollar or euro) out of the total.
     var ignoreLowValues: Bool { didSet { defaults.set(ignoreLowValues, forKey: Key.ignoreLowValues) } }
 
+    /// Draw a card-shaped frame and read only inside it. Off (the default)
+    /// the whole picture is read and the card is found in it, wherever it
+    /// lies and however much of the picture it fills — a phone on a stand
+    /// over a tray never lines a card up with a frame drawn on the screen.
+    var showFrame: Bool { didSet { defaults.set(showFrame, forKey: Key.showFrame) } }
+
     private init() {
         let d = UserDefaults.standard
         cameraID = d.string(forKey: Key.camera)
@@ -55,6 +62,7 @@ final class ScanSettings {
         playSounds = d.object(forKey: Key.playSounds) as? Bool ?? true
         showTotal = d.object(forKey: Key.showTotal) as? Bool ?? true
         ignoreLowValues = d.bool(forKey: Key.ignoreLowValues)
+        showFrame = d.bool(forKey: Key.showFrame)
     }
 
     /// What the matcher needs, as a value it can take off the main actor.

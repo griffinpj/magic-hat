@@ -14,7 +14,16 @@
 //  rotation coordinator keeps the preview level and tells Vision which
 //  way up the frames are, so the tab works in landscape too.
 //
-//  Still photos go through the same recogniser (`recognize(image:)`),
+//  Without the guide (the default; Scan Settings' Card Frame turns it
+//  on) the whole visible picture is read: Vision's rectangle detector
+//  finds the card in it — any size, anywhere, which is what a phone on a
+//  stand needs — and the text is read inside that rectangle, so the
+//  lines come back measured against the card exactly as they do from the
+//  guide. When no card-shaped rectangle is found (a white border on a
+//  white tray) the whole picture's text is read instead and the reader
+//  works from what the lines say (`RecognizedFrame.layout == .picture`).
+//
+//  Still photos go through the same recogniser (`recognizeFrame(image:)`),
 //  which is also what makes the scanner testable on a simulator with no
 //  camera.
 //
@@ -27,6 +36,15 @@ import UIKit
 nonisolated struct CameraOption: Identifiable, Hashable, Sendable {
     let id: String
     let name: String
+}
+
+/// One analysed frame: the text, what its boxes are measured against, and
+/// where the card was found (normalised to the upright image, origin
+/// bottom-left) when it was looked for and found.
+nonisolated struct RecognizedFrame: Sendable {
+    var lines: [RecognizedLine]
+    var layout: CardTextReader.Layout
+    var card: CGRect?
 }
 
 nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
@@ -43,11 +61,12 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
     private let lock = NSLock()
     private var _region = CGRect(x: 0, y: 0, width: 1, height: 1)
     private var _isPaused = false
+    private var _findsCard = false
     private var busy = false
     private var lastFrame = Date.distantPast
 
-    /// Recognised lines per analysed frame, on the main actor.
-    var onLines: (@MainActor @Sendable ([RecognizedLine]) -> Void)?
+    /// Each analysed frame, on the main actor.
+    var onFrame: (@MainActor @Sendable (RecognizedFrame) -> Void)?
 
     static let interval: TimeInterval = 0.22
 
@@ -105,6 +124,13 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
     var region: CGRect {
         get { lock.withLock { _region } }
         set { lock.withLock { _region = newValue } }
+    }
+
+    /// True: `region` is everything visible and the card is found inside
+    /// it. False: `region` is the guide, and the card fills it.
+    var findsCard: Bool {
+        get { lock.withLock { _findsCard } }
+        set { lock.withLock { _findsCard = newValue } }
     }
 
     var isPaused: Bool {
@@ -206,9 +232,13 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
         lastFrame = Date()
         defer { busy = false }
         let angle = rotation?.videoRotationAngleForHorizonLevelCapture ?? 90
-        let lines = Self.recognize(CIImage(cvPixelBuffer: pixels), orientation: Self.orientation(forAngle: angle), region: region)
-        let callback = onLines
-        Task { @MainActor in callback?(lines) }
+        let image = CIImage(cvPixelBuffer: pixels)
+        let orientation = Self.orientation(forAngle: angle)
+        let frame = findsCard
+            ? Self.recognizeFrame(image, orientation: orientation, visible: region)
+            : RecognizedFrame(lines: Self.recognize(image, orientation: orientation, region: region), layout: .card, card: nil)
+        let callback = onFrame
+        Task { @MainActor in callback?(frame) }
     }
 
     /// Vision's orientation for the capture connection's rotation angle.
@@ -221,13 +251,76 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
         }
     }
 
+    /// The card's proportions, short side over long (63 × 88 mm).
+    static let cardAspect: CGFloat = 63.0 / 88.0
+
+    /// The card found in `visible` and its text measured against it; or,
+    /// with no card-shaped rectangle in the picture, all the text there is,
+    /// measured against `visible`.
+    static func recognizeFrame(_ image: CIImage, orientation: CGImagePropertyOrientation, visible: CGRect) -> RecognizedFrame {
+        let handler = VNImageRequestHandler(ciImage: image, orientation: orientation)
+        if let card = findCard(handler: handler, visible: visible, uprightSize: uprightSize(of: image, orientation: orientation)) {
+            // A little more than the rectangle: its edge is the card's
+            // border, and a box cut through its top line loses the title.
+            let padded = card.insetBy(dx: -card.width * 0.02, dy: -card.height * 0.02)
+                .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            let lines = recognize(handler: handler, region: padded, minimumTextHeight: 0.015)
+            return RecognizedFrame(lines: lines, layout: .card, card: card)
+        }
+        // The info block is ~1.6% of a card's height; a card half the
+        // picture's height puts it under 1% of the picture.
+        return RecognizedFrame(lines: recognize(handler: handler, region: visible, minimumTextHeight: 0.006), layout: .picture, card: nil)
+    }
+
+    /// The image's size once turned upright.
+    static func uprightSize(of image: CIImage, orientation: CGImagePropertyOrientation) -> CGSize {
+        let size = image.extent.size
+        switch orientation {
+        case .left, .right, .leftMirrored, .rightMirrored: return CGSize(width: size.height, height: size.width)
+        default: return size
+        }
+    }
+
+    /// The largest upright card-shaped rectangle in `visible`, normalised
+    /// to the upright image.
+    private static func findCard(handler: VNImageRequestHandler, visible: CGRect, uprightSize: CGSize) -> CGRect? {
+        let request = VNDetectRectanglesRequest()
+        request.minimumAspectRatio = 0.6
+        request.maximumAspectRatio = 0.85
+        request.minimumSize = 0.2
+        request.quadratureTolerance = 20
+        request.minimumConfidence = 0.6
+        request.maximumObservations = 6
+        request.regionOfInterest = visible
+        guard (try? handler.perform([request])) != nil else { return nil }
+        let candidates = (request.results ?? []).compactMap { observation -> CGRect? in
+            // Results are normalised to the region of interest.
+            let box = observation.boundingBox
+            let rect = CGRect(x: visible.minX + box.minX * visible.width, y: visible.minY + box.minY * visible.height,
+                              width: box.width * visible.width, height: box.height * visible.height)
+            return isCardShaped(rect, uprightSize: uprightSize) ? rect : nil
+        }
+        return candidates.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    /// Upright (taller than wide) and about a card's proportions, in the
+    /// image's own pixels.
+    static func isCardShaped(_ rect: CGRect, uprightSize: CGSize) -> Bool {
+        let w = rect.width * uprightSize.width, h = rect.height * uprightSize.height
+        guard w > 0, h > w else { return false }
+        return abs(w / h - cardAspect) < 0.12
+    }
+
     static func recognize(_ image: CIImage, orientation: CGImagePropertyOrientation, region: CGRect) -> [RecognizedLine] {
+        recognize(handler: VNImageRequestHandler(ciImage: image, orientation: orientation), region: region, minimumTextHeight: 0.015)
+    }
+
+    private static func recognize(handler: VNImageRequestHandler, region: CGRect, minimumTextHeight: Float) -> [RecognizedLine] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false   // names are not dictionary words
-        request.minimumTextHeight = 0.015
+        request.minimumTextHeight = minimumTextHeight
         request.regionOfInterest = region
-        let handler = VNImageRequestHandler(ciImage: image, orientation: orientation)
         guard (try? handler.perform([request])) != nil else { return [] }
         return (request.results ?? []).compactMap { observation in
             guard let top = observation.topCandidates(1).first else { return nil }
@@ -240,6 +333,33 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
         guard let ci = CIImage(image: image) else { return [] }
         let orientation = CGImagePropertyOrientation(image.imageOrientation)
         return recognize(ci, orientation: orientation, region: CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
+    /// A still photo, the card found in it as the camera finds one (a
+    /// photo of a card on a table), else the whole photo as the card when
+    /// it is cropped to one, else whatever the text says.
+    static func recognizeFrame(image: UIImage) -> RecognizedFrame {
+        guard let ci = CIImage(image: image) else { return RecognizedFrame(lines: [], layout: .picture, card: nil) }
+        let orientation = CGImagePropertyOrientation(image.imageOrientation)
+        let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
+        let frame = recognizeFrame(ci, orientation: orientation, visible: whole)
+        if frame.card != nil { return frame }
+        if isCardShaped(whole, uprightSize: uprightSize(of: ci, orientation: orientation)) {
+            return RecognizedFrame(lines: recognize(ci, orientation: orientation, region: whole), layout: .card, card: nil)
+        }
+        return frame
+    }
+
+    /// The reverse of `guideRegion`: a rect normalised to the upright image
+    /// (origin bottom-left) as points in the preview view.
+    static func viewRect(region: CGRect, in view: CGSize, imageSize: CGSize) -> CGRect {
+        guard view.width > 0, view.height > 0, imageSize.width > 0, imageSize.height > 0 else { return .zero }
+        let scale = max(view.width / imageSize.width, view.height / imageSize.height)
+        let shown = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        let offset = CGPoint(x: (shown.width - view.width) / 2, y: (shown.height - view.height) / 2)
+        return CGRect(x: region.minX * shown.width - offset.x,
+                      y: (1 - region.maxY) * shown.height - offset.y,
+                      width: region.width * shown.width, height: region.height * shown.height)
     }
 
     /// Maps the guide (in the preview view's points) into the upright

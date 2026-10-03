@@ -29,12 +29,22 @@ enum UITestSeed {
         // Preferences persist on the simulator between runs; a sort left
         // behind by one test must not reorder the grid for the next.
         for key in ["collection.sort", "deck.sort", "deck.add.sort.all", "deck.add.sort.recommended",
+                    "collection.sort.direction", "deck.sort.direction", "deck.add.sort.all.direction",
+                    "deck.add.sort.recommended.direction",
                     "decks.layout", "decks.sort", AppSettings.gridColumnsKey, AppSettings.currencyKey,
+                    AppSettings.showPricesKey, AppSettings.priceRefreshKey, AppSettings.defaultConditionKey,
+                    AppSettings.defaultFinishKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
+                    AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey,
                     "search.sets.kind", "search.sets.digital", AddTarget.lastKey] {
             UserDefaults.standard.removeObject(forKey: key)
         }
         let context = container.mainContext
         context.insert(MTGCollection(name: collectionName))
+        let tokenID = "00000000-0000-4000-8000-ffffffffff01"
+        let token = CardMeta(scryfallID: tokenID, name: "Soldier", setCode: "tone", setName: "Set 0 Tokens",
+                             collectorNumber: "1", rarity: "common", fetchState: .fetched)
+        token.typeLine = "Token Creature — Soldier"
+        context.insert(token)
 
         for i in 0..<cardCount {
             let id = String(format: "00000000-0000-4000-8000-%012d", i)
@@ -57,6 +67,15 @@ enum UITestSeed {
             meta.oracleText = i % 2 == 0 ? "Flying" : "Draw a card."
             meta.manaCost = "{\(i % 5)}{\(["W", "U", "B", "R", "G", "C"][i % 6])}"
             meta.artist = "Artist \(i % 7)"
+            // Every tenth card makes a Soldier token, every twentieth a
+            // Treasure too, so a deck's Details lists tokens.
+            if i % 10 == 0 {
+                var tokens = ["\(tokenID)\tSoldier\tToken Creature — Soldier"]
+                if i % 20 == 0 { tokens.append("\(tokenID)-t\tTreasure\tToken Artifact — Treasure") }
+                meta.relatedTokensRaw = tokens.joined(separator: "\n")
+            } else {
+                meta.relatedTokensRaw = ""
+            }
             context.insert(meta)
 
             let entry = CollectionEntry(
@@ -74,8 +93,44 @@ enum UITestSeed {
             entry.card = meta
             context.insert(entry)
         }
+        seedHistory(context)
         try? context.save()
+        DataActivity.shared.seedForTesting()
         CatalogSyncController.shared.markCatalogReadyForTesting()
+    }
+
+    /// `UITEST_HISTORY_COUNT=<n>`: a long ledger for the History tab — n
+    /// single-card adds a minute apart, with a branch far back (five
+    /// actions undone after the tenth, then carried on from) and one near
+    /// the head (three undone, two new ones in their place). The ledger
+    /// only: the rows it speaks of are not made, so it is for looking at,
+    /// not for replaying.
+    private static func seedHistory(_ context: ModelContext) {
+        guard let count = Int(ProcessInfo.processInfo.environment["UITEST_HISTORY_COUNT"] ?? ""), count >= 20 else { return }
+        var clock = Date().addingTimeInterval(-Double(count + 20) * 60)
+        var applied: [UUID] = []
+        func record(_ action: AuditAction, id: UUID, index: Int, delta: Int, undoes: UUID? = nil) {
+            clock.addTimeInterval(60)
+            context.insert(AuditRecord(
+                actionID: id, action: action, timestamp: clock,
+                scryfallID: String(format: "00000000-0000-4000-8000-%012d", index % 900), cardName: "Card \(index % 900)",
+                collectionName: collectionName, finish: .normal, condition: CardCondition.nearMint.rawValue,
+                quantityDelta: delta, collectionEntryID: nil, undoesActionID: undoes))
+        }
+        func act(_ index: Int) {
+            let id = UUID()
+            record(index % 7 == 3 ? .manualRemove : .manualAdd, id: id, index: index, delta: index % 7 == 3 ? -1 : 1 + index % 3)
+            applied.append(id)
+        }
+        func undo(_ steps: Int) {
+            for _ in 0..<steps { record(.undo, id: UUID(), index: 0, delta: -1, undoes: applied.removeLast()) }
+        }
+        for i in 0..<10 { act(i) }
+        undo(5)
+        for i in 10..<(count - 2) { act(i) }
+        undo(3)
+        act(count - 2)
+        act(count - 1)
     }
 
     static let realCollectionName = "Real Collection"
@@ -85,6 +140,8 @@ enum UITestSeed {
     /// images — is the real thing over the network.
     static func prepareRealRun() {
         for key in ["collection.sort", "deck.sort", "deck.add.sort.all", "deck.add.sort.recommended",
+                    "collection.sort.direction", "deck.sort.direction", "deck.add.sort.all.direction",
+                    "deck.add.sort.recommended.direction",
                     "decks.layout", "decks.sort", AppSettings.gridColumnsKey, AppSettings.currencyKey,
                     "search.sets.kind", "search.sets.digital", AddTarget.lastKey] {
             UserDefaults.standard.removeObject(forKey: key)

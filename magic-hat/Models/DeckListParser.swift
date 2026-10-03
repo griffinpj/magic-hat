@@ -12,6 +12,11 @@
 //    1 Mithril Coat (LTR) 245 *F*
 //    // SIDEBOARD
 //
+//  And the looser shapes people type or paste from elsewhere: "4x Name",
+//  "Name x4", "- 4 Name" bullets, "SB: 2 Name" (MTGO), "Name [M10]",
+//  tab-separated "4<TAB>Name", Archidekt's "[Ramp]" and "^Have^" tags
+//  after the printing, and *F* / *E* for foil and etched.
+//
 //  Pure and nonisolated; the fixture "King under the Mountain" is the
 //  contract.
 //
@@ -26,6 +31,8 @@ nonisolated struct DeckListLine: Hashable, Sendable {
     var isFoil: Bool
     var board: DeckBoard
     var raw: String
+    /// "*E*": a foil-etched copy (also counted as foil).
+    var isEtched = false
 }
 
 nonisolated struct DeckList: Hashable, Sendable {
@@ -109,7 +116,61 @@ nonisolated enum DeckListParser {
         #"^(?:(\d+)\s*[xX]?\s+)?(.+?)(?:\s+\(([A-Za-z0-9]{2,6})\)(?:\s+([A-Za-z0-9★†\-]+))?)?(?:\s+\*F\*|\s+\[foil\]|\s+\(foil\)|\s+\*E\*)?(?:\s+#\S.*)?\s*$"#
     )
 
-    static func cardLine(_ line: String, board: DeckBoard) -> DeckListLine? {
+    private static let trailingQuantity = try! NSRegularExpression(pattern: #"^(.*\S)\s+[xX×]\s?(\d+)$"#)
+    private static let bracket = try! NSRegularExpression(pattern: #"\s*\[([^\]]*)\]"#)
+    private static let caretTag = try! NSRegularExpression(pattern: #"\s*\^[^^]*\^"#)
+
+    /// The line with what other tools hang on it folded into the one
+    /// shape `pattern` reads: bullets and "SB:" off the front, a trailing
+    /// "x4" moved to the front, "[M10]" turned into "(M10)", category and
+    /// colour tags dropped.
+    static func normalize(_ raw: String, board: inout DeckBoard) -> String {
+        var s = raw.replacingOccurrences(of: "\t", with: " ").trimmingCharacters(in: .whitespaces)
+        for bullet in ["- ", "* ", "• ", "– "] where s.hasPrefix(bullet) {
+            s = String(s.dropFirst(bullet.count)).trimmingCharacters(in: .whitespaces)
+        }
+        if s.lowercased().hasPrefix("sb:") {
+            s = String(s.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            board = .side
+        }
+        func ns(_ s: String) -> NSRange { NSRange(s.startIndex..., in: s) }
+        s = caretTag.stringByReplacingMatches(in: s, range: ns(s), withTemplate: "")
+        // "[M10]" is a set when the line names none in parentheses and it
+        // is written as a code; any other bracket is a category or a note.
+        let hasParenSet = s.range(of: #"\([A-Za-z0-9]{2,6}\)"#, options: .regularExpression) != nil
+        var setFromBracket: String?
+        for match in bracket.matches(in: s, range: ns(s)) {
+            guard let r = Range(match.range(at: 1), in: s) else { continue }
+            let inner = String(s[r])
+            if inner.lowercased() == "foil" { continue }
+            if !hasParenSet, setFromBracket == nil,
+               inner.range(of: #"^[A-Z0-9]{2,5}$"#, options: .regularExpression) != nil {
+                setFromBracket = inner
+            }
+        }
+        if s.lowercased().contains("[foil]") {
+            s = s.replacingOccurrences(of: "[foil]", with: "*F*", options: .caseInsensitive)
+        }
+        s = bracket.stringByReplacingMatches(in: s, range: ns(s), withTemplate: "")
+        if let setFromBracket {
+            // Before a collector number or foil mark that followed the bracket.
+            let marks = s.range(of: #"(\s+#?\d+[a-z]?)?(\s+\*[FE]\*)?\s*$"#, options: .regularExpression)
+            let insertAt = marks?.lowerBound ?? s.endIndex
+            s.insert(contentsOf: " (\(setFromBracket))", at: insertAt)
+            s = s.replacingOccurrences(of: #"\) #(\d)"#, with: ") $1", options: .regularExpression)
+        }
+        // "Lightning Bolt x4" → "4 Lightning Bolt", when no count leads.
+        if s.range(of: #"^\d+\s*[xX]?\s+"#, options: .regularExpression) == nil,
+           let m = trailingQuantity.firstMatch(in: s, range: ns(s)),
+           let nameRange = Range(m.range(at: 1), in: s), let countRange = Range(m.range(at: 2), in: s) {
+            s = "\(s[countRange]) \(s[nameRange])"
+        }
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
+    static func cardLine(_ raw: String, board: DeckBoard) -> DeckListLine? {
+        var board = board
+        let line = normalize(raw, board: &board)
         let range = NSRange(line.startIndex..., in: line)
         guard let m = pattern.firstMatch(in: line, range: range) else { return nil }
         func group(_ i: Int) -> String? {
@@ -123,7 +184,8 @@ nonisolated enum DeckListParser {
         let quantity = group(1).flatMap(Int.init) ?? 1
         guard quantity > 0 else { return nil }
         let lower = line.lowercased()
-        let foil = lower.contains("*f*") || lower.contains("[foil]") || lower.contains("(foil)") || lower.contains("*e*")
+        let etched = lower.contains("*e*")
+        let foil = lower.contains("*f*") || lower.contains("[foil]") || lower.contains("(foil)") || etched
         return DeckListLine(
             quantity: quantity,
             name: name,
@@ -131,7 +193,8 @@ nonisolated enum DeckListParser {
             collectorNumber: group(4),
             isFoil: foil,
             board: board,
-            raw: line
+            raw: raw,
+            isEtched: etched
         )
     }
 

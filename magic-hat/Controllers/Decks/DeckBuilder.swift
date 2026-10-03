@@ -188,6 +188,39 @@ actor DeckBuilder: ModelActor {
         return BuildResult(actionID: actionID, movedCopies: moved, missingCopies: plan.missingCopies)
     }
 
+    // MARK: What is built
+
+    /// How a deck stands built: the copies in it, the collections they
+    /// came from, and whether its sideboard was built too — what a rebuild
+    /// needs to put the deck back the way it was made.
+    nonisolated struct BuiltState: Sendable {
+        let copies: Int
+        let sources: [String]
+        let includesSideboard: Bool
+    }
+
+    func builtState(deckID: UUID) throws -> BuiltState {
+        guard let deck = try fetchDeck(deckID) else { throw BuildError.deckNotFound }
+        let deckKey = deck.collectionKey
+        var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == deckKey })
+        descriptor.relationshipKeyPathsForPrefetching = [\.card]
+        let entries = try modelContext.fetch(descriptor)
+        var built: [String: Int] = [:]
+        for entry in entries { built[entry.card?.oracleID ?? entry.scryfallID, default: 0] += entry.quantity }
+        var played: [String: Int] = [:]
+        var side = Set<String>()
+        for card in deck.cards {
+            if card.board.isPlayed { played[card.matchKey, default: 0] += card.quantity }
+            if card.board == .side { side.insert(card.matchKey) }
+        }
+        // More copies of a sideboard card than the main deck asks for: the
+        // sideboard was built.
+        let sideBuilt = side.contains { (built[$0] ?? 0) > (played[$0] ?? 0) }
+        return BuiltState(copies: entries.reduce(0) { $0 + $1.quantity },
+                          sources: Array(Set(entries.compactMap(\.sourceCollectionName))).sorted(),
+                          includesSideboard: sideBuilt)
+    }
+
     // MARK: Disassemble
 
     /// Returns every built copy to the collection it came from (or the

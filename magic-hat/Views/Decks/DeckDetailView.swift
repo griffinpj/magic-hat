@@ -62,6 +62,7 @@ struct DeckDetailView: View {
         var id: String { scope.rawValue }
     }
     @State private var showExport = false
+    @State private var showPlaytest = false
     @State private var selection = CardSelection()
     @State private var pendingRemove: [CardItem]?
     @State private var showPropose = false
@@ -76,7 +77,7 @@ struct DeckDetailView: View {
     /// swaps row (Stats has its own rows for them).
     @State private var pushed: Push?
     enum Push: String, Identifiable {
-        case analysis, swaps
+        case analysis, swaps, versions
         var id: String { rawValue }
     }
 
@@ -107,6 +108,7 @@ struct DeckDetailView: View {
                 switch push {
                 case .analysis: DeckAnalysisView(snapshot: snapshot, controller: analysis, onAddRecommended: { openAdd(.recommended) })
                 case .swaps: DeckSwapsView(deckID: deckID, controller: analysis, context: modelContext)
+                case .versions: DeckVersionsView(deckID: deckID)
                 }
             }
         }
@@ -125,6 +127,9 @@ struct DeckDetailView: View {
         }
         .sheet(isPresented: $showExport) {
             if let snapshot { DeckExportView(snapshot: snapshot) }
+        }
+        .fullScreenCover(isPresented: $showPlaytest) {
+            if let snapshot { DeckPlaytestView(snapshot: snapshot) }
         }
         .confirmationDialog("Disassemble \(snapshot?.name ?? "deck")?", isPresented: $confirmDisassemble, titleVisibility: .visible) {
             Button("Move \(snapshot?.builtCopies ?? 0) Cards Back", role: .destructive) { disassemble() }
@@ -206,6 +211,8 @@ struct DeckDetailView: View {
                     DeckDetailsView(snapshot: snapshot, onBuild: { showBuild = true },
                                     onDisassemble: { confirmDisassemble = true },
                                     onExport: { showExport = true },
+                                    onVersions: { pushed = .versions },
+                                    onPlaytest: { showPlaytest = true },
                                     onDelete: { confirmDelete = true })
                         .tag(Tab.details)
                 }
@@ -246,6 +253,9 @@ struct DeckDetailView: View {
                 Button(snapshot.isLocked ? "Unlock Deck" : "Lock Deck",
                        systemImage: snapshot.isLocked ? "lock.open" : "lock") { toggleLock() }
                 Divider()
+                Button("Playtest", systemImage: "hand.draw") { showPlaytest = true }
+                    .disabled(snapshot.mainCopies == 0)
+                    .accessibilityIdentifier("deck-menu-playtest")
                 Button("Analyze Deck", systemImage: "chart.bar.xaxis") { pushed = .analysis }
                     .accessibilityIdentifier("deck-menu-analyze")
                 Button("Recommended Cards", systemImage: "wand.and.stars") { openAdd(.recommended) }
@@ -267,6 +277,8 @@ struct DeckDetailView: View {
                     newName = snapshot.name
                     showRename = true
                 }
+                Button("Versions", systemImage: "arrow.triangle.branch") { pushed = .versions }
+                    .accessibilityIdentifier("deck-menu-versions")
                 Button("Export List…", systemImage: "square.and.arrow.up") { showExport = true }
                     .accessibilityIdentifier("deck-menu-export")
                 BuyMenu(title: "Buy Missing Cards", lines: snapshot.missingBuyLines)

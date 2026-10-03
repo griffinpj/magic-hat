@@ -54,6 +54,7 @@ struct CardRowLead<Detail: View>: View {
 /// puts the first copy in; from then on the row is a stepper, so taking
 /// a card back out is as quick as adding it.
 struct DeckSearchRow: View {
+    @Environment(\.showsPrices) private var showsPrices
     let item: CardItem
     /// Copies in the user's collections (nil when unknown/not applicable).
     let ownedCopies: Int?
@@ -112,7 +113,7 @@ struct DeckSearchRow: View {
             if let type = item.typeLine {
                 Text(type).truncationMode(.tail).layoutPriority(-1)
             }
-            if let price = item.price {
+            if showsPrices, let price = item.price {
                 Text(PriceFormat.compact(price)).fixedSize()
             }
             if let ownedCopies {
@@ -153,6 +154,7 @@ struct DeckSearchRow: View {
 
 /// One line of the deck list.
 struct DeckCardRow: View {
+    @Environment(\.showsPrices) private var showsPrices
     let item: DeckCardItem
     let locked: Bool
     var zoom: Namespace.ID? = nil
@@ -192,7 +194,7 @@ struct DeckCardRow: View {
                 .fontWeight(.medium)
                 .foregroundStyle(color(for: item.status))
                 .layoutPriority(-1)
-            if let price = item.card.price {
+            if showsPrices, let price = item.card.price {
                 Text(PriceFormat.compact(price)).fixedSize()
             }
         }

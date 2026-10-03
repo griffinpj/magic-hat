@@ -10,8 +10,11 @@ import SwiftUI
 import SwiftData
 
 struct MainTabView: View {
+    @AppStorage(AppSettings.showPricesKey) private var showPrices = true
+
     var body: some View {
         tabs
+            .environment(\.showsPrices, showPrices)
     }
 
     // The catalog sync's narration rides above the tab bar, inside each

@@ -24,6 +24,9 @@ nonisolated enum BackupController {
     /// UserDefaults keys that travel with a backup.
     static let settingsKeys = [
         AppSettings.currencyKey, AppSettings.cardLanguageKey, AppSettings.gridColumnsKey,
+        AppSettings.defaultConditionKey, AppSettings.defaultFinishKey, AppSettings.showPricesKey,
+        AppSettings.priceRefreshKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
+        AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey,
         "collection.sort", "deck.sort", "decks.layout", "decks.sort", AddTarget.lastKey,
     ]
 
@@ -36,9 +39,14 @@ nonisolated enum BackupController {
     }
 
     static func apply(settings: [String: String]) {
+        let ints = [AppSettings.gridColumnsKey, AppSettings.priceRefreshKey]
+        let bools = [AppSettings.showPricesKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
+                     AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey]
         for (key, value) in settings where settingsKeys.contains(key) {
-            if key == AppSettings.gridColumnsKey, let n = Int(value) {
+            if ints.contains(key), let n = Int(value) {
                 UserDefaults.standard.set(n, forKey: key)
+            } else if bools.contains(key) {
+                UserDefaults.standard.set(value == "1" || value == "true", forKey: key)
             } else {
                 UserDefaults.standard.set(value, forKey: key)
             }
@@ -55,6 +63,10 @@ nonisolated enum BackupController {
         let folders = try context.fetch(FetchDescriptor<DeckFolder>()).map {
             AppBackup.FolderRecord(id: $0.id, name: $0.name, parentID: $0.parentID, createdDate: $0.createdDate)
         }
+        let versions = try context.fetch(FetchDescriptor<DeckVersion>(sortBy: [SortDescriptor(\.createdAt)])).map(AppBackup.DeckVersionRecord.init)
+        let branches = try context.fetch(FetchDescriptor<DeckBranch>(sortBy: [SortDescriptor(\.createdAt)])).map {
+            AppBackup.DeckBranchRecord(id: $0.id, deckID: $0.deckID, name: $0.name, tipVersionID: $0.tipVersionID, createdAt: $0.createdAt)
+        }
         let audit = try context.fetch(FetchDescriptor<AuditRecord>(sortBy: [SortDescriptor(\.timestamp)])).map(AppBackup.AuditRecordValue.init)
         let names = try context.fetch(FetchDescriptor<HistoryBranchName>()).map { AppBackup.BranchNameRecord(actionID: $0.actionID, name: $0.name) }
         let searches = try context.fetch(FetchDescriptor<SavedSearch>(sortBy: [SortDescriptor(\.sortOrder)])).map(AppBackup.SavedSearchRecord.init)
@@ -63,7 +75,7 @@ nonisolated enum BackupController {
                                       copies: entries.reduce(0) { $0 + $1.quantity }, decks: decks.count,
                                       historyRecords: audit.count)
         return AppBackup(manifest: manifest, collections: collections, entries: entries, decks: decks, deckCards: deckCards,
-                         folders: folders, audit: audit, branchNames: names, savedSearches: searches, settings: settings)
+                         folders: folders, deckVersions: versions, deckBranches: branches, audit: audit, branchNames: names, savedSearches: searches, settings: settings)
     }
 
     /// Replaces every user table on `context` with `backup`.
@@ -72,6 +84,8 @@ nonisolated enum BackupController {
         try context.delete(model: DeckCard.self)
         try context.delete(model: Deck.self)
         try context.delete(model: DeckFolder.self)
+        try context.delete(model: DeckVersion.self)
+        try context.delete(model: DeckBranch.self)
         try context.delete(model: MTGCollection.self)
         try context.delete(model: AuditRecord.self)
         try context.delete(model: HistoryBranchName.self)
@@ -111,6 +125,10 @@ nonisolated enum BackupController {
                                 board: DeckBoard(rawValue: c.board) ?? .main, quantity: c.quantity, addedDate: c.addedDate)
             card.deck = deck
             context.insert(card)
+        }
+        for v in backup.deckVersions where decks[v.deckID] != nil { context.insert(v.model()) }
+        for b in backup.deckBranches where decks[b.deckID] != nil {
+            context.insert(DeckBranch(id: b.id, deckID: b.deckID, name: b.name, tipVersionID: b.tipVersionID, createdAt: b.createdAt))
         }
         for (i, r) in backup.audit.enumerated() {
             context.insert(r.model())

@@ -48,6 +48,27 @@ struct ScanSessionTests {
         }
     }
 
+    /// "Not This" is asked once: the same reading is turned away while the
+    /// card stays, and the name field opens on what was read.
+    @Test func aRejectedReadingIsNotAskedAgainAndLeadsToTyping() throws {
+        #expect(ScanSession.isRejected(ScanReading(name: "Lightnlng Blast"), rejected: ["Lightning Bolt", "Lightning Blast"]))
+        #expect(ScanSession.isRejected(ScanReading(name: "Lightning Bolt"), rejected: ["Lightning Bolt"]))
+        #expect(!ScanSession.isRejected(ScanReading(name: "Counterspell"), rejected: ["Lightning Bolt"]))
+        #expect(!ScanSession.isRejected(ScanReading(), rejected: ["Lightning Bolt"]))
+
+        try withDefaults { session in
+            session.beginManual()
+            #expect(session.phase == .manual("") && session.isPaused && session.isPrompting, "the keyboard button opens the name field")
+            session.dismissPrompt()
+            #expect(session.phase == .looking && !session.isPaused)
+            session.beginManual()
+            let bolt = try Self.card("b1", "Lightning Bolt", set: "m11", number: "146")
+            session.confirm(bolt, exactPrinting: false)
+            #expect(session.tray.count == 1 && session.phase == .added(CardItem(scryfallCard: bolt, owned: false)), "a typed card goes into the tray")
+            #expect(!session.isPrompting)
+        }
+    }
+
     @Test func aReadOfTheLastCardIsIgnoredUnlessItsPrintingDiffers() {
         let last = (name: "Lightning Bolt", printingKey: Optional("m11|146"))
         var reading = ScanReading(name: "Lightning Bolt")

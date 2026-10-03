@@ -53,8 +53,13 @@ actor AnalysisSignalSource {
         guard allowNetwork else { return stale }
         if let task = gameChangersTask { return await task.value ?? stale }
         let task = Task<[String: String]?, Never> { [client, cache] in
-            guard let page = try? await client.oracleIndex(query: "is:gamechanger", maxPages: 4), !page.index.isEmpty else { return nil }
+            await DataActivity.shared.begin(.analysisSignals)
+            guard let page = try? await client.oracleIndex(query: "is:gamechanger", maxPages: 4), !page.index.isEmpty else {
+                await DataActivity.shared.end(.analysisSignals, note: "Couldn't fetch the game changers", failed: true)
+                return nil
+            }
             await cache.store(page.index, key: "game-changers")
+            await DataActivity.shared.end(.analysisSignals, count: page.index.count, note: "\(page.index.count.formatted()) game changers")
             return page.index
         }
         gameChangersTask = task
@@ -101,8 +106,14 @@ actor AnalysisSignalSource {
         let existing = await cache.stale(TagList.self, key: key)?.value
         let resume = existing?.next.flatMap(URL.init(string:))
         var pending = resume != nil ? (existing?.pending ?? []) : []
-        guard let page = try? await client.oracleIndex(query: "otag:\(tag)", maxPages: Self.tagPagesPerSitting, resume: resume) else { return }
+        await DataActivity.shared.begin(.analysisSignals)
+        guard let page = try? await client.oracleIndex(query: "otag:\(tag)", maxPages: Self.tagPagesPerSitting, resume: resume) else {
+            await DataActivity.shared.end(.analysisSignals, note: "Couldn't fetch the \(tag) list", failed: true)
+            return
+        }
         pending.append(contentsOf: page.index.keys)
+        await DataActivity.shared.end(.analysisSignals, count: pending.count,
+                                      note: page.next == nil ? "\(tag): \(pending.count.formatted()) cards" : "\(tag): \(pending.count.formatted()) so far, more next sitting")
         if let next = page.next {
             // Out of pages for this sitting: keep what is fetched and where
             // to continue; the old list (if any) stays in use meanwhile.

@@ -17,6 +17,10 @@ extension EnvironmentValues {
     /// The collection the user is browsing, when that is one collection
     /// (not All Collection, not a deck). Presented sheets inherit it.
     @Entry var browsingCollection: String? = nil
+    /// Settings' Show Prices, set once at the root: tiles, cards, the
+    /// viewer and deck rows read it from the environment rather than from
+    /// UserDefaults per draw.
+    @Entry var showsPrices: Bool = true
 }
 
 nonisolated enum AddTarget {

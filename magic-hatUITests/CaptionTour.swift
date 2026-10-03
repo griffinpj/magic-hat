@@ -48,7 +48,7 @@ final class CaptionTour: XCTestCase {
         XCTAssertTrue(collection.waitForExistence(timeout: 120))
         collection.tap()
         // Metadata for 3,800 rows at Scryfall's pace, then the images.
-        let syncing = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Syncing'")).firstMatch
+        let syncing = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Syncing' OR label BEGINSWITH 'Prices'")).firstMatch
         _ = syncing.waitForExistence(timeout: 10)
         _ = syncing.waitForNonExistence(timeout: 240)
         sleep(8)
@@ -59,7 +59,7 @@ final class CaptionTour: XCTestCase {
 
         // Sorted by price, the pricey cards and their trends first.
         app.buttons["sort-button"].tap()
-        app.buttons["Price (High)"].firstMatch.tap()
+        app.buttons["Price"].firstMatch.tap()
         sleep(6)
         shot("c03-grid-by-price")
 

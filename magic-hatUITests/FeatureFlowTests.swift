@@ -31,7 +31,9 @@ final class FeatureFlowTests: XCTestCase {
         XCTAssertTrue(info.waitForExistence(timeout: 10))
         info.tap()
         XCTAssertTrue(app.navigationBars["About History"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["A new change starts a branch"].exists)
+        let branchRow = app.staticTexts["A new change starts a branch"]
+        for _ in 0..<4 where !branchRow.exists { app.swipeUp() }
+        XCTAssertTrue(branchRow.exists)
         app.buttons["history-guide-done"].tap()
 
         app.tabBars.buttons["Collection"].tap()
@@ -89,8 +91,9 @@ final class FeatureFlowTests: XCTestCase {
         app.navigationBars.buttons.firstMatch.tap()
         let list = app.buttons["collection-Wants"]
         XCTAssertTrue(list.waitForExistence(timeout: 5))
-        let unique = NSPredicate(format: "label ENDSWITH '· 3 unique'")
-        XCTAssertTrue(app.staticTexts.matching(unique).firstMatch.waitForExistence(timeout: 10), list.label)
+        // A list's card counts copies and how many are owned (one of the
+        // three is in the collection in the seed).
+        XCTAssertTrue(app.staticTexts["4 cards · 1 owned"].waitForExistence(timeout: 10), list.label)
     }
 
     @MainActor
@@ -174,9 +177,11 @@ final class FeatureFlowTests: XCTestCase {
         XCTAssertTrue(count.waitForNonExistence(timeout: 5), "out of selection after adding")
         XCTAssertTrue(app.staticTexts["Card 0"].firstMatch.exists, "adding copies leaves the collection as it was")
         app.navigationBars["Test Collection"].buttons.firstMatch.tap()
-        let unique = NSPredicate(format: "label ENDSWITH '· 2 unique'")
-        XCTAssertTrue(app.buttons["collection-Picks"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts.matching(unique).firstMatch.waitForExistence(timeout: 10), "both cards are on the list")
+        let picks = app.buttons["collection-Picks"]
+        XCTAssertTrue(picks.waitForExistence(timeout: 5))
+        let onList = NSPredicate(format: "label MATCHES '[0-9]+ cards · [0-9]+ owned'")
+        XCTAssertTrue(app.staticTexts.matching(onList).firstMatch.waitForExistence(timeout: 10), "both cards are on the list: \(picks.label)")
+        XCTAssertFalse(picks.label.contains("1 cards"), "both cards, not one: \(picks.label)")
     }
 
     /// A deck's rows select from the menu or a row's long-press menu, and

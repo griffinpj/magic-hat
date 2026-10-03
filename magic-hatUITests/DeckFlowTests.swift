@@ -72,14 +72,14 @@ final class DeckFlowTests: XCTestCase {
 
         // The sort button: "Card 12" matches Card 12 and Card 120–129,
         // priced 12 and 20–29 in the seed. Relevance leads with the exact
-        // name; Price (High) with Card 129.
+        // name; Price with Card 129.
         field.tap()
         field.typeText(XCUIKeyboardKey.delete.rawValue)
         let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deck-search-row-'"))
         XCTAssertTrue(rows.element(boundBy: 0).waitForIdentifier("deck-search-row-Card 12", timeout: 5), "relevance: the exact name first")
         app.buttons["deck-search-sort"].tap()
-        XCTAssertTrue(app.buttons["Price (High)"].waitForExistence(timeout: 5))
-        app.buttons["Price (High)"].tap()
+        XCTAssertTrue(app.buttons["Price"].waitForExistence(timeout: 5))
+        app.buttons["Price"].tap()
         XCTAssertTrue(rows.element(boundBy: 0).waitForIdentifier("deck-search-row-Card 129", timeout: 5), "priciest first")
         app.buttons["deck-add-done"].tap()
         XCTAssertTrue(app.navigationBars["UI Deck"].waitForExistence(timeout: 5), "Done returns to the deck, not the Decks tab")

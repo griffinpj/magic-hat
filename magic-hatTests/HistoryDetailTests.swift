@@ -42,7 +42,7 @@ struct HistoryDetailTests {
         log = try await store.history()
         let several = try #require(log.action(actionID))
         #expect(several.title == "Added 3 Cards")
-        #expect(several.detail == "Sol Ring, Lightning Bolt and 1 more · Main", "largest changes first")
+        #expect(several.detail == "Main · Sol Ring, Lightning Bolt and 1 more", "largest changes first")
         #expect(several.cardNames == ["Sol Ring", "Lightning Bolt", "Counterspell"])
     }
 
@@ -94,7 +94,7 @@ struct HistoryDetailTests {
         let log = try await store.history()
         let build = try #require(log.actions.first)
         #expect(build.title == "Built Test Deck")
-        #expect(build.detail == "Alpha, Captain · from Main")
+        #expect(build.detail == "from Main · Alpha, Captain")
         #expect(build.deckName == "Test Deck" && build.cardCount == 2)
 
         let detail = try await store.historyDetail(actionID: build.actionID)
@@ -107,7 +107,7 @@ struct HistoryDetailTests {
 
         _ = try await builder.disassemble(deckID: w.deck.id)
         let back = try #require(try await store.history().actions.first)
-        #expect(back.title == "Disassembled Test Deck" && back.detail == "Alpha, Captain · to Main")
+        #expect(back.title == "Disassembled Test Deck" && back.detail == "to Main · Alpha, Captain")
         let backDetail = try await store.historyDetail(actionID: back.actionID)
         #expect(backDetail.groups.first?.title == "Test Deck" && backDetail.groups.first?.destination == "Main")
     }
@@ -120,7 +120,7 @@ struct HistoryDetailTests {
         let store = CollectionStore(modelContainer: container)
         let action = try #require(try await store.history().actions.first)
         #expect(action.title == "Imported 45 Cards")
-        #expect(action.detail == "Forest and 44 more · Imported", "one name for the fixture's forests, the count of printings")
+        #expect(action.detail == "Imported · Forest and 44 more", "one name for the fixture's forests, the count of printings")
         let detail = try await store.historyDetail(actionID: action.actionID)
         #expect(detail.changeCount == 45)
         let shown = detail.capped()

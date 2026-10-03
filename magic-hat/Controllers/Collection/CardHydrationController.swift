@@ -35,6 +35,13 @@ final class CardHydrationController {
     private(set) var isSyncing = false
     private(set) var syncedCount = 0
     private(set) var syncTotal = 0
+    /// What the running sync is doing, for the grid's pill.
+    private(set) var syncLabel = "Syncing"
+    /// The sync in progress (`sync(pending:stale:context:)`), owned here
+    /// rather than by the screen that asked for it: a collection's `.task`
+    /// used to await the whole run, so backing out of the grid — or any
+    /// write bumping the tracker — cancelled a half-done price refresh.
+    private(set) var syncTask: Task<Void, Never>?
     var syncFraction: Double {
         syncTotal > 0 ? Double(syncedCount) / Double(syncTotal) : 0
     }
@@ -62,6 +69,21 @@ final class CardHydrationController {
         CardMetaWriter.shared(for: context.container)
     }
 
+    /// Metadata for `pending`, then prices for `stale`, as one run the
+    /// controller owns. A screen calls it and carries on; it can await
+    /// `syncTask?.value` for the end without its own cancellation
+    /// reaching the run. A run already going is left alone.
+    func sync(pending: [String], stale: [String], context: ModelContext) {
+        guard syncTask == nil, !isSyncing else { return }
+        guard !pending.isEmpty || !stale.isEmpty else { return }
+        syncTask = Task { [weak self] in
+            guard let self else { return }
+            defer { syncTask = nil }
+            await hydrate(pending: pending, context: context)
+            await refreshPrices(stale: stale, context: context)
+        }
+    }
+
     /// Same as `hydrateAll`, but the caller already knows which ids are
     /// pending (CollectionStore works it out while building the snapshot), so
     /// no store round-trip is made here at all.
@@ -74,8 +96,12 @@ final class CardHydrationController {
 
     private func run(needed: Set<String>, context: ModelContext) async {
         isSyncing = true
+        syncLabel = "Syncing"
         syncTotal = needed.count
         syncedCount = 0
+        let activity = DataActivity.shared
+        activity.begin(.cardData, total: needed.count)
+        var failed = 0
         // Register with the viewport prefetcher so tiles appearing mid-sync
         // don't request the same ids a second time.
         inFlight.formUnion(needed)
@@ -87,6 +113,12 @@ final class CardHydrationController {
             isSyncing = false
             inFlight.subtract(needed)
             if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
+            let done = syncedCount
+            activity.end(.cardData, count: done - failed,
+                         note: done < syncTotal ? "Stopped at \(done.formatted()) of \(syncTotal.formatted()) cards"
+                            : failed > 0 ? "\((done - failed).formatted()) cards, \(failed.formatted()) failed"
+                            : "\(done.formatted()) cards",
+                         failed: failed > 0 && failed == done)
         }
 
         for chunk in Array(needed).chunked(into: ScryfallClient.collectionBatchSize) {
@@ -97,8 +129,10 @@ final class CardHydrationController {
                 hydrated.formUnion(chunk)
             } catch {
                 try? await writer(context).markFailed(Set(chunk))
+                failed += chunk.count
             }
             syncedCount += chunk.count
+            activity.progress(.cardData, done: syncedCount)
         }
     }
 
@@ -106,21 +140,34 @@ final class CardHydrationController {
     /// computes them alongside the snapshot). Card metadata is effectively
     /// immutable, so this exists separately: only the money moves.
     @discardableResult
-    func refreshPrices(stale ids: [String], context: ModelContext) async -> Int {
+    func refreshPrices(stale ids: [String], context: ModelContext, force: Bool = false) async -> Int {
         guard !isSyncing else { return 0 }
         let stale = Array(Set(ids))
         guard !stale.isEmpty else { return 0 }
+        // Settings can keep the price refresh off cellular; a manual
+        // refresh from Settings passes `force`.
+        let activity = DataActivity.shared
+        guard force || AppSettings.pricesOnCellular || !NetworkMonitor.shared.isMetered else {
+            activity.skip(.prices, note: "Waiting for Wi-Fi: \(stale.count.formatted()) cards due")
+            return 0
+        }
 
         isSyncing = true
+        syncLabel = "Prices"
         syncTotal = stale.count
         syncedCount = 0
+        activity.begin(.prices, total: stale.count)
         let assertion = UIApplication.shared.beginBackgroundTask(withName: "price-refresh")
+        var updated = 0
         defer {
             isSyncing = false
             if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
+            activity.end(.prices, count: updated,
+                         note: syncedCount < syncTotal ? "Stopped at \(syncedCount.formatted()) of \(syncTotal.formatted()) cards"
+                            : "\(updated.formatted()) cards",
+                         failed: updated == 0)
         }
 
-        var updated = 0
         for chunk in stale.chunked(into: ScryfallClient.collectionBatchSize) {
             if Task.isCancelled { return updated }
             if let response = try? await client.collection(ids: chunk) {
@@ -128,6 +175,7 @@ final class CardHydrationController {
                 updated += response.data.count
             }
             syncedCount += chunk.count
+            activity.progress(.prices, done: syncedCount)
         }
         return updated
     }

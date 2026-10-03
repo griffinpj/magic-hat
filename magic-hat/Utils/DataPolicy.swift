@@ -10,8 +10,9 @@ import Foundation
 
 nonisolated enum DataPolicy {
     /// Scryfall market prices for owned cards, refreshed via the cheap batched
-    /// `/cards/collection` call.
-    static let priceTTL: TimeInterval = 6 * 3600
+    /// `/cards/collection` call — as often as Settings says (6 hours by
+    /// default; Manually never counts a price as stale).
+    static var priceTTL: TimeInterval { AppSettings.priceRefresh.interval }
 
     /// Scryfall rebuilds `default_cards` daily; re-downloading ~79MB every day
     /// is not worth it when owned-card prices already refresh every 6h. Take
