@@ -30,6 +30,7 @@ struct DeckStatsView: View {
             // Problems before the analysis: the Cards tab's banner leads here.
             if !stats.issues.isEmpty { issues }
             if let analysis { analysisSection(analysis) }
+            tools
             curve
             manaCost
             production
@@ -125,6 +126,37 @@ struct DeckStatsView: View {
                 ProgressView()
                 Text("Reading the deck…").foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // MARK: Tools
+
+    /// The three odds tools, each its own screen and its own module: a
+    /// goldfish simulation, exact draw odds, the mana base judged.
+    private var tools: some View {
+        Section {
+            NavigationLink {
+                DeckGoldfishView(snapshot: snapshot)
+            } label: {
+                Label("Goldfish", systemImage: "fish")
+            }
+            .accessibilityIdentifier("deck-goldfish")
+            NavigationLink {
+                DeckDrawOddsView(snapshot: snapshot)
+            } label: {
+                Label("Draw Odds", systemImage: "percent")
+            }
+            .accessibilityIdentifier("deck-draw-odds")
+            NavigationLink {
+                DeckManaBaseView(snapshot: snapshot)
+            } label: {
+                Label("Mana Base", systemImage: "drop")
+            }
+            .accessibilityIdentifier("deck-mana-base")
+        } header: {
+            Text("Odds")
+        } footer: {
+            Text("Thousands of simulated games, exact draw probabilities, and colour sources against what the curve demands.")
         }
     }
 

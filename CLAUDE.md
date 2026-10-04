@@ -1097,6 +1097,74 @@ change; a brand-new collection merges nothing. The generic sheet shows
 opens the wizard on a file in a seeded run, since a test can't drive the
 document picker. `ImportPreviewTests`, `SettingsImportTour`.
 
+## Odds tools: Goldfish, Draw Odds, Mana Base, Find a Commander
+
+Four tools, four modules, deliberately **not coupled** to each other or
+to the deck analysis: each has its own reading of the cards (a few
+patterns over type line, cost and rules text), its own pure model under
+test, its own screen with an "i" (`ToolGuide` / `.toolGuide(_:)`, a
+sheet of `GuideRow`s declared beside the screen) that says what the
+numbers are, how they are worked out and what they leave out. The first
+three are rows of the deck's Stats page ("Odds"); the fourth is on the
+Decks tab's add menu.
+
+- **Goldfish** (`Models/Goldfish.swift`, `DeckGoldfishView`): a Monte
+  Carlo goldfish after Karsten — `GoldfishCard` reads what a card adds
+  (units and colours as a bitmask, Signets net one, "{G} or {U}" is one
+  of either), enters tapped (not "unless"), fetches a land, draws on
+  cast (not a repeating trigger); `Goldfish.run` plays `config.games`
+  games (5,000 default, ~1s off-main) of 8 turns: London mulligan on a
+  land-count rule (2–5, twice), the land that helps most (untapped when
+  something is castable, a colour the hand wants), then ramp → draw →
+  commander (tax included) → biggest spell the mana can pay with its
+  colours (an exact bipartite matching of pips to mana units; creatures
+  wait a turn). `GoldfishResult` is per-turn shares: land drops (that
+  turn, every turn so far), mana available vs spent, spells cast,
+  colour-stuck (fit the count, not the colours), commander cast by,
+  mulligans, kept-hand lands, dead cards at the end. Seeded (SplitMix64,
+  shared with the playtest) so `GoldfishTests` get the same numbers. The
+  screen shows five headline rows and two charts (land drops, mana made
+  vs spent) — nothing a headline says is charted again, and the opening
+  hand's land split is Draw Odds' (exact).
+- **Draw Odds** (`Models/Hypergeometric.swift`, `DeckDrawOddsView`):
+  exact hypergeometric — `Hypergeometric.exactly/atLeast/distribution`
+  through `lgamma`; `DrawOdds` is the mainboard as rows (copies per
+  name, the lands as a group) with cards seen by turn (7, +1 a turn, the
+  play skips one), per-card odds by a chosen turn and in the opening
+  seven, the lands' opening split, and for up to six tapped rows the
+  odds of any (pooled copies) and all (inclusion–exclusion) by that turn.
+- **Mana Base** (`Models/ManaBase.swift`, `DeckManaBaseView`): Karsten's
+  colour targets computed, not copied — the sources at which the most
+  demanding early spell of each colour (its pips on its turn) is castable
+  in 90% of games where the land drops were made, as a nested
+  hypergeometric (pool cards among the cards seen, sources among those,
+  conditioned on at least `turn` pool cards); sources are lands and
+  producers costing two or less; the land count by his 2022 formula
+  (99: 31.42 + 3.13·MV − 0.28·cheap; 60: 19.59 + 1.90·MV − 0.28·cheap,
+  scaled); the basics the deck runs re-split to meet every target then
+  by pip share (every basic listed, so a colour with basics and no pips
+  shows them going to zero); the non-basic sources only, each with
+  "Holds" (a colour that drops below target without one copy).
+- **Find a Commander** (`Controllers/Decks/CommanderFinder.swift`,
+  `CommanderFinderView`, Decks › add menu): EDHREC's top hundred
+  commanders (`/pages/commanders/{week|month|year}.json`) each scored by
+  how much of its average deck (`/pages/average-decks/<slug>.json`,
+  `deck.cards` as `["Name", n]` pairs by type — `EDHRECAverageDeck`) the
+  collection holds (`CommanderMatch.score`: by front name, copies
+  capped at what the list wants, from `CollectionStore.ownedCards`).
+  One request per commander at EDHREC's pace, cached a week under
+  `Caches/CommanderFinder`, rows inserted best-first as they land; the
+  controller is a singleton so leaving the screen keeps the scan. A
+  commander's page lists the missing cards with catalog prices
+  (`DeckStore.items(names:)`; the owned ones are a count, not a list),
+  Buy for the missing, Copy List for a new deck. A seeded run never fetches: the screen shows the offline error.
+  A 403/404 page is "no average deck", not a failed scan.
+
+The seed makes every fifteenth card a basic land (the five colours in
+turn) so a seeded deck has a mana base for the tools. `DeckOddsTests`
+(all four models), `DeckOddsTour` (UI: the three screens, two rows
+combined, the "i", the finder offline).
+
 ## Deck analysis, recommendations, synergies
 
 Ported from magicians-united's `deckcheck.php` (rules of thumb over

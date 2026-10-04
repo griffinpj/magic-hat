@@ -66,6 +66,17 @@ enum UITestSeed {
             meta.typeLine = i % 3 == 0 ? "Creature — Dragon" : "Instant"
             meta.oracleText = i % 2 == 0 ? "Flying" : "Draw a card."
             meta.manaCost = "{\(i % 5)}{\(["W", "U", "B", "R", "G", "C"][i % 6])}"
+            // Every fifteenth card a basic land, so a seeded deck has a
+            // mana base for the odds tools to read.
+            if i % 15 == 14 {
+                let which = (i / 15) % 5
+                let basic = ["Plains", "Island", "Swamp", "Mountain", "Forest"][which]
+                meta.typeLine = "Basic Land — \(basic)"
+                meta.oracleText = "({T}: Add {\(["W", "U", "B", "R", "G"][which])}.)"
+                meta.manaCost = ""
+                meta.colorsRaw = ""
+                meta.colorIdentityRaw = ["W", "U", "B", "R", "G"][which]
+            }
             meta.artist = "Artist \(i % 7)"
             // Every tenth card makes a Soldier token, every twentieth a
             // Treasure too, so a deck's Details lists tokens.

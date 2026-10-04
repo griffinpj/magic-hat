@@ -83,6 +83,58 @@ nonisolated struct EDHRECPage: Codable, Sendable, Hashable {
     var hasSynergy: Bool { cardlists.contains { $0.cardviews.contains { $0.synergy != nil } } }
 }
 
+nonisolated enum EDHRECPeriod: String, CaseIterable, Sendable, Identifiable {
+    case week, month, year
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .week: return "This Week"
+        case .month: return "This Month"
+        case .year: return "Two Years"
+        }
+    }
+}
+
+/// An average deck page: `deck.cards` is the list by card type, each
+/// entry a `["Name", count]` pair.
+nonisolated struct EDHRECAverageDeck: Codable, Sendable, Hashable {
+    struct Entry: Codable, Sendable, Hashable {
+        let name: String
+        let count: Int
+
+        init(name: String, count: Int) {
+            self.name = name
+            self.count = count
+        }
+
+        init(from decoder: Decoder) throws {
+            var c = try decoder.unkeyedContainer()
+            name = try c.decode(String.self)
+            count = (try? c.decode(Int.self)) ?? 1
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.unkeyedContainer()
+            try c.encode(name)
+            try c.encode(count)
+        }
+    }
+
+    struct Deck: Codable, Sendable, Hashable {
+        let commander: [String]?
+        let cards: [String: [Entry]]?
+    }
+
+    let header: String?
+    let deck: Deck?
+
+    /// Every card of the list with its count, commanders left out.
+    var entries: [Entry] {
+        let commanders = Set((deck?.commander ?? []).map { $0.lowercased() })
+        return (deck?.cards ?? [:]).sorted { $0.key < $1.key }.flatMap(\.value).filter { !commanders.contains($0.name.lowercased()) }
+    }
+}
+
 nonisolated struct EDHRECClient {
     static let shared = EDHRECClient()
 
@@ -102,6 +154,19 @@ nonisolated struct EDHRECClient {
     /// high-synergy cards. 403 when the card has never led a deck.
     func commanderPage(slug: String) async throws -> EDHRECPage {
         try await page(kind: "commanders", slug: slug)
+    }
+
+    /// GET /pages/commanders/<period>.json — the hundred most-built
+    /// commanders of the week, month or (as "year") the past two years.
+    func topCommanders(period: EDHRECPeriod) async throws -> EDHRECPage {
+        try await page(kind: "commanders", slug: period.rawValue)
+    }
+
+    /// GET /pages/average-decks/<slug>.json — the commander's average
+    /// deck: the hundred cards most of its decks agree on, by type.
+    func averageDeck(slug: String) async throws -> EDHRECAverageDeck {
+        let url = baseURL.appendingPathComponent("average-decks").appendingPathComponent("\(slug).json")
+        return try await http.request(EDHRECAverageDeck.self, url: url, rateLimit: .edhrec)
     }
 
     private func page(kind: String, slug: String) async throws -> EDHRECPage {

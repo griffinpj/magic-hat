@@ -29,6 +29,8 @@ import UniformTypeIdentifiers
 enum DeckRoute: Hashable {
     case deck(UUID)
     case folder(UUID)
+    /// "Build with what you have": commanders scored by the collection.
+    case commanderFinder
 }
 
 struct DecksView: View {
@@ -41,6 +43,7 @@ struct DecksView: View {
                     switch route {
                     case .deck(let id): DeckDetailView(deckID: id)
                     case .folder(let id): DeckBrowser(folderID: id) { path.append($0) }
+                    case .commanderFinder: CommanderFinderView()
                     }
                 }
         }
@@ -431,6 +434,9 @@ struct DeckBrowser: View {
                 showNewFolder = true
             }
             .accessibilityIdentifier("decks-menu-folder")
+            Divider()
+            Button("Find a Commander…", systemImage: "sparkle.magnifyingglass") { open(.commanderFinder) }
+                .accessibilityIdentifier("decks-menu-finder")
             Divider()
             Button("Paste a Deck List…", systemImage: "doc.on.clipboard") { importClipboard() }
                 .accessibilityIdentifier("decks-menu-clipboard")
