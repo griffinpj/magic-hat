@@ -100,15 +100,13 @@ struct CardTile: View, Equatable {
         }
     }
 
-    /// The glass cell, lit by the card's art: a 3×3 mesh gradient of the
-    /// colours sampled around the inside of the art box (`ArtTint`) sits
-    /// *behind* the glass, so the material does what it does to anything
-    /// behind it — the colour softens and bleeds to the rim — and the
-    /// glass itself takes a faint tint of their mean. Each edge of the
-    /// cell glows with what the picture has at that edge: a sky at the
-    /// top, the ground at the foot. The frame — a white card's title bar
-    /// and text box — is never sampled; it turned the glow grey. No blur
-    /// of our own: a mesh and a tint are a fill each
+    /// The glass cell, lit by the card's edge: a 3×3 mesh gradient of the
+    /// colours sampled just inside the border (`ArtTint`) sits *behind*
+    /// the glass, so the material does what it does to anything behind it
+    /// — the colour softens and bleeds to the rim — and the glass itself
+    /// takes a faint tint of their mean. Each edge of the cell glows with
+    /// what the card has at that edge: a hybrid's split frame bleeds two
+    /// colours. No blur of our own: a mesh and a tint are a fill each
     /// (the mesh is one shader pass over the cell, static until the tint
     /// changes), so the grid scrolls as it did.
     private var cell: some View {

@@ -1623,25 +1623,19 @@ actions, renaming and clearing.
   ("2 hours ago · 3,846 cards · 41s"), and a detail with what it is, when
   it runs (read from the live settings) and the last run. `UITestSeed`
   seeds the log (`seedForTesting`); `SettingsImportTour` shoots it.
-- **The grid's glass cell glows with its card's art.** `ArtTint` is
-  eight samples around the inside of the **art box** — the standard
-  frame's picture, `ArtTint.artBox` = x 7.5–92.5%, y 11–56% of the card;
-  a three-cell ring just inside it on a 48×64 rendering of the decoded
-  thumbnail, the corners and the middle third of each side —
-  microseconds, inside the `@concurrent` decode that already ran, plus
-  their mean, each pushed a little towards saturation and kept off
-  black and white, cached per URL in `ImageMemoryCache` (27 floats, so
-  it outlives the image). The frame is never sampled: a white card's
-  title bar and text box turned every white card's glow grey (the first
-  version sampled the frame's edge). Full-art and borderless cards have
-  art in the box too; a saga or split card mixes some text in, which
-  the mean softens. Bitmap row 0 is the image's top (`ArtTintTests`
-  draws a card with a white frame, a text box and a two-tone picture and
-  checks top/bottom, left/right and that nothing light gets through).
-  `CardTile` draws a 3×3 `MeshGradient` of them *behind* the glass —
-  each edge of the cell glows with what the picture has at that edge, a
-  sky at the top and ground at the foot — and tints the glass with the
-  mean.
+- **The grid's glass cell glows with its card's edge.** `ArtTint` is
+  eight samples of the frame just inside the printed border — the
+  corners and the middle of each side, cells 2–3 in on a 24×32
+  rendering of the decoded thumbnail (the border is the outer cell; the
+  frame is what sits against the glass), microseconds, inside the
+  `@concurrent` decode that already ran — plus their mean, each pushed a
+  little towards saturation and kept off black and white, cached per
+  URL in `ImageMemoryCache` (27 floats, so it outlives the image).
+  Bitmap row 0 is the image's top (`ArtTintTests` draws a card and
+  checks; the old two-colour version had it upside down). `CardTile`
+  draws a 3×3 `MeshGradient` of them *behind* the glass — each edge of
+  the cell glows with what the card has at that edge, so a hybrid's
+  split frame bleeds two colours — and tints the glass with the mean.
   Never a blur of our own: a blurred copy of the art is an offscreen
   pass per tile, and the grid has 3,800 of them; a mesh and a tint are a
   fill each (real-collection scroll at a 34ms watchdog: no app frame in

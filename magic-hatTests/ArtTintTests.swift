@@ -2,11 +2,10 @@
 //  ArtTintTests.swift
 //  magic-hatTests
 //
-//  The glow behind a tile is sampled from the card's picture: a drawn
-//  card with a known frame and a known art box proves the samples land
-//  inside the art — top is the picture's top (Core Graphics' bitmap rows
-//  run top-down), left is left — and that a white frame with its title
-//  bar and text box never reaches the glow.
+//  The glow behind a tile is sampled from the card's edge: a drawn card
+//  with a known frame proves the samples land where they should — top is
+//  the top (Core Graphics' bitmap rows run top-down), left is left — and
+//  that a split frame yields two colours.
 //
 
 import Testing
@@ -15,61 +14,46 @@ import UIKit
 
 @Suite("ArtTint")
 struct ArtTintTests {
-    private let size = CGSize(width: 488, height: 680)
-
-    /// A 488×680 "card": a black border, a frame in `frame` (a white
-    /// card's title bar, type line and text box included), and a picture
-    /// in the standard art box painted in halves — top/bottom, or
-    /// left/right.
-    private func card(frame: UIColor = .white, top: UIColor = .orange, bottom: UIColor = .blue,
-                      left: UIColor? = nil, right: UIColor? = nil) -> CGImage {
-        let format = UIGraphicsImageRendererFormat(); format.scale = 1
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+    /// A 488×680 "card": a black border, then a frame whose left half is
+    /// red and right half white, art (green) in the middle.
+    private func card(top: UIColor = .red, bottom: UIColor = .red, left: UIColor? = nil, right: UIColor? = nil) -> CGImage {
+        let size = CGSize(width: 488, height: 680)
+        let renderer = UIGraphicsImageRenderer(size: size, format: { let f = UIGraphicsImageRendererFormat(); f.scale = 1; return f }())
+        let image = renderer.image { ctx in
             UIColor.black.setFill(); ctx.fill(CGRect(origin: .zero, size: size))
-            frame.setFill(); ctx.fill(CGRect(x: 22, y: 22, width: size.width - 44, height: size.height - 44))
-            let box = ArtTint.artBox
-            let art = CGRect(x: box.minX * size.width, y: box.minY * size.height, width: box.width * size.width, height: box.height * size.height)
+            let frame = CGRect(x: 22, y: 22, width: size.width - 44, height: size.height - 44)
             if let left, let right {
-                left.setFill(); ctx.fill(CGRect(x: art.minX, y: art.minY, width: art.width / 2, height: art.height))
-                right.setFill(); ctx.fill(CGRect(x: art.midX, y: art.minY, width: art.width / 2, height: art.height))
+                left.setFill(); ctx.fill(CGRect(x: frame.minX, y: frame.minY, width: frame.width / 2, height: frame.height))
+                right.setFill(); ctx.fill(CGRect(x: frame.midX, y: frame.minY, width: frame.width / 2, height: frame.height))
             } else {
-                top.setFill(); ctx.fill(CGRect(x: art.minX, y: art.minY, width: art.width, height: art.height / 2))
-                bottom.setFill(); ctx.fill(CGRect(x: art.minX, y: art.midY, width: art.width, height: art.height / 2))
+                top.setFill(); ctx.fill(CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height / 2))
+                bottom.setFill(); ctx.fill(CGRect(x: frame.minX, y: frame.midY, width: frame.width, height: frame.height / 2))
             }
-            // A text box below the art, as on every card: white, with
-            // grey lines of "text".
-            UIColor(white: 0.97, alpha: 1).setFill()
-            ctx.fill(CGRect(x: art.minX, y: art.maxY + 40, width: art.width, height: 180))
-            UIColor.darkGray.setFill()
-            for i in 0..<5 { ctx.fill(CGRect(x: art.minX + 12, y: art.maxY + 60 + CGFloat(i) * 30, width: art.width - 24, height: 6)) }
+            UIColor.green.setFill(); ctx.fill(frame.insetBy(dx: 90, dy: 120))
         }
         return image.cgImage!
     }
 
-    private func isOrange(_ c: SIMD3<Float>) -> Bool { c.x > 0.7 && c.y > 0.25 && c.y < 0.75 && c.z < 0.3 }
-    private func isBlue(_ c: SIMD3<Float>) -> Bool { c.z > 0.6 && c.x < 0.35 && c.y < 0.35 }
     private func isRed(_ c: SIMD3<Float>) -> Bool { c.x > 0.6 && c.y < 0.35 && c.z < 0.35 }
-    private func isGreen(_ c: SIMD3<Float>) -> Bool { c.y > 0.6 && c.x < 0.35 && c.z < 0.35 }
-    private func isLight(_ c: SIMD3<Float>) -> Bool { c.x > 0.75 && c.y > 0.75 && c.z > 0.75 }
+    private func isBlue(_ c: SIMD3<Float>) -> Bool { c.z > 0.6 && c.x < 0.35 && c.y < 0.35 }
+    private func isLight(_ c: SIMD3<Float>) -> Bool { c.x > 0.6 && c.y > 0.6 && c.z > 0.6 }
 
-    @Test func topOfTheArtIsTopAndBottomIsBottom() throws {
-        let tint = try #require(ArtTint.extract(card(top: .orange, bottom: .blue)))
-        #expect(isOrange(tint.samples[0]) && isOrange(tint.samples[1]) && isOrange(tint.samples[2]), "top row orange: \(tint.samples)")
+    @Test func topIsTopAndBottomIsBottom() throws {
+        let tint = try #require(ArtTint.extract(card(top: .red, bottom: .blue)))
+        #expect(isRed(tint.samples[0]) && isRed(tint.samples[1]) && isRed(tint.samples[2]), "top row red: \(tint.samples)")
         #expect(isBlue(tint.samples[6]) && isBlue(tint.samples[7]) && isBlue(tint.samples[8]), "bottom row blue")
         #expect(tint.samples.count == 9)
     }
 
-    @Test func leftAndRightOfTheArtBleedSeparately() throws {
-        let tint = try #require(ArtTint.extract(card(left: .red, right: .green)))
+    @Test func aSplitFrameBleedsTwoColours() throws {
+        let tint = try #require(ArtTint.extract(card(left: .red, right: .white)))
         #expect(isRed(tint.samples[0]) && isRed(tint.samples[3]) && isRed(tint.samples[6]), "left column red")
-        #expect(isGreen(tint.samples[2]) && isGreen(tint.samples[5]) && isGreen(tint.samples[8]), "right column green")
+        #expect(isLight(tint.samples[2]) && isLight(tint.samples[5]) && isLight(tint.samples[8]), "right column white (kept off pure white)")
     }
 
-    /// A white card's frame, title bar and text box never reach the glow:
-    /// with a blue picture every sample is blue, none light.
-    @Test func theWhiteFrameAndTextBoxAreNeverSampled() throws {
-        let tint = try #require(ArtTint.extract(card(frame: .white, top: .blue, bottom: .blue)))
-        #expect(tint.samples.allSatisfy(isBlue), "\(tint.samples)")
-        #expect(!tint.samples.contains(where: isLight))
+    /// The frame, not the border: a black border around a red frame reads red.
+    @Test func theBorderIsSkipped() throws {
+        let tint = try #require(ArtTint.extract(card()))
+        #expect(tint.samples.allSatisfy(isRed), "\(tint.samples)")
     }
 }

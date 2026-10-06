@@ -65,16 +65,14 @@ nonisolated final class ImageMemoryCache: @unchecked Sendable {
     }
 }
 
-/// The colours of a card's art, worked out once when the image is
-/// decoded (`ImageLoader.downsample`): eight samples around the inside
-/// of the **art box** — the corners and the middle of each side of the
-/// picture, not the frame — and their mean. What the grid's glass cell
-/// glows with, as a mesh gradient whose edge colours are the art's own
-/// edge colours: a sunset over a dark sea bleeds orange at the top and
-/// navy at the bottom. The frame is left out on purpose — a white card's
-/// title bar and text box turned every white card's glow grey, and the
-/// frame's colour already shows on the card itself. A gradient, never a
-/// blur, so it costs the tile one fill to draw.
+/// The colours around a card's edge, worked out once when the image is
+/// decoded (`ImageLoader.downsample`): eight samples of the frame just
+/// inside the printed border — the corners and the middle of each side —
+/// and the mean of them. What the grid's glass cell glows with, as a
+/// mesh gradient whose edge colours are the card's own edge colours, so a
+/// card with a red frame on the left and a white one on the right (a
+/// hybrid) bleeds red on the left and white on the right. A gradient,
+/// never a blur, so it costs the tile one fill to draw.
 nonisolated struct ArtTint: Hashable, Sendable {
     /// Red, green, blue in 0…1: top-left, top, top-right, left, centre,
     /// right, bottom-left, bottom, bottom-right — a 3×3 mesh, row by row.
@@ -96,7 +94,7 @@ nonisolated struct ArtTint: Hashable, Sendable {
     var colors: [Color] { samples.map(Self.color) }
     var topColor: Color { Self.color((samples[0] + samples[1] + samples[2]) / 3) }
     var bottomColor: Color { Self.color((samples[6] + samples[7] + samples[8]) / 3) }
-    /// The mean of the art, for the glass's own tint.
+    /// The mean of the edge, for the glass's own tint.
     var midColor: Color { Self.color(samples[4]) }
 
     /// The 3×3 mesh's points: the corners and side midpoints of the unit
@@ -107,19 +105,14 @@ nonisolated struct ArtTint: Hashable, Sendable {
         [0, 1], [0.5, 1], [1, 1],
     ]
 
-    /// Where the picture sits on a card with the standard frame, as
-    /// fractions of the card: inside the title bar, above the type line.
-    /// Full-art and borderless cards have art there too; a saga or a
-    /// split card mixes some text in, which the mean softens.
-    static let artBox = CGRect(x: 0.075, y: 0.11, width: 0.85, height: 0.45)
-
-    /// Samples a 48×64 rendering of the card — three thousand pixels,
-    /// microseconds, inside the decode that already ran off-main. The art
-    /// box is cut out of it and a three-cell ring just inside the box's
-    /// edge is read in eight patches. Each is then pushed a little towards
-    /// saturation, since a mean leans grey.
+    /// Samples a 24×32 rendering of the card — a few hundred pixels,
+    /// microseconds, inside the decode that already ran off-main. The
+    /// printed black border is the outer cell or so (about 4.5% of the
+    /// width); the ring two to three cells in is the frame, which is
+    /// what sits against the glass. Each sample is then pushed a little
+    /// towards saturation, since a mean leans grey.
     static func extract(_ cg: CGImage) -> ArtTint? {
-        let w = 48, h = 64
+        let w = 24, h = 32
         var pixels = [UInt8](repeating: 0, count: w * h * 4)
         let space = CGColorSpaceCreateDeviceRGB()
         let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
@@ -141,23 +134,18 @@ nonisolated struct ArtTint: Hashable, Sendable {
             guard n > 0 else { return SIMD3(repeating: 0.5) }
             return boost(sum / n / 255)
         }
-        // The art box in cells, then a ring three cells deep inside it; the
-        // side patches take the middle third of each edge.
-        let x0 = Int((artBox.minX * CGFloat(w)).rounded()), x1 = Int((artBox.maxX * CGFloat(w)).rounded())
-        let y0 = Int((artBox.minY * CGFloat(h)).rounded()), y1 = Int((artBox.maxY * CGFloat(h)).rounded())
-        let ring = 3
-        let left = x0..<(x0 + ring), right = (x1 - ring)..<x1
-        let top = y0..<(y0 + ring), bottom = (y1 - ring)..<y1
-        let midX = (x0 + (x1 - x0) / 3)..<(x1 - (x1 - x0) / 3)
-        let midY = (y0 + (y1 - y0) / 3)..<(y1 - (y1 - y0) / 3)
-        let tl = average(x: left, y: top)
-        let t = average(x: midX, y: top)
-        let tr = average(x: right, y: top)
-        let l = average(x: left, y: midY)
-        let r = average(x: right, y: midY)
-        let bl = average(x: left, y: bottom)
-        let b = average(x: midX, y: bottom)
-        let br = average(x: right, y: bottom)
+        // The frame band: cells 2–3 in from each edge (8–16% of the width),
+        // past the black border, short of the art.
+        let band = 2..<4
+        let third = (w / 3, h / 3)
+        let tl = average(x: band, y: band)
+        let t = average(x: third.0..<(w - third.0), y: band)
+        let tr = average(x: (w - 4)..<(w - 2), y: band)
+        let l = average(x: band, y: third.1..<(h - third.1))
+        let r = average(x: (w - 4)..<(w - 2), y: third.1..<(h - third.1))
+        let bl = average(x: band, y: (h - 4)..<(h - 2))
+        let b = average(x: third.0..<(w - third.0), y: (h - 4)..<(h - 2))
+        let br = average(x: (w - 4)..<(w - 2), y: (h - 4)..<(h - 2))
         var centre = tl + t
         centre += tr + l
         centre += r + bl
