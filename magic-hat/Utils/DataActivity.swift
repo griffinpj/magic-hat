@@ -176,7 +176,9 @@ final class DataActivity {
         if let data = try? JSONEncoder().encode(out) { defaults.set(data, forKey: Self.key) }
     }
 
-    #if DEBUG
+    // Not under `#if DEBUG`: UITestSeed, which calls these, is compiled
+    // into every configuration (a Release build on a device failed on
+    // it), and they do nothing unless asked.
     /// Tests and the seeded tour: a known log.
     func reset() {
         records = [:]
@@ -203,5 +205,4 @@ final class DataActivity {
         records[.prices] = DataActivityRecord(startedAt: now.addingTimeInterval(-20), finishedAt: nil, count: 0, note: "Running", failed: false)
         running[.prices] = (1_240, 3_846)
     }
-    #endif
 }
