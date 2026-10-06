@@ -321,6 +321,10 @@ nonisolated struct CardSearchQuery: Codable, Hashable, Sendable {
 
     var hasFilters: Bool { activeFilterCount > 0 }
 
+    /// The count without the set filter — for a set's own page, where the
+    /// set is the scope, not a filter the user chose.
+    var activeFilterCountBesidesSets: Int { activeFilterCount - (sets.isEmpty ? 0 : 1) }
+
     /// Nothing to search for: no text and no filters.
     var isEmpty: Bool { trimmedText.isEmpty && !hasFilters }
 

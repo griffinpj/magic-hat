@@ -179,7 +179,9 @@ private struct SetRow: View {
 }
 
 /// One set's cards, in collector-number order: a Scryfall search for the
-/// set in the shared grid, paging as it scrolls.
+/// set in the shared grid, paging as it scrolls. The set is the scope;
+/// the search field and the Filters sheet (`FilterContext.set`) narrow
+/// within it, exactly as the Search tab's do.
 struct SetCardsView: View {
     let set: ScryfallSet
 
@@ -187,14 +189,30 @@ struct SetCardsView: View {
     @State private var controller = SearchController()
     @State private var owned = 0
     @State private var selection = CardSelection()
+    @State private var searchText = ""
+    @State private var showFilters = false
 
     private var tracker: CollectionChangeTracker { .shared }
+    /// Filters chosen besides the set itself.
+    private var filterCount: Int { controller.query.activeFilterCountBesidesSets }
+    private var isNarrowed: Bool { filterCount > 0 || !controller.query.trimmedText.isEmpty }
 
     var body: some View {
         Group {
             switch controller.phase {
             case .idle, .searching:
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .empty where isNarrowed:
+                ContentUnavailableView {
+                    Label("No Matches", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Nothing in \(set.name ?? set.code.uppercased()) matches the search and filters.")
+                } actions: {
+                    if filterCount > 0 {
+                        Button("Adjust Filters") { showFilters = true }.buttonStyle(.borderedProminent)
+                    }
+                    Button("Clear") { searchText = ""; controller.query.text = ""; resetFilters(); controller.runIfChanged() }
+                }
             case .empty:
                 ContentUnavailableView("No Cards", systemImage: "square.stack",
                                        description: Text("Scryfall lists no cards in this set yet."))
@@ -219,9 +237,23 @@ struct SetCardsView: View {
         }
         .navigationTitle(set.name ?? set.code.uppercased())
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "Search \(set.name ?? set.code.uppercased())")
+        .searchPresentationToolbarBehavior(.avoidHidingContent)
+        .onSubmit(of: .search) { controller.query.text = searchText; controller.runIfChanged() }
+        .onChange(of: searchText) { _, text in controller.scheduleText(text) }
         .toolbar {
             if !selection.isActive {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button {
+                        showFilters = true
+                    } label: {
+                        Label("Filters", systemImage: "line.3.horizontal.decrease")
+                            .symbolVariant(filterCount > 0 ? .circle.fill : .circle)
+                            .foregroundStyle(filterCount > 0 ? Color.accentColor : Color.primary)
+                    }
+                    .accessibilityIdentifier("set-filters")
+                    .accessibilityValue(filterCount > 0 ? "\(filterCount) active" : "none")
                     Menu {
                         Button("Select Cards", systemImage: "checkmark.circle") { selection.begin() }
                             .disabled(controller.results.isEmpty)
@@ -231,6 +263,9 @@ struct SetCardsView: View {
                     .accessibilityIdentifier("set-more")
                 }
             }
+        }
+        .sheet(isPresented: $showFilters, onDismiss: { pinSet(); controller.runIfChanged() }) {
+            SearchFiltersView(query: $controller.query, context: .set)
         }
         .cardSelectionBar(selection, items: controller.results)
         .task {
@@ -249,6 +284,16 @@ struct SetCardsView: View {
             if let index = try? await store.ownedIndex(stamp: .current) { controller.updateOwned(index) }
             if let counts = try? await store.ownedCopiesBySet(stamp: .current) { owned = counts[set.code.lowercased()] ?? 0 }
         }
+    }
+
+    /// The set stays the scope whatever the sheet did.
+    private func pinSet() {
+        controller.query.sets = [set.code.lowercased()]
+    }
+
+    private func resetFilters() {
+        controller.query.clearFilters()
+        pinSet()
     }
 
     private var header: some View {

@@ -1965,7 +1965,11 @@ title's expansion, moving the content inset under the scroll, and a slow
 glide to the top stuttered. `SetBrowserView` groups `/sets` by year
 (`SetBrowsing`, pure; `SetKind` folds Scryfall's `set_type`), with owned
 copies per set (`CollectionStore.ownedCopiesBySet`); a set pushes
-`SetCardsView`, a `s:code` search in collector-number order. The set list
+`SetCardsView`, a `s:code` search in collector-number order — with its
+own search field and Filters sheet (`FilterContext.set`: the set is the
+scope, so its section is hidden, Reset keeps it and the Filters badge
+counts `activeFilterCountBesidesSets`; every printing is listed, so
+Group Printings is not offered). The set list
 is cached a **day** (`ScryfallCatalogCache.setsTTL`), not a week, and pull
 to refresh forces it — so a new set shows the day it is out. Search itself
 is always live against Scryfall, so new cards appear there immediately;

@@ -36,9 +36,14 @@ struct SearchFiltersView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Reset") { draft.clearFilters() }
-                        .disabled(!draft.hasFilters)
-                        .accessibilityIdentifier("filters-reset")
+                    Button("Reset") {
+                        // A set's page keeps its set: it is the scope.
+                        let sets = draft.sets
+                        draft.clearFilters()
+                        if context == .set { draft.sets = sets }
+                    }
+                    .disabled(context == .set ? draft.activeFilterCountBesidesSets == 0 : !draft.hasFilters)
+                    .accessibilityIdentifier("filters-reset")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {

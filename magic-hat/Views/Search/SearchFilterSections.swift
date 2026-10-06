@@ -38,6 +38,13 @@ enum FilterField: Hashable {
 enum FilterContext {
     case scryfall
     case collection
+    /// One set's cards: the set is the scope (its section is hidden and
+    /// Reset keeps it), and every printing is listed, so grouping is not
+    /// offered.
+    case set
+
+    /// Searched on Scryfall (against a collection it is evaluated in memory).
+    var isScryfall: Bool { self != .collection }
 }
 
 struct SearchFilterSections: View {
@@ -63,7 +70,7 @@ struct SearchFilterSections: View {
         typeLineSection
         oracleSection
         manaCostSection
-        setsSection
+        if context != .set { setsSection }
         raritySection
         priceSection
         statsSection
@@ -101,11 +108,13 @@ struct SearchFilterSections: View {
                 ForEach(Self.languages, id: \.code) { lang in
                     Text(lang.name).tag(Optional(lang.code))
                 }
-                if context == .scryfall { Text("Any Language").tag(Optional("any")) }
+                if context.isScryfall { Text("Any Language").tag(Optional("any")) }
             }
             if context == .scryfall {
                 Toggle("Group Printings", isOn: $query.groupPrintings)
                     .accessibilityIdentifier("filter-group-printings")
+            }
+            if context.isScryfall {
                 Toggle("Hide Tokens & Un-cards", isOn: $query.excludeExtras)
             }
         } footer: {

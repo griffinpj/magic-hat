@@ -142,6 +142,23 @@ final class FeatureFlowTests: XCTestCase {
         // Online: the list; offline: the retry. Either way, not the form.
         let loaded = app.buttons["sets-kind"].waitForExistence(timeout: 15) || app.buttons["Try Again"].waitForExistence(timeout: 5)
         XCTAssertTrue(loaded)
+        // A set's page has a search field and the Filters sheet; the sheet
+        // has no Sets section (the set is the scope) and Reset keeps it.
+        let firstSet = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'set-row-'")).firstMatch
+        if firstSet.waitForExistence(timeout: 5) {
+            firstSet.tap()
+            XCTAssertTrue(app.buttons["set-filters"].waitForExistence(timeout: 10), "filters on a set's cards")
+            XCTAssertTrue(app.searchFields.firstMatch.exists, "a search field on a set's cards")
+            app.buttons["set-filters"].tap()
+            XCTAssertTrue(app.buttons["filters-done"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.staticTexts["Sets"].exists, "the set is the scope, not a filter")
+            XCTAssertFalse(app.switches["filter-group-printings"].exists, "every printing is listed")
+            XCTAssertFalse(app.buttons["filters-reset"].isEnabled, "nothing to reset besides the set")
+            app.buttons["filters-done"].tap()
+            XCTAssertTrue(app.buttons["set-filters"].waitForExistence(timeout: 5))
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        }
         mode.buttons["Cards"].tap()
         XCTAssertTrue(app.buttons["search-run"].waitForExistence(timeout: 5))
 
