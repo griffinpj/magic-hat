@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- ProMotion: without this, iPhone caps every Core Animation display
+	     link and animation in the app — SwiftUI's own included — at 60Hz,
+	     and a scroll pans at 120 while what SwiftUI changes during it moves
+	     at 60. UIKit scrolling alone is exempt; this lifts the cap. -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.griffin.magic-hat.catalog-refresh</string>

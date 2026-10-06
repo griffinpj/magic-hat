@@ -45,6 +45,9 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.3), value: showSetup)
         .background(alignment: .bottomLeading) { FoilWarmupView() }
+        #if DEBUG
+        .overlay(alignment: .top) { FrameRateHUD().padding(.top, 2) }
+        #endif
         .task {
             LaunchPrewarm.fonts()
             LaunchPrewarm.shaders()

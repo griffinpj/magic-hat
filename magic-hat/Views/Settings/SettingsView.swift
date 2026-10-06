@@ -54,6 +54,9 @@ struct SettingsView: View {
                 pricesSection
                 imagesSection
                 analysisSection
+                #if DEBUG
+                GridDiagnosticsSection()
+                #endif
                 Section {
                     NavigationLink {
                         BackupSettingsView()
@@ -382,3 +385,35 @@ private struct CardDataSection: View {
 #Preview {
     SettingsView()
 }
+
+#if DEBUG
+/// Debug builds only: switch off one thing a grid tile draws at a time
+/// and scroll — the phone is the only frame-pacing instrument we have
+/// (see GridDiagnostics). Each toggle bumps the tracker so the grid
+/// rebuilds its tiles.
+private struct GridDiagnosticsSection: View {
+    @AppStorage(GridDiagnostics.glowKey) private var glow = true
+    @AppStorage(GridDiagnostics.sheenKey) private var sheen = true
+    @AppStorage(GridDiagnostics.imagesKey) private var images = true
+    @AppStorage(GridDiagnostics.captionKey) private var caption = true
+    @AppStorage(GridDiagnostics.frameRateKey) private var frameRate = false
+
+    var body: some View {
+        Section {
+            Toggle("Show Frame Rate", isOn: $frameRate)
+            Toggle("Glow behind cards", isOn: $glow)
+            Toggle("Foil sheen", isOn: $sheen)
+            Toggle("Card images", isOn: $images)
+            Toggle("Caption", isOn: $caption)
+        } header: {
+            Text("Grid Diagnostics (Debug)")
+        } footer: {
+            Text("Show Frame Rate reads the refresh rate the display is running at and the frames the main thread missed. Scroll a collection with one of the others off to see which costs the frames. Debug builds only; a release build draws everything.")
+        }
+        .onChange(of: [glow, sheen, images, caption]) { _, _ in
+            GridDiagnostics.reload()
+            CollectionChangeTracker.shared.bump()
+        }
+    }
+}
+#endif

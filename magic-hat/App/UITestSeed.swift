@@ -36,10 +36,11 @@ enum UITestSeed {
                     AppSettings.showPricesKey, AppSettings.priceRefreshKey, AppSettings.defaultConditionKey,
                     AppSettings.defaultFinishKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
                     AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey,
-                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey, FlippedFaces.key] {
+                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey, FlippedFaces.key] + GridDiagnostics.allKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FlippedFaces.reload()
+        GridDiagnostics.reload()
         let context = container.mainContext
         context.insert(MTGCollection(name: collectionName))
         let tokenID = "00000000-0000-4000-8000-ffffffffff01"

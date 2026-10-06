@@ -82,8 +82,12 @@ struct CardTile: View, Equatable {
     /// cell's corners run parallel to the card's.
     private static let cardRadius: CGFloat = 10
 
+    /// Debug kill-switches (Settings › Grid Diagnostics); everything on
+    /// in a release build.
+    private var diagnostics: GridDiagnostics.Flags { GridDiagnostics.current }
+
     var body: some View {
-        if showsCaption {
+        if showsCaption && diagnostics.caption {
             // The card sits in a Liquid Glass cell that carries on below it
             // with the caption — one object, the card and what it says
             // about itself, rather than text floating under an image. The
@@ -117,7 +121,7 @@ struct CardTile: View, Equatable {
     /// nothing redrawn as the cell moves.
     private var cell: some View {
         let shape = RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous)
-        let glow = tint ?? item.displayImageURL.flatMap { ImageMemoryCache.shared.tint($0) }
+        let glow = diagnostics.glow ? (tint ?? item.displayImageURL.flatMap { ImageMemoryCache.shared.tint($0) }) : nil
         return shape
             .fill(Color(.secondarySystemGroupedBackground))
             .overlay {
@@ -134,11 +138,14 @@ struct CardTile: View, Equatable {
     }
 
     @ViewBuilder private var image: some View {
-        // Sheen on foils, static here so the grid never redraws for it.
+        // Foils get the static gradient sheen, not the shader: a layer
+        // effect is a filter Core Animation runs every composited frame,
+        // and a dozen of them scrolling is a shader pass each per frame.
         // The face the user left the card on (a flipped double-faced card
         // stays flipped).
-        let art = CardImageView(urlString: item.displayImageURL, aspectRatio: item.aspectRatio,
-                                targetWidth: targetWidth, foil: isFoil, tint: showsCaption ? $tint : nil)
+        let art = CardImageView(urlString: diagnostics.images ? item.displayImageURL : nil, aspectRatio: item.aspectRatio,
+                                targetWidth: targetWidth, foil: isFoil && diagnostics.sheen, foilSheen: .overlay,
+                                tint: showsCaption ? $tint : nil)
             .overlay(alignment: .center) { placeholderName }
             .overlay(alignment: .topTrailing) { deckBadge }
         if let zoom {

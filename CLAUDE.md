@@ -1641,6 +1641,26 @@ actions, renaming and clearing.
   ("2 hours ago · 3,846 cards · 41s"), and a detail with what it is, when
   it runs (read from the live settings) and the last run. `UITestSeed`
   seeds the log (`seedForTesting`); `SettingsImportTour` shoots it.
+- **ProMotion needs an opt-in.** `Info.plist` carries
+  `CADisableMinimumFrameDurationOnPhone = YES`: without it iPhone caps
+  every Core Animation display link and animation in the app — SwiftUI's
+  own included — at 60Hz, and only the UIScrollView's pan runs at 120,
+  so what SwiftUI changed during a scroll (an image landing, a glass
+  control, a transition) moved at half the display's rate. Debug builds
+  have **Settings › Grid Diagnostics**: a frame-rate HUD
+  (`FrameRateHUD`, a CADisplayLink asking for 120 — the display's actual
+  rate and the main thread's missed frames; the render server's own
+  hitches still need Xcode's metric on a device) and kill-switches for
+  the glow, the foil sheen, the images and the caption
+  (`GridDiagnostics`, everything on in release), so one scroll on the
+  phone says which draw costs the frames. The grid's foil sheen is a
+  static gradient overlay (`CardImageView.foilSheen = .overlay`), not the
+  shader: a `layerEffect` is a filter Core Animation runs on every
+  composited frame, so a dozen foil tiles scrolling paid a shader pass
+  each per frame; the viewer keeps the shader. Time Profiler on the
+  simulator over a 60s real-collection scroll (2026-10-05): 33 frames
+  over 8.3ms of main-thread CPU, all XCUITest's accessibility
+  snapshots — no app frame, so tile bodies are not where the frames go.
 - **The grid's cells are not Liquid Glass.** They were (`glassEffect`
   per tile); glass is a live material that samples, blurs and refracts
   what is behind it on every frame, and twelve to fifteen of them

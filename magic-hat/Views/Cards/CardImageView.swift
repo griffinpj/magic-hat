@@ -22,6 +22,14 @@ struct CardImageView: View {
     var foil: Bool = false
     var foilAnimated: Bool = false
     var foilIntensity: Double = 0.16
+    /// How the sheen is drawn: the Metal shader (a live layer effect, for
+    /// the viewer's one or three cards), or a static gradient overlay for
+    /// a grid of them — a layer effect is a filter Core Animation runs on
+    /// every composited frame, so a dozen foil tiles scrolling paid a
+    /// shader pass each per frame.
+    var foilSheen: FoilSheenStyle = .shader
+
+    enum FoilSheenStyle { case shader, overlay }
 
     @Environment(\.displayScale) private var displayScale
 
@@ -58,8 +66,21 @@ struct CardImageView: View {
                     .scaledToFit()
                     // Sheen is a layerEffect over the image's own layer, so it
                     // samples the art and is clipped with it below.
-                    .modifier(FoilSheen(active: foil, animated: foilAnimated,
+                    .modifier(FoilSheen(active: foil && foilSheen == .shader, animated: foilAnimated,
                                         intensity: Float(foilIntensity)))
+                    .overlay {
+                        if foil, foilSheen == .overlay {
+                            // One static fill: a diagonal band of the
+                            // sheen's colours, clipped with the card below.
+                            LinearGradient(stops: [
+                                .init(color: .clear, location: 0.15),
+                                .init(color: .pink.opacity(0.22), location: 0.38),
+                                .init(color: .yellow.opacity(0.18), location: 0.5),
+                                .init(color: .cyan.opacity(0.22), location: 0.62),
+                                .init(color: .clear, location: 0.85),
+                            ], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        }
+                    }
             } else {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(.quaternary)
