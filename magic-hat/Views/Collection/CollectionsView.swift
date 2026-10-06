@@ -322,10 +322,9 @@ struct CollectionsView: View {
             }
         }
         .listStyle(.plain)
-        .confirmationDialog(
+        .alert(
             "Delete “\(pendingDelete ?? "")”?",
-            isPresented: deleteBinding,
-            titleVisibility: .visible
+            isPresented: deleteBinding
         ) {
             Button(isPendingDeleteList ? "Delete List" : "Delete Collection", role: .destructive) {
                 if let name = pendingDelete { delete(name) }

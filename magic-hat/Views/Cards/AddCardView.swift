@@ -105,10 +105,9 @@ struct AddCardView: View {
             .sheet(item: $editing) { row in
                 EditEntryView(item: row)
             }
-            .confirmationDialog(
+            .alert(
                 "Remove \(pendingDelete?.name ?? "")?",
                 isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                titleVisibility: .visible,
                 presenting: pendingDelete
             ) { row in
                 Button("Remove \(row.quantity) from \(row.collectionName)", role: .destructive) { remove(row) }

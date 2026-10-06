@@ -151,8 +151,8 @@ struct DeckVersionsView: View {
             Button("Save") { run(nil) { try DeckVersionController.renameBranch(branch.id, to: renameText, context: modelContext) } }
             Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
-                            titleVisibility: .visible, presenting: deleting) { branch in
+        .alert("Delete “\(deleting?.name ?? "")”?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+               presenting: deleting) { branch in
             Button("Delete Branch", role: .destructive) {
                 run("Deleted \(branch.name)") { try DeckVersionController.deleteBranch(branch.id, context: modelContext) }
             }
