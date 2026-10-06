@@ -65,62 +65,103 @@ nonisolated final class ImageMemoryCache: @unchecked Sendable {
     }
 }
 
-/// The colours of a card's art, worked out once when the image is
-/// decoded (`ImageLoader.downsample`): the average of its top and bottom
-/// thirds, and the frame's colour from its edges. What the grid's glass
-/// cell glows with — a gradient, never a blur, so it costs the tile
-/// nothing to draw.
+/// The colours around a card's edge, worked out once when the image is
+/// decoded (`ImageLoader.downsample`): eight samples of the frame just
+/// inside the printed border — the corners and the middle of each side —
+/// and the mean of them. What the grid's glass cell glows with, as a
+/// mesh gradient whose edge colours are the card's own edge colours, so a
+/// card with a red frame on the left and a white one on the right (a
+/// hybrid) bleeds red on the left and white on the right. A gradient,
+/// never a blur, so it costs the tile one fill to draw.
 nonisolated struct ArtTint: Hashable, Sendable {
-    /// Red, green, blue in 0…1.
-    let top: (Float, Float, Float)
-    let bottom: (Float, Float, Float)
+    /// Red, green, blue in 0…1: top-left, top, top-right, left, centre,
+    /// right, bottom-left, bottom, bottom-right — a 3×3 mesh, row by row.
+    let samples: [SIMD3<Float>]
 
-    static func == (a: ArtTint, b: ArtTint) -> Bool { a.top == b.top && a.bottom == b.bottom }
-
-    var topColor: Color { Color(red: Double(top.0), green: Double(top.1), blue: Double(top.2)) }
-    var bottomColor: Color { Color(red: Double(bottom.0), green: Double(bottom.1), blue: Double(bottom.2)) }
-    /// The two mixed, for the glass's own tint.
-    var midColor: Color {
-        Color(red: Double(top.0 + bottom.0) / 2, green: Double(top.1 + bottom.1) / 2, blue: Double(top.2 + bottom.2) / 2)
+    init(samples: [SIMD3<Float>]) {
+        precondition(samples.count == 9)
+        self.samples = samples
     }
-    func hash(into h: inout Hasher) { h.combine(top.0); h.combine(top.1); h.combine(top.2); h.combine(bottom.0); h.combine(bottom.1); h.combine(bottom.2) }
 
-    /// Averages the image's rows over a 12×16 rendering: a few hundred
-    /// pixels, microseconds, inside the decode that already ran off-main.
-    /// The averages are then pushed a little towards saturation, since a
-    /// mean of a whole card leans grey.
+    /// Two colours, top and bottom, for anything that wants a plain gradient.
+    init(top: (Float, Float, Float), bottom: (Float, Float, Float)) {
+        let t = SIMD3(top.0, top.1, top.2), b = SIMD3(bottom.0, bottom.1, bottom.2)
+        let m = (t + b) / 2
+        samples = [t, t, t, m, m, m, b, b, b]
+    }
+
+    static func color(_ c: SIMD3<Float>) -> Color { Color(red: Double(c.x), green: Double(c.y), blue: Double(c.z)) }
+    var colors: [Color] { samples.map(Self.color) }
+    var topColor: Color { Self.color((samples[0] + samples[1] + samples[2]) / 3) }
+    var bottomColor: Color { Self.color((samples[6] + samples[7] + samples[8]) / 3) }
+    /// The mean of the edge, for the glass's own tint.
+    var midColor: Color { Self.color(samples[4]) }
+
+    /// The 3×3 mesh's points: the corners and side midpoints of the unit
+    /// square, the centre in the middle.
+    static let meshPoints: [SIMD2<Float>] = [
+        [0, 0], [0.5, 0], [1, 0],
+        [0, 0.5], [0.5, 0.5], [1, 0.5],
+        [0, 1], [0.5, 1], [1, 1],
+    ]
+
+    /// Samples a 24×32 rendering of the card — a few hundred pixels,
+    /// microseconds, inside the decode that already ran off-main. The
+    /// printed black border is the outer cell or so (about 4.5% of the
+    /// width); the ring two to three cells in is the frame, which is
+    /// what sits against the glass. Each sample is then pushed a little
+    /// towards saturation, since a mean leans grey.
     static func extract(_ cg: CGImage) -> ArtTint? {
-        let w = 12, h = 16
+        let w = 24, h = 32
         var pixels = [UInt8](repeating: 0, count: w * h * 4)
         let space = CGColorSpaceCreateDeviceRGB()
         let info = CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
         guard let ctx = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: space, bitmapInfo: info) else { return nil }
         ctx.interpolationQuality = .low
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
-        func average(rows: Range<Int>) -> (Float, Float, Float) {
-            var r: Float = 0, g: Float = 0, b: Float = 0, n: Float = 0
-            for y in rows {
-                for x in 0..<w {
+        // Memory row 0 is the top of the image: Core Graphics draws with
+        // y up, and the context's top edge is the buffer's first row.
+        func average(x xs: Range<Int>, y ys: Range<Int>) -> SIMD3<Float> {
+            var sum = SIMD3<Float>(repeating: 0)
+            var n: Float = 0
+            for y in ys {
+                for x in xs {
                     let i = (y * w + x) * 4
-                    r += Float(pixels[i]); g += Float(pixels[i + 1]); b += Float(pixels[i + 2]); n += 1
+                    sum += SIMD3(Float(pixels[i]), Float(pixels[i + 1]), Float(pixels[i + 2]))
+                    n += 1
                 }
             }
-            guard n > 0 else { return (0.5, 0.5, 0.5) }
-            return boost((r / n / 255, g / n / 255, b / n / 255))
+            guard n > 0 else { return SIMD3(repeating: 0.5) }
+            return boost(sum / n / 255)
         }
-        // Core Graphics draws bottom-up: the top of the art is the last rows.
-        return ArtTint(top: average(rows: (h * 2 / 3)..<h), bottom: average(rows: 0..<(h / 3)))
+        // The frame band: cells 2–3 in from each edge (8–16% of the width),
+        // past the black border, short of the art.
+        let band = 2..<4
+        let third = (w / 3, h / 3)
+        let tl = average(x: band, y: band)
+        let t = average(x: third.0..<(w - third.0), y: band)
+        let tr = average(x: (w - 4)..<(w - 2), y: band)
+        let l = average(x: band, y: third.1..<(h - third.1))
+        let r = average(x: (w - 4)..<(w - 2), y: third.1..<(h - third.1))
+        let bl = average(x: band, y: (h - 4)..<(h - 2))
+        let b = average(x: third.0..<(w - third.0), y: (h - 4)..<(h - 2))
+        let br = average(x: (w - 4)..<(w - 2), y: (h - 4)..<(h - 2))
+        var centre = tl + t
+        centre += tr + l
+        centre += r + bl
+        centre += b + br
+        centre /= 8
+        return ArtTint(samples: [tl, t, tr, l, centre, r, bl, b, br])
     }
 
     /// More saturation, kept off black and white, so the glow reads as a
     /// colour rather than a shade.
-    private static func boost(_ c: (Float, Float, Float)) -> (Float, Float, Float) {
-        let mean = (c.0 + c.1 + c.2) / 3
-        func push(_ v: Float) -> Float { min(1, max(0, mean + (v - mean) * 1.8)) }
-        var out = (push(c.0), push(c.1), push(c.2))
-        let luma = 0.299 * out.0 + 0.587 * out.1 + 0.114 * out.2
-        if luma < 0.22 { let k = 0.22 / max(luma, 0.01); out = (min(1, out.0 * k), min(1, out.1 * k), min(1, out.2 * k)) }
-        if luma > 0.85 { out = (out.0 * 0.85, out.1 * 0.85, out.2 * 0.85) }
+    private static func boost(_ c: SIMD3<Float>) -> SIMD3<Float> {
+        let mean = (c.x + c.y + c.z) / 3
+        var out = (SIMD3(repeating: mean) + (c - SIMD3(repeating: mean)) * 1.8).clamped(lowerBound: SIMD3(repeating: 0), upperBound: SIMD3(repeating: 1))
+        let luma = 0.299 * out.x + 0.587 * out.y + 0.114 * out.z
+        if luma < 0.22 { let k = 0.22 / max(luma, 0.01); out = (out * k).clamped(lowerBound: SIMD3(repeating: 0), upperBound: SIMD3(repeating: 1)) }
+        if luma > 0.85 { out *= 0.85 }
         return out
     }
 }

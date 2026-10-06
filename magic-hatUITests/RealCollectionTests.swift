@@ -140,6 +140,33 @@ final class RealCollectionTests: XCTestCase {
         assertNoHangs(since: mark, "scrolling with real images after sync")
     }
 
+    /// Frame pacing, not stalls: Apple's hitch metric over a fast scroll of
+    /// the real collection with its images decoded — the number that says
+    /// whether the grid is smooth. The store is kept from an earlier run
+    /// (`UITEST_RESET` unset) so the images are on disk; the first swipes
+    /// warm them, the measured ones scroll through what is in memory and
+    /// what streams in. Reported as hitch time ratio (ms of hitch per
+    /// second of scrolling); under 5 is smooth, over 10 is felt.
+    @MainActor
+    func testGridScrollHitchesWithRealImages() {
+        let app = launch()
+        let card = collectionCard(app)
+        settle(2)
+        card.tap()
+        let grid = app.scrollViews.firstMatch
+        XCTAssertTrue(grid.waitForExistence(timeout: 10))
+        // Let hydration and the first images land before measuring.
+        settle(8)
+        for _ in 0..<4 { grid.swipeUp(velocity: .fast) }
+        settle(2)
+        for _ in 0..<4 { grid.swipeDown(velocity: .fast) }
+        settle(2)
+        measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric]) {
+            for _ in 0..<4 { grid.swipeUp(velocity: .fast) }
+            for _ in 0..<4 { grid.swipeDown(velocity: .fast) }
+        }
+    }
+
     private func sortEveryWay(_ app: XCUIApplication, mark: Int, label: String) -> Int {
         var mark = mark
         for option in ["Set", "Rarity", "Price", "Quantity", "Recently Added", "Name"] {

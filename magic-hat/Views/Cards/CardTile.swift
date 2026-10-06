@@ -100,19 +100,22 @@ struct CardTile: View, Equatable {
         }
     }
 
-    /// The glass cell, lit by the art: a gradient of the art's top and
-    /// bottom colours sits *behind* the glass, so the material does what
-    /// it does to anything behind it — the colour softens and bleeds to
-    /// the rim — and the glass itself takes a faint tint of the mix. No
-    /// blur of our own: a gradient and a tint are a fill each, so the
-    /// grid scrolls as it did (`testGridScrollDoesNotHitch`).
+    /// The glass cell, lit by the card's edge: a 3×3 mesh gradient of the
+    /// colours sampled just inside the border (`ArtTint`) sits *behind*
+    /// the glass, so the material does what it does to anything behind it
+    /// — the colour softens and bleeds to the rim — and the glass itself
+    /// takes a faint tint of their mean. Each edge of the cell glows with
+    /// what the card has at that edge: a hybrid's split frame bleeds two
+    /// colours. No blur of our own: a mesh and a tint are a fill each
+    /// (the mesh is one shader pass over the cell, static until the tint
+    /// changes), so the grid scrolls as it did.
     private var cell: some View {
         let shape = RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous)
         let glow = tint ?? item.displayImageURL.flatMap { ImageMemoryCache.shared.tint($0) }
         return ZStack {
             if let glow {
-                shape.fill(LinearGradient(colors: [glow.topColor, glow.bottomColor], startPoint: .top, endPoint: .bottom))
-                    .opacity(0.55)
+                shape.fill(MeshGradient(width: 3, height: 3, points: ArtTint.meshPoints, colors: glow.colors))
+                    .opacity(0.6)
             }
             shape.fill(.clear)
                 .glassEffect(glow.map { .regular.tint($0.midColor.opacity(0.22)) } ?? .regular, in: shape)

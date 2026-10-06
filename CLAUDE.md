@@ -1594,17 +1594,23 @@ actions, renaming and clearing.
   ("2 hours ago · 3,846 cards · 41s"), and a detail with what it is, when
   it runs (read from the live settings) and the last run. `UITestSeed`
   seeds the log (`seedForTesting`); `SettingsImportTour` shoots it.
-- **The grid's glass cell glows with its card's art.** `ArtTint` is the
-  average colour of the art's top and bottom thirds (a 12×16 rendering
-  of the decoded thumbnail, microseconds, inside the `@concurrent`
-  decode that already ran), pushed a little towards saturation and kept
-  off black and white, cached per URL in `ImageMemoryCache` (a few bytes
-  each, so it outlives the image). `CardTile` draws a gradient of the
-  two colours *behind* the glass — the material does the softening and
-  the bleed to the rim — and tints the glass with their mix. Never a
-  blur of our own: a blurred copy of the art is an offscreen pass per
-  tile, and the grid has 3,800 of them; a gradient and a tint are a fill
-  each (real-collection scroll run: no app frame in any stall).
+- **The grid's glass cell glows with its card's edge.** `ArtTint` is
+  eight samples of the frame just inside the printed border — the
+  corners and the middle of each side, cells 2–3 in on a 24×32
+  rendering of the decoded thumbnail (the border is the outer cell; the
+  frame is what sits against the glass), microseconds, inside the
+  `@concurrent` decode that already ran — plus their mean, each pushed a
+  little towards saturation and kept off black and white, cached per
+  URL in `ImageMemoryCache` (27 floats, so it outlives the image).
+  Bitmap row 0 is the image's top (`ArtTintTests` draws a card and
+  checks; the old two-colour version had it upside down). `CardTile`
+  draws a 3×3 `MeshGradient` of them *behind* the glass — each edge of
+  the cell glows with what the card has at that edge, so a hybrid's
+  split frame bleeds two colours — and tints the glass with the mean.
+  Never a blur of our own: a blurred copy of the art is an offscreen
+  pass per tile, and the grid has 3,800 of them; a mesh and a tint are a
+  fill each (real-collection scroll at a 34ms watchdog: no app frame in
+  any stall; the remaining stalls are XCUITest's accessibility reads).
   `CardImageView(tint:)` hands the colour up when its image lands; a
   warmed tile reads the cache in its body for its first frame.
 - Images live on disk (Caches/), not in SwiftData, to keep the store small.
