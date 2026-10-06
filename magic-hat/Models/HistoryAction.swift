@@ -228,10 +228,14 @@ nonisolated struct HistoryLog: Hashable, Sendable {
 // MARK: - The window a long history is shown through
 
 /// What the History list draws of a long history: the newest part of the
-/// current line, and only the branches that hang off something drawn. A
-/// branch whose fork lies further back than the window is not shown — a
-/// card saying "splits from" an action that isn't on screen points
-/// nowhere — and comes into view with it when the window grows.
+/// current line, and only the branches that hang off *the current line's*
+/// drawn rows. A branch whose fork lies further back than the window is
+/// not shown — a card saying "splits from" an action that isn't on screen
+/// points nowhere — and comes into view with it when the window grows. A
+/// branch off another branch is not shown either: it is that branch's
+/// history, reached by switching to it, and its card says how many it
+/// has (`Section.nested`). What is on screen is the latest history and
+/// the ways off it, not every chain the ledger holds.
 nonisolated struct HistoryWindow: Hashable, Sendable {
     struct Section: Hashable, Sendable, Identifiable {
         let line: HistoryLine
@@ -239,16 +243,21 @@ nonisolated struct HistoryWindow: Hashable, Sendable {
         let rows: [UUID]
         /// Older actions of the line not drawn.
         let hidden: Int
+        /// Branches splitting from this line, drawn only once it is current.
+        var nested = 0
         var id: UUID { line.id }
     }
 
     let current: Section?
     let branches: [Section]
-    /// Branches left out because where they split from isn't drawn.
+    /// Branches off the current line left out because where they split
+    /// from isn't drawn yet.
     let hiddenBranches: Int
 
     /// The lines drawn, in order: what the list's identity is keyed on.
     var structure: [UUID] { (current.map { [$0.id] } ?? []) + branches.map(\.id) }
+    /// The ids of every line drawn, for the fork tags on rows.
+    var shownLines: Set<UUID> { Set(structure) }
 }
 
 nonisolated extension HistoryLog {
@@ -259,14 +268,16 @@ nonisolated extension HistoryLog {
 
     /// `limit` rows of the current line, newest first — never fewer than
     /// reach the head, so what Undo and Redo act on is always drawn — and
-    /// the branches splitting from a drawn row, each cut to its newest
-    /// `branchPreview` rows unless its id is in `expanded`.
+    /// the branches splitting from a drawn row of it, each cut to its
+    /// newest `branchPreview` rows unless its id is in `expanded`.
     func window(limit: Int = HistoryLog.pageSize, expanded: Set<UUID> = []) -> HistoryWindow {
         var drawn = Set<UUID>()
         var current: HistoryWindow.Section?
         var wholeCurrentDrawn = true
+        var currentActions = Set<UUID>()
         if let line = currentLine {
             let newestFirst = Array(line.actions.reversed())
+            currentActions = Set(line.actions)
             // Everything ahead of the head, the head, and one applied row
             // under it at least.
             let ahead = line.actions.count - timeline.applied.count
@@ -276,19 +287,33 @@ nonisolated extension HistoryLog {
             wholeCurrentDrawn = count == newestFirst.count
             current = HistoryWindow.Section(line: line, rows: rows, hidden: newestFirst.count - count)
         }
+        // How many lines hang off each other line: said on its card, drawn
+        // once it is current.
+        var nested: [UUID: Int] = [:]
+        for line in otherLines {
+            guard let fork = line.forkFrom, !currentActions.contains(fork),
+                  let host = self.line(containing: fork) else { continue }
+            nested[host.id, default: 0] += 1
+        }
         var branches: [HistoryWindow.Section] = []
         var hiddenBranches = 0
-        // `otherLines` lists a branch after the line it hangs from, so one
-        // pass sees a branch's host before the branch.
         for line in otherLines {
-            let anchored: Bool
-            if let fork = line.forkFrom { anchored = drawn.contains(fork) } else { anchored = wholeCurrentDrawn }
-            guard anchored else { hiddenBranches += 1; continue }
+            if let fork = line.forkFrom {
+                // Off the current line: drawn with its fork row. Off another
+                // branch: that branch's history, not this screen's.
+                guard currentActions.contains(fork) else { continue }
+                guard drawn.contains(fork) else { hiddenBranches += 1; continue }
+            } else if !wholeCurrentDrawn {
+                hiddenBranches += 1
+                continue
+            }
             let newestFirst = Array(line.actions.reversed())
             let count = expanded.contains(line.id) ? newestFirst.count : min(newestFirst.count, Self.branchPreview)
             let rows = Array(newestFirst.prefix(count))
             drawn.formUnion(rows)
-            branches.append(HistoryWindow.Section(line: line, rows: rows, hidden: newestFirst.count - count))
+            var section = HistoryWindow.Section(line: line, rows: rows, hidden: newestFirst.count - count)
+            section.nested = nested[line.id] ?? 0
+            branches.append(section)
         }
         return HistoryWindow(current: current, branches: branches, hiddenBranches: hiddenBranches)
     }

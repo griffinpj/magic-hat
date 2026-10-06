@@ -87,10 +87,10 @@ struct HistoryView: View {
         return ScrollViewReader { proxy in
             List {
                 if let section = window.current {
-                    lineSection(section, proxy: proxy, hiddenBranches: window.hiddenBranches)
+                    lineSection(section, proxy: proxy, shown: window.shownLines, hiddenBranches: window.hiddenBranches)
                 }
                 ForEach(window.branches) { section in
-                    lineSection(section, proxy: proxy)
+                    lineSection(section, proxy: proxy, shown: window.shownLines)
                 }
             }
             // A new list when the branches change (a fork, a switch): a row
@@ -141,13 +141,15 @@ struct HistoryView: View {
     /// card), and another branch's card ends in a junction row saying
     /// which action it splits from (tap: that row) and what Switch does.
     @ViewBuilder private func lineSection(_ section: HistoryWindow.Section, proxy: ScrollViewProxy,
-                                          hiddenBranches: Int = 0) -> some View {
+                                          shown: Set<UUID>, hiddenBranches: Int = 0) -> some View {
         let line = section.line
         let rows = section.rows
         Section {
             ForEach(Array(rows.enumerated()), id: \.element) { index, id in
                 if let action = undo.log.action(id) {
-                    let branches = undo.log.branches(from: id)
+                    // Tags only for branches on screen: a tag that scrolls
+                    // to nothing is worse than none.
+                    let branches = undo.log.branches(from: id).filter { shown.contains($0.id) }
                     NavigationLink(value: id) {
                         HistoryRow(action: action, mark: mark(for: line, rows: rows, index: index, stub: !branches.isEmpty),
                                    emphasized: line.isCurrent, branches: branches.map { undo.log.title(of: $0) },
@@ -184,7 +186,7 @@ struct HistoryView: View {
                 .accessibilityIdentifier("history-junction-\(line.id.uuidString)")
             }
         } header: {
-            lineHeader(line)
+            lineHeader(line, nested: section.nested)
                 .id("line-\(line.id.uuidString)")
         }
     }
@@ -226,6 +228,16 @@ struct HistoryView: View {
         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
         .accessibilityIdentifier(line.isCurrent ? "history-show-earlier" : "history-show-all-\(line.id.uuidString)")
+        // Scrolling to the foot of the current line draws the next page
+        // on its own; the row stays a button for a tap that gets there
+        // first. Not animated: a page arriving under a scroll should land,
+        // not slide.
+        .onAppear {
+            guard line.isCurrent, section.hidden > 0 else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { shownLimit += HistoryLog.pageSize }
+        }
     }
 
     private func earlierCaption(hidden: Int, branches: Int) -> String {
@@ -260,13 +272,13 @@ struct HistoryView: View {
         return RailMark(above: above, below: below, dot: dot, stub: stub)
     }
 
-    @ViewBuilder private func lineHeader(_ line: HistoryLine) -> some View {
+    @ViewBuilder private func lineHeader(_ line: HistoryLine, nested: Int = 0) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(undo.log.title(of: line))
                     .font(.headline)
                     .foregroundStyle(.primary)
-                lineCaption(line)
+                lineCaption(line, nested: nested)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -308,9 +320,10 @@ struct HistoryView: View {
         .padding(.bottom, 4)
     }
 
-    /// "3 applied · 2 to redo" for the current line; "2 actions · 5 minutes
-    /// ago" for another.
-    private func lineCaption(_ line: HistoryLine) -> Text {
+    /// "3 applied · 2 to redo" for the current line; "2 actions · 1 branch
+    /// · 5 minutes ago" for another — its own branches are drawn once it
+    /// is switched to.
+    private func lineCaption(_ line: HistoryLine, nested: Int = 0) -> Text {
         if line.isCurrent {
             let applied = undo.log.timeline.applied.count
             let ahead = line.actions.count - applied
@@ -318,7 +331,8 @@ struct HistoryView: View {
             if ahead > 0 { parts.append(ahead == 1 ? "1 to redo" : "\(ahead) to redo") }
             return Text(parts.joined(separator: " · "))
         }
-        let count = line.actions.count == 1 ? "1 action" : "\(line.actions.count) actions"
+        var count = line.actions.count == 1 ? "1 action" : "\(line.actions.count) actions"
+        if nested > 0 { count += nested == 1 ? " · 1 branch" : " · \(nested) branches" }
         if let latest = undo.log.latest(on: line) {
             return Text("\(count) · \(latest, format: .relative(presentation: .named))")
         }

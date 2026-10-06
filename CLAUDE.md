@@ -1483,7 +1483,13 @@ fewer than reach the head and one applied row under it — with a Show
 Earlier row (how many more, and how many branches split from them), each
 other branch's newest eight with Show All, and *no branch whose fork is
 not drawn*: a card saying "splits from" an action that isn't on screen
-points nowhere, so it comes into view with its fork. `HistoryLog.action`
+points nowhere, so it comes into view with its fork. Reaching the foot
+of the current line draws the next page on its own (the row's
+`onAppear`, unanimated; it stays a button). **Only branches off the
+current line are drawn**: a branch off another branch is that branch's
+history — its host's card says "· 2 branches" (`Section.nested`) and
+they appear once the host is switched to — and a row's fork tags name
+only branches on screen. `HistoryLog.action`
 is a dictionary lookup (a scan per row made a long list quadratic), and
 the List is re-identified when the log's set of lines changes (not the
 window's: Show Earlier bringing a branch into view must not throw the

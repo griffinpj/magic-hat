@@ -235,6 +235,34 @@ struct HistoryTimelineTests {
         #expect(back.current?.rows.count == 92, "ninety to redo, the head, and one under it")
     }
 
+    /// A branch off another branch is that branch's history: the window
+    /// leaves it out and counts it on its host's card; switched to the
+    /// host, it is drawn.
+    @Test func aBranchOffABranchWaitsForItsHost() {
+        var r = Recorder()
+        let a = r.act(), b = r.act(), c = r.act()
+        r.undo(); r.undo()                      // head a
+        let d = r.act()                         // [a, d]; [b, c] off a
+        r.undo(); r.redo(b)                     // head b
+        let e = r.act()                         // [a, b, e]; [c] off b; [d] off a
+        r.undo(); r.undo(); r.redo(d)           // head d: current [a, d]
+        let log = HistoryLog(timeline: r.timeline)
+        let lines = log.lines
+        #expect(lines.map(\.actions) == [[a, d], [b, e], [c]], "e was visited last, so b's line runs to it; c hangs off b")
+
+        let window = log.window()
+        #expect(window.branches.map(\.id) == [b], "only the branch off the current line")
+        #expect(window.branches[0].nested == 1, "its card counts the branch it has")
+        #expect(window.hiddenBranches == 0, "a nested branch is not 'hidden earlier'")
+        #expect(window.shownLines == [a, b])
+
+        r.undo(); r.redo(b); r.redo(e)          // switch to [a, b, e]
+        let switched = HistoryLog(timeline: r.timeline).window()
+        #expect(switched.current?.line.actions == [a, b, e])
+        #expect(Set(switched.branches.map(\.id)) == [c, d], "both hang off the current line now")
+        _ = c
+    }
+
     @Test func resolutionDoesNotDependOnInputOrder() {
         var r = Recorder()
         let ids = (0..<6).map { _ in r.act() }

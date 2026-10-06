@@ -50,16 +50,15 @@ final class ChangesTour: XCTestCase {
         XCTAssertTrue(app.buttons["history-undo"].waitForExistence(timeout: 10))
         shot("c03-history-top")
         let earlier = app.buttons["history-show-earlier"]
-        for _ in 0..<14 where !earlier.isHittable { app.swipeUp(velocity: .fast) }
-        XCTAssertTrue(earlier.exists, "a long history ends in Show Earlier")
-        shot("c04-history-show-earlier")
-        // Two more pages: everything is drawn, and the branch that split
-        // from the tenth action comes into view with it.
-        for _ in 0..<2 {
-            for _ in 0..<14 where !earlier.isHittable { app.swipeUp(velocity: .fast) }
-            earlier.tap()
+        // Scrolling to the foot of the current line draws the next page on
+        // its own (the row is a button too); kept scrolling, everything is
+        // drawn and the branch that split from the tenth action comes into
+        // view with its fork.
+        for _ in 0..<40 where earlier.exists || !app.staticTexts["Splits from Added Card 4 in Timeline"].exists {
+            app.swipeUp(velocity: .fast)
         }
-        for _ in 0..<30 { app.swipeUp(velocity: .fast) }
+        shot("c04-history-show-earlier")
+        for _ in 0..<10 { app.swipeUp(velocity: .fast) }
         XCTAssertFalse(earlier.exists, "nothing earlier is left")
         XCTAssertTrue(app.staticTexts["Splits from Added Card 4 in Timeline"].exists, "the old branch shows once its fork does")
         shot("c06-history-all-with-old-branch")
