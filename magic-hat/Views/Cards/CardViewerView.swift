@@ -346,20 +346,24 @@ struct CardViewerView: View {
                     // margins, which left the card off-centre in landscape.
                     .onChange(of: geo.size) { _, _ in pin(proxy) }
                     .onScrollPhaseChange { _, phase in
-                        if phase == .interacting { userScrolled = true }
-                        // The card under the anchor becomes current once
-                        // the pager has settled, not mid-flight: committing
-                        // it as the anchor crossed a card re-rendered the
-                        // title, the panel and the toolbar, restarted the
-                        // neighbour decodes, scrolled the grid behind and
-                        // swapped the foil's animated branch — all during
-                        // the deceleration, which is what made a swipe feel
-                        // abrupt.
-                        scrolling = phase != .idle
-                        if phase == .idle { commitVisible() }
+                        if phase == .interacting {
+                            userScrolled = true
+                            // Where the swipe started, for the paging
+                            // behaviour: one card from here, whatever the
+                            // anchor crosses on the way.
+                            dragStart = (visibleID ?? currentID).flatMap { items.index(of: $0) } ?? 0
+                        }
+                        // The card under the anchor becomes current as soon
+                        // as the finger lifts — the panel follows the card
+                        // as it glides in, not after it has stopped — but
+                        // never while the finger is still down, so a slow
+                        // drag back and forth doesn't thrash the title, the
+                        // panel and the neighbour decodes.
+                        dragging = phase == .interacting
+                        if !dragging { commitVisible() }
                     }
                     .onChange(of: visibleID) { _, _ in
-                        if !scrolling { commitVisible() }
+                        if !dragging { commitVisible() }
                     }
                     .onChange(of: currentID) { _, id in
                         // Programmatic moves: a tapped neighbour, the step
@@ -371,7 +375,8 @@ struct CardViewerView: View {
         }
     }
 
-    @State private var scrolling = false
+    @State private var dragging = false
+    @State private var dragStart = 0
 
     private func commitVisible() {
         guard userScrolled, let id = visibleID, id != currentID else { return }
@@ -429,7 +434,14 @@ struct CardViewerView: View {
                 .scrollTargetLayout()
                 .frame(height: height)
             }
-            .scrollTargetBehavior(.viewAligned)
+            // Not `.viewAligned`: that behaviour runs the scroll view at
+            // its fast deceleration rate, so a flick stopped on the next
+            // card almost at once — the "snap". This one picks the same
+            // target (the card the flick is headed for, one at a time) and
+            // leaves the normal rate alone, so the card glides in and
+            // settles the way a photo does in Photos.
+            .scrollTargetBehavior(CardPagingBehavior(step: cardWidth + 14, count: items.count, start: dragStart,
+                                                     visible: visibleID.flatMap { items.index(of: $0) } ?? dragStart))
             .scrollPosition(id: $visibleID, anchor: .center)
             .contentMargins(.horizontal, sideInset, for: .scrollContent)
             .scrollIndicators(.hidden)
@@ -777,5 +789,38 @@ private struct InfoPanel: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(.quaternary, in: Capsule())
+    }
+}
+
+/// Paging by one card per swipe at the scroll view's normal deceleration
+/// (see `pagerContent`), in place of `.viewAligned`. What the context
+/// offers: the system's target in a space where card i sits at `i * step`
+/// (the content margin already taken off — card 0 reads 0 at rest), and
+/// the release velocity in points per millisecond. No current offset, so
+/// the view hands in where the drag started (`start`) and the card under
+/// the anchor now (`visible`). A flick moves one card from where the
+/// swipe began — never two, however hard — and a drag that stopped
+/// settles on whichever card the anchor is over, so a slow pull past
+/// halfway lands on the next card and a short one comes back.
+private struct CardPagingBehavior: ScrollTargetBehavior {
+    let step: CGFloat
+    let count: Int
+    let start: Int
+    let visible: Int
+
+    /// Points per millisecond; a deliberate flick, not the tail of a drag.
+    private static let flick: CGFloat = 0.25
+
+    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+        guard step > 0, count > 0 else { return }
+        let v = context.velocity.dx
+        var to: Int
+        if abs(v) > Self.flick {
+            to = start + (v > 0 ? 1 : -1)
+        } else {
+            to = visible
+        }
+        to = min(max(to, 0), count - 1)
+        target.rect.origin.x = CGFloat(to) * step
     }
 }

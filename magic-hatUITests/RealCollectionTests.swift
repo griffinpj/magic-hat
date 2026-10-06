@@ -264,14 +264,19 @@ final class RealCollectionTests: XCTestCase {
         mark = assertNoHangs(since: mark, "into the collection and onto a card right after launch")
 
         let pager = app.scrollViews.element(boundBy: 0)
+        let startTitle = app.navigationBars.firstMatch.identifier
         for _ in 0..<8 {
             pager.swipeLeft(velocity: .fast)
         }
         settle(2)
         mark = assertNoHangs(since: mark, "paging fast through the viewer")
+        XCTAssertNotEqual(app.navigationBars.firstMatch.identifier, startTitle, "the pager moved on")
         for _ in 0..<3 {
+            // One card per swipe: the title changes each time.
+            let before = app.navigationBars.firstMatch.identifier
             pager.swipeLeft()
             settle(1.2)
+            XCTAssertNotEqual(app.navigationBars.firstMatch.identifier, before, "a swipe moves one card")
         }
         settle(1)
         assertNoHangs(since: mark, "paging slowly, resting on each card")

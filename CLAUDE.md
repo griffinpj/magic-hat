@@ -441,14 +441,26 @@ detail screen and actions as an owned card:
   button, or the zoom transition's own drag/pinch.
   The grid keeps its `ScrollViewReader` scrolled to the card the viewer is
   on (via the `currentID` binding), so the zoom-out lands on the right tile
-  and the grid is where the user left off. **The card under the anchor
-  becomes current when the pager settles** (`onScrollPhaseChange` →
-  `.idle`), not as the anchor crosses it: committing mid-flight
-  re-rendered the title, panel and toolbar, restarted the neighbour
-  decodes, scrolled the grid and swapped the foil's animated branch
-  during the deceleration — the swipe felt abrupt. Pages carry a
+  and the grid is where the user left off. **The pager is not
+  `.viewAligned`**: that behaviour runs the scroll view at its fast
+  deceleration rate, so a flick stopped on the next card almost at once
+  — the snap. `CardPagingBehavior` (a `ScrollTargetBehavior`) picks the
+  same target at the normal rate, so the card glides in: a flick
+  (release velocity over 0.25 pt/ms — the context's velocity is points
+  per millisecond) moves one card from where the drag started
+  (`dragStart`, recorded on `.interacting`; the context has no current
+  offset), never two; a drag that stopped settles on the card under the
+  anchor (`visibleID`). The context's `originalTarget` is in a space
+  where card i sits at `i * step` with the content margin already taken
+  off — card 0 reads 0 at rest — so the target is `to * step`, not
+  `- inset`. **The card under the anchor becomes current as soon as the
+  finger lifts**, not while it is down (a slow drag back and forth would
+  thrash the title, panel and neighbour decodes) and not only at idle
+  (the panel then lagged a whole settle behind the card). Pages carry a
   `scrollTransition` (scale 0.94, opacity 0.82 at the edges) and
   programmatic moves animate `.smooth`.
+  `testOpeningTheViewerRightAfterLaunchAndPagingFast` asserts the title
+  changes per swipe.
   It is not a ZStack overlay, and shouldn't become one: an overlay drawn
   inside the pushed screen sits *below* the navigation and tab bars (Back
   and the tab pill stay live through the dim), gives VoiceOver no way out,
