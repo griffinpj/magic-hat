@@ -35,9 +35,10 @@ enum UITestSeed {
                     AppSettings.showPricesKey, AppSettings.priceRefreshKey, AppSettings.defaultConditionKey,
                     AppSettings.defaultFinishKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
                     AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey,
-                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey] {
+                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey, FlippedFaces.key] {
             UserDefaults.standard.removeObject(forKey: key)
         }
+        FlippedFaces.reload()
         let context = container.mainContext
         context.insert(MTGCollection(name: collectionName))
         let tokenID = "00000000-0000-4000-8000-ffffffffff01"
@@ -78,6 +79,9 @@ enum UITestSeed {
                 meta.colorIdentityRaw = ["W", "U", "B", "R", "G"][which]
             }
             meta.artist = "Artist \(i % 7)"
+            // Card 1 is double-faced (no image either side; the viewer
+            // offers the flip and remembers it).
+            if i == 1 { meta.backImageNormalURL = "https://example.invalid/back-\(i).jpg" }
             // Every tenth card makes a Soldier token, every twentieth a
             // Treasure too, so a deck's Details lists tokens.
             if i % 10 == 0 {

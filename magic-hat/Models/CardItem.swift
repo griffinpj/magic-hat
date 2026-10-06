@@ -13,7 +13,7 @@ import Foundation
 
 nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     /// Stable identity for the grid (entry id for owned cards, else scryfallID).
-    let id: String
+    var id: String
     let scryfallID: String
     let oracleID: String?
 
@@ -24,15 +24,17 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let rarity: String
 
     // Ownership / printing specifics (zero/empty for non-owned search results).
-    let quantity: Int
-    let finish: CardFinish
-    let condition: String
-    let language: String
-    let addedDate: Date?
+    // Mutable so `asHit()` can turn an owned row into a search-hit-shaped
+    // item of the same printing.
+    var quantity: Int
+    var finish: CardFinish
+    var condition: String
+    var language: String
+    var addedDate: Date?
     /// Mutable so search results can be re-marked as the collection changes.
     var owned: Bool
     /// Owning collection; empty for cards that aren't ours (search, printings).
-    let collectionName: String
+    var collectionName: String
     /// True when `id` is a CollectionEntry id — one owned row that can be
     /// edited or removed. Printings and search hits carry a Scryfall id.
     var isEntry: Bool { owned && !collectionName.isEmpty }
@@ -69,7 +71,7 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     let rarityRankValue: Int
 
     /// Price paid at import, if the CSV had one (for gain/loss display).
-    let purchasePrice: Double?
+    var purchasePrice: Double?
 
     // Free extras Scryfall returns in the same batch call.
     let legalities: [String: String]?
@@ -89,6 +91,38 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     /// collection or a built deck — the wishlist's "already have it".
     /// Set by the store alongside `inList`.
     var inCollection = false
+    /// How many deck lists name this card (any printing, any board). Set
+    /// by the store from the DeckCard rows; the tile wears it as a badge.
+    var deckCount = 0
+    /// The user flipped this printing to its back face and the app
+    /// remembers it (`FlippedFaces`): the tile and the viewer open on the
+    /// back. Only meaningful with a `backImageURL`.
+    var showsBack = false
+
+    /// The face to draw where one image stands for the card.
+    var displayImageURL: String? { showsBack ? (backImageURL ?? imageURL) : imageURL }
+
+    /// The same printing as a search hit: no owned row behind it, keyed
+    /// by its Scryfall id, one copy, marked owned. What a grouped search
+    /// result becomes when the collection holds the card in this printing
+    /// rather than the one Scryfall chose to show.
+    func asHit() -> CardItem {
+        var hit = self
+        hit.id = scryfallID
+        hit.quantity = 1
+        hit.finish = .normal
+        hit.condition = "near_mint"
+        hit.language = "en"
+        hit.addedDate = nil
+        hit.owned = true
+        hit.collectionName = ""
+        hit.collectionDisplayName = ""
+        hit.purchasePrice = nil
+        hit.purchaseCurrency = nil
+        hit.inList = false
+        hit.inCollection = false
+        return hit
+    }
 
     var powerToughness: String? {
         guard let power, let toughness else { return nil }
@@ -176,6 +210,7 @@ nonisolated extension CardItem {
         self.purchaseURIs = meta?.purchaseURIs
         self.backImageURL = meta?.backImageNormalURL
         self.purchaseCurrency = entry.purchasePriceCurrency
+        self.showsBack = self.backImageURL != nil && FlippedFaces.contains(entry.scryfallID)
     }
 
     /// A card built straight from a Scryfall result (e.g. a printing or a
@@ -218,6 +253,7 @@ nonisolated extension CardItem {
         self.edhrecRank = card.edhrecRank
         self.purchaseURIs = card.purchaseURIs
         self.backImageURL = card.backImageURIs?.normal
+        self.showsBack = self.backImageURL != nil && FlippedFaces.contains(card.id)
     }
 
     /// "WU" -> [.white, .blue].

@@ -55,6 +55,36 @@ final class CollectionFlowTests: XCTestCase {
         XCTAssertTrue(close.waitForNonExistence(timeout: 5), "close should dismiss the viewer")
     }
 
+    /// Flipping a double-faced card is remembered: closed and reopened,
+    /// the viewer shows the back; flipped again it shows the front.
+    @MainActor
+    func testFlipIsRememberedAcrossOpens() {
+        let app = launch()
+        _ = openCollection(app)
+        func open() -> XCUIElement {
+            let tile = app.staticTexts["Card 1"].firstMatch
+            XCTAssertTrue(tile.waitForExistence(timeout: 5))
+            tile.tap()
+            let card = app.descendants(matching: .any)["viewer-card-00000000-0000-4000-8000-000000000001"]
+            XCTAssertTrue(app.buttons["viewer-flip"].waitForExistence(timeout: 5), "a double-faced card offers a flip")
+            return card
+        }
+        var card = open()
+        XCTAssertEqual(card.value as? String ?? "", "")
+        app.buttons["viewer-flip"].tap()
+        XCTAssertTrue(card.waitForValue(containing: "Back face", timeout: 3))
+        app.buttons["viewer-close"].tap()
+        XCTAssertTrue(app.buttons["viewer-close"].waitForNonExistence(timeout: 5))
+
+        card = open()
+        XCTAssertTrue(card.waitForValue(containing: "Back face", timeout: 3), "the flip is remembered")
+        app.buttons["viewer-flip"].tap()
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, (card.value as? String ?? "").contains("Back face") { usleep(100_000) }
+        XCTAssertEqual(card.value as? String ?? "", "", "flipped back to the front")
+        app.buttons["viewer-close"].tap()
+    }
+
     /// Viewer → Add → Add to collection → Done: the card's quantity goes up
     /// and the viewer's info panel reflects it without leaving the screen.
     @MainActor

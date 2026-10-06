@@ -244,9 +244,9 @@ struct SetCardsView: View {
             controller.query = q
             controller.run()
         }
-        .task(id: tracker.revision) {
+        .task(id: "\(tracker.revision)|\(DeckChangeTracker.shared.revision)") {
             let store = CollectionStore.shared(for: modelContext.container)
-            if let ids = try? await store.ownedScryfallIDs(stamp: .current) { controller.updateOwned(ids) }
+            if let index = try? await store.ownedIndex(stamp: .current) { controller.updateOwned(index) }
             if let counts = try? await store.ownedCopiesBySet(stamp: .current) { owned = counts[set.code.lowercased()] ?? 0 }
         }
     }

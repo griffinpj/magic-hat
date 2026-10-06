@@ -210,6 +210,29 @@ screen. Instead:
   (`RealCollectionTests`): launch and the first push into the collection
   record no app-side stall; the two records are XCUITest's own
   (accessibility bundle load, its os_log).
+- **Ownership for every other list of cards is `OwnedIndex`**
+  (`CollectionStore.ownedIndex(stamp:)`): the printings and copies in the
+  real collections, every owned printing (built decks included), the
+  **printing to show** per card key (a collection's row over a deck's,
+  non-foil over foil, the largest stack; needs an image), and how many
+  **deck lists** name each card (`CollectionStore.deckCounts`, from the
+  DeckCard rows — small — so `StoreStamp` carries
+  `DeckChangeTracker.revision` too). `OwnedIndex.mark(_:groupedPrintings:)`
+  is how a search hit, an EDHREC pick, a combo piece or a theme result is
+  marked: with grouped printings the owned printing *replaces* the one
+  offered (`CardItem.asHit()`: same printing, hit-shaped — one copy, no
+  row, owned), so "in collection" shows the copy in the binder, not
+  Scryfall's pick; a list of distinct printings (a set's cards) keeps each
+  and marks only the exact one. `SearchController.updateOwned(_ index:)`
+  takes it (the `Set<String>` form remains for tests). Every `CardItem`
+  carries `deckCount` — the tile's corner badge, the viewer's chip in the
+  set row — set by the store on rows and deck rows alike.
+- **A flipped card stays flipped** (`FlippedFaces`, Utils): the viewer's
+  flip writes the printing's Scryfall id to UserDefaults (`cards.flipped`,
+  in backups and cleared by the seed) and bumps the tracker; the store
+  sets `CardItem.showsBack` when it builds an item, and everything that
+  draws one image for a card draws `displayImageURL`. The viewer keeps a
+  per-id override so the flip animates before the refetch lands.
 - **One read of the rows per stamp.** `CollectionStore.allRows(stamp:)`
   builds every owned row as a `CardItem` (with its pending/stale flags)
   once and caches it; the overview, every snapshot, All Collection,

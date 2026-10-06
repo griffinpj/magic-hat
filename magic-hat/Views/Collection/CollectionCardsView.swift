@@ -168,7 +168,8 @@ struct CollectionCardsView: View {
         }
         .onChange(of: query) { _, _ in applyFilter() }
         // Initial load, and again after any write (import/delete).
-        .task(id: "\(collectionName)|\(tracker.revision)") {
+        // Deck list edits too: each tile wears how many decks name its card.
+        .task(id: "\(collectionName)|\(tracker.revision)|\(DeckChangeTracker.shared.revision)") {
             await load(thenSync: true)
         }
         .onChange(of: order) { _, _ in applySort() }

@@ -59,9 +59,14 @@ struct CardViewerView: View {
     /// is the truth until the user swipes: see `pager`.
     @State private var visibleID: String?
     @State private var userScrolled = false
-    /// The card showing its back face. One at a time, and it flips back
-    /// when the pager moves on, as a card in the hand would.
-    @State private var flippedID: String?
+    /// Faces flipped in this viewer, by card id, over what the items say
+    /// (`CardItem.showsBack`, the remembered face). The flip is written to
+    /// `FlippedFaces` and the tracker bumped, so the grid behind and the
+    /// next open show the same face; the override keeps the animation
+    /// immediate while the refetch lands.
+    @State private var flipped: [String: Bool] = [:]
+
+    private func showsBack(_ item: CardItem) -> Bool { flipped[item.id] ?? item.showsBack }
 
     /// Portrait card proportions. Every page is sized the same so the pager
     /// doesn't re-lay out when a landscape (split/battle) card is current.
@@ -343,7 +348,6 @@ struct CardViewerView: View {
                     .onChange(of: visibleID) { _, id in
                         guard userScrolled, let id, id != currentID else { return }
                         currentID = id
-                        flippedID = nil
                     }
                     .onChange(of: currentID) { _, id in
                         // Programmatic moves: a tapped neighbour, the step
@@ -371,7 +375,7 @@ struct CardViewerView: View {
                     ForEach(items.ids, id: \.self) { id in
                         if let item = items.item(for: id) {
                         let isCurrent = item.id == currentID
-                        FlippableCard(item: item, showsBack: flippedID == item.id, isCurrent: isCurrent)
+                        FlippableCard(item: item, showsBack: showsBack(item), isCurrent: isCurrent)
                         .frame(width: cardWidth)
                         // Tapping the card flips nothing: the button does,
                         // so a tap keeps meaning Details.
@@ -388,7 +392,6 @@ struct CardViewerView: View {
                                 // A peeking neighbour: bring it to the middle
                                 // rather than acting on the wrong card.
                                 currentID = item.id
-                                flippedID = nil
                             }
                         }
                         .id(item.id)
@@ -405,12 +408,16 @@ struct CardViewerView: View {
     }
 
     /// Turns a double-faced card over: a glass button in the card's corner,
-    /// where the printed card has its transform mark.
+    /// where the printed card has its transform mark. The face chosen is
+    /// remembered for the printing.
     private func flipButton(for item: CardItem) -> some View {
         Button {
+            let back = !showsBack(item)
             withAnimation(.spring(duration: 0.45, bounce: 0.15)) {
-                flippedID = flippedID == item.id ? nil : item.id
+                flipped[item.id] = back
             }
+            FlippedFaces.set(item.scryfallID, showsBack: back)
+            CollectionChangeTracker.shared.bump()
         } label: {
             Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
                 .font(.system(size: 17, weight: .semibold))
@@ -420,7 +427,7 @@ struct CardViewerView: View {
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: Circle())
         .padding(10)
-        .accessibilityLabel(flippedID == item.id ? "Show front face" : "Show back face")
+        .accessibilityLabel(showsBack(item) ? "Show front face" : "Show back face")
         .accessibilityIdentifier("viewer-flip")
     }
 
@@ -433,10 +440,12 @@ struct CardViewerView: View {
         var urls: [String] = []
         for offset in [1, -1, 2, -2] {
             let i = index + offset
-            guard i >= 0, i < items.count, let url = items.items[i].imageURL else { continue }
+            guard i >= 0, i < items.count, let url = items.items[i].displayImageURL else { continue }
             urls.append(url)
         }
-        if let back = items.items[index].backImageURL { urls.insert(back, at: 0) }
+        // The current card's other face, so a flip doesn't wait on a decode.
+        let current = items.items[index]
+        if let other = showsBack(current) ? current.imageURL : current.backImageURL { urls.insert(other, at: 0) }
         guard !urls.isEmpty else { return }
         await ImageLoader.shared.warm(urls, maxPixel: px)
     }
@@ -544,6 +553,7 @@ private struct FlippableCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.name)
         .accessibilityValue(showsBack ? "Back face" : "")
+        .accessibilityIdentifier("viewer-card-\(item.scryfallID)")
     }
 
     private func face(_ url: String?, foil: Bool) -> some View {
@@ -636,6 +646,11 @@ private struct InfoPanel: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if item.deckCount > 0 {
+                    chip("\(item.deckCount)", icon: "rectangle.stack.fill")
+                        .accessibilityLabel(item.deckCount == 1 ? "In 1 deck" : "In \(item.deckCount) decks")
+                        .accessibilityIdentifier("viewer-decks")
+                }
                 if item.isEntry {
                     chip(item.language.uppercased())
                     chip(item.condition.replacingOccurrences(of: "_", with: " ").capitalized)

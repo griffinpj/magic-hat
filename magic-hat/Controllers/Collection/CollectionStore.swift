@@ -111,9 +111,28 @@ actor CollectionStore: ModelActor {
         if let stamp, let cache = rowsCache, cache.stamp == stamp { return cache.rows }
         var descriptor = FetchDescriptor<CollectionEntry>()
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        let rows = Self.rows(of: try modelContext.fetch(descriptor), labels: try deckLabels(), lists: try listNames())
+        let rows = Self.rows(of: try modelContext.fetch(descriptor), labels: try deckLabels(), lists: try listNames(),
+                             deckCounts: try deckCounts())
         if let stamp { rowsCache = (stamp, rows) }
         return rows
+    }
+
+    /// How many deck lists name each card (key: oracle id, else Scryfall
+    /// id), any board. The DeckCard table is small — a few hundred rows —
+    /// so one fetch per row build is nothing beside the rows themselves.
+    private func deckCounts() throws -> [String: Int] {
+        try Self.deckCounts(in: modelContext)
+    }
+
+    nonisolated static func deckCounts(in context: ModelContext) throws -> [String: Int] {
+        var descriptor = FetchDescriptor<DeckCard>()
+        descriptor.relationshipKeyPathsForPrefetching = [\.deck]
+        var decksByKey: [String: Set<UUID>] = [:]
+        for card in try context.fetch(descriptor) {
+            guard let deckID = card.deck?.id else { continue }
+            decksByKey[card.matchKey, default: []].insert(deckID)
+        }
+        return decksByKey.mapValues(\.count)
     }
 
     /// Every owned row: collections and built decks, not lists.
@@ -135,7 +154,8 @@ actor CollectionStore: ModelActor {
         return (Array(pending), Array(stale))
     }
 
-    private static func rows(of entries: [CollectionEntry], labels: [String: String], lists: Set<String> = []) -> [Row] {
+    private static func rows(of entries: [CollectionEntry], labels: [String: String], lists: Set<String> = [],
+                             deckCounts: [String: Int] = [:]) -> [Row] {
         let cutoff = Date().addingTimeInterval(-DataPolicy.priceTTL)
         let currency = AppSettings.currency
         var rows: [Row] = []
@@ -145,6 +165,7 @@ actor CollectionStore: ModelActor {
             var item = CardItem(entry: entry, meta: meta, currency: currency)
             if let label = labels[entry.collectionName] { item.collectionDisplayName = label }
             if lists.contains(entry.collectionName) { item.inList = true }
+            if !deckCounts.isEmpty { item.deckCount = deckCounts[item.oracleID ?? item.scryfallID] ?? 0 }
             // A row stored before colours were kept counts as pending so the
             // collection filters get their data on the next hydration.
             let fetched = meta?.isComplete ?? false
@@ -189,7 +210,7 @@ actor CollectionStore: ModelActor {
             var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == collectionName })
             descriptor.relationshipKeyPathsForPrefetching = [\.card]
             let lists = try listNames()
-            var fetched = Self.rows(of: try modelContext.fetch(descriptor), labels: [:], lists: lists)
+            var fetched = Self.rows(of: try modelContext.fetch(descriptor), labels: [:], lists: lists, deckCounts: try deckCounts())
             // A list read on its own still says what is owned: that needs
             // the owned rows, which a collection's own read does not.
             if lists.contains(collectionName) {
@@ -521,15 +542,45 @@ actor CollectionStore: ModelActor {
     /// "in collection" and "owned" by. Cached per stamp over the rows.
     func ownedIndex(stamp: StoreStamp? = nil) throws -> OwnedIndex {
         if let stamp, let cache = ownedIndexCache, cache.stamp == stamp { return cache.index }
-        var ids = Set<String>()
-        var byKey: [String: Int] = [:]
-        for row in try ownedRows(stamp: stamp) where !Deck.isDeckCollection(row.item.collectionName) {
-            ids.insert(row.item.scryfallID)
-            byKey[row.item.oracleID ?? row.item.scryfallID, default: 0] += row.item.quantity
-        }
-        let index = OwnedIndex(scryfallIDs: ids, copiesByKey: byKey)
+        let index = Self.ownedIndex(of: try ownedRows(stamp: stamp).map(\.item), deckCounts: try deckCounts(), stamp: stamp)
         if let stamp { ownedIndexCache = (stamp, index) }
         return index
+    }
+
+    /// The index over owned items (collections and built decks, no lists).
+    /// Copies and printings count the real collections only; the printing
+    /// to show for a card prefers a collection's row over a deck's, then a
+    /// non-foil, then the largest stack — and needs an image, so a row
+    /// still pending metadata never stands in for a hit.
+    nonisolated static func ownedIndex(of items: [CardItem], deckCounts: [String: Int], stamp: StoreStamp?) -> OwnedIndex {
+        var ids = Set<String>()
+        var allIDs = Set<String>()
+        var byKey: [String: Int] = [:]
+        var printing: [String: CardItem] = [:]
+        for item in items {
+            let key = item.oracleID ?? item.scryfallID
+            allIDs.insert(item.scryfallID)
+            if !Deck.isDeckCollection(item.collectionName) {
+                ids.insert(item.scryfallID)
+                byKey[key, default: 0] += item.quantity
+            }
+            guard item.imageURL != nil else { continue }
+            if let current = printing[key] {
+                if Self.prefer(item, over: current) { printing[key] = item }
+            } else {
+                printing[key] = item
+            }
+        }
+        return OwnedIndex(scryfallIDs: ids, copiesByKey: byKey, ownedPrintingIDs: allIDs,
+                          printingByKey: printing, deckCountByKey: deckCounts, stamp: stamp)
+    }
+
+    private nonisolated static func prefer(_ a: CardItem, over b: CardItem) -> Bool {
+        let aDeck = Deck.isDeckCollection(a.collectionName), bDeck = Deck.isDeckCollection(b.collectionName)
+        if aDeck != bDeck { return !aDeck }
+        let aFoil = a.finish != .normal, bFoil = b.finish != .normal
+        if aFoil != bFoil { return !aFoil }
+        return a.quantity > b.quantity
     }
     private var ownedIndexCache: (stamp: StoreStamp, index: OwnedIndex)?
 
@@ -621,10 +672,42 @@ actor CollectionStore: ModelActor {
     }
 }
 
-/// Who owns what, for the deck screens: see `CollectionStore.ownedIndex`.
+/// Who owns what, for the deck screens and every list of cards that
+/// isn't the collection: see `CollectionStore.ownedIndex`.
 nonisolated struct OwnedIndex: Sendable {
+    /// Printings in the real collections (decks' rows left out).
     let scryfallIDs: Set<String>
+    /// Copies per card key (oracle id, else Scryfall id), real collections.
     let copiesByKey: [String: Int]
+    /// Every owned printing, built decks included.
+    var ownedPrintingIDs: Set<String> = []
+    /// The printing to show for a card key when the collection holds the
+    /// card: a grouped search result swaps to it, so "in collection"
+    /// shows the copy actually owned rather than Scryfall's pick.
+    var printingByKey: [String: CardItem] = [:]
+    /// Deck lists naming each card key.
+    var deckCountByKey: [String: Int] = [:]
+    /// What it was built under; two indexes with equal stamps are equal.
+    var stamp: StoreStamp? = nil
+
+    /// A card as the collection knows it: `owned`, `deckCount`, and — for
+    /// a list where any printing stands for the card (`groupedPrintings`,
+    /// a search with Group Printings on, a recommendation) — the owned
+    /// printing in place of the one offered. A list of distinct
+    /// printings (a set's cards) keeps each printing and marks only the
+    /// ones owned exactly.
+    func mark(_ item: CardItem, groupedPrintings: Bool) -> CardItem {
+        let key = item.oracleID ?? item.scryfallID
+        var out = item
+        if groupedPrintings, let mine = printingByKey[key], mine.scryfallID != item.scryfallID {
+            out = mine.asHit()
+        }
+        out.owned = groupedPrintings
+            ? (ownedPrintingIDs.contains(out.scryfallID) || printingByKey[key] != nil || (copiesByKey[key] ?? 0) > 0)
+            : ownedPrintingIDs.contains(out.scryfallID) || scryfallIDs.contains(out.scryfallID)
+        out.deckCount = deckCountByKey[key] ?? 0
+        return out
+    }
 }
 
 /// What a cached snapshot is valid for: the collection change revision and
@@ -633,8 +716,11 @@ nonisolated struct OwnedIndex: Sendable {
 nonisolated struct StoreStamp: Hashable, Sendable {
     let change: Int
     let hydration: Int
+    /// Deck list edits: the rows carry how many decks name each card.
+    var decks: Int = 0
 
     @MainActor static var current: StoreStamp {
-        StoreStamp(change: CollectionChangeTracker.shared.revision, hydration: CardHydrationController.shared.revision)
+        StoreStamp(change: CollectionChangeTracker.shared.revision, hydration: CardHydrationController.shared.revision,
+                   decks: DeckChangeTracker.shared.revision)
     }
 }

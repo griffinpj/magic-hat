@@ -200,11 +200,12 @@ final class CardSynergyController {
             await cache.store(slice, key: key)
             cards = slice
         }
-        let owned = (try? await store.ownedCopiesByKey()) ?? [:]
+        let owned = try? await store.ownedIndex()
         let mine = CardReading(item, identity: identity ?? ManaColor.allCases)
         var out = Loaded()
         for card in cards ?? [] {
-            let ci = CardItem(scryfallCard: card, owned: (owned[card.bestOracleID ?? card.id] ?? 0) > 0)
+            let ci = owned?.mark(CardItem(scryfallCard: card, owned: false), groupedPrintings: true)
+                ?? CardItem(scryfallCard: card, owned: false)
             out.items.append(ci)
             let theirs = CardReading(ci, identity: identity ?? ManaColor.allCases)
             let shared = SynergyQuery.themes(of: mine).filter { theirs.mechanics.contains($0) }

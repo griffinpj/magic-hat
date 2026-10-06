@@ -106,9 +106,10 @@ actor DeckStore: ModelActor {
             builtByKey[matchKey, default: 0] -= built
             let available = min(max(0, card.quantity - built), availableByKey[matchKey] ?? 0)
             availableByKey[matchKey, default: 0] -= available
+            var item = CardItem(deckCard: card, meta: meta, quantity: card.quantity, owned: built + available > 0)
+            item.deckCount = owned.deckCountByKey[matchKey] ?? 0
             items.append(DeckCardItem(
-                id: card.id, board: card.board, quantity: card.quantity,
-                card: CardItem(deckCard: card, meta: meta, quantity: card.quantity, owned: built + available > 0),
+                id: card.id, board: card.board, quantity: card.quantity, card: item,
                 builtQuantity: built, availableQuantity: available
             ))
         }
@@ -257,15 +258,13 @@ actor DeckStore: ModelActor {
             let stamp = await MainActor.run { StoreStamp.current }
             return try await rows.ownedIndex(stamp: stamp)
         }
-        var descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { !$0.collectionName.starts(with: "deck:") })
+        var descriptor = FetchDescriptor<CollectionEntry>()
         descriptor.relationshipKeyPathsForPrefetching = [\.card]
-        var ids = Set<String>()
-        var byKey: [String: Int] = [:]
-        for entry in try modelContext.fetch(descriptor) {
-            ids.insert(entry.scryfallID)
-            byKey[entry.card?.oracleID ?? entry.scryfallID, default: 0] += entry.quantity
-        }
-        return OwnedIndex(scryfallIDs: ids, copiesByKey: byKey)
+        let lists = Set(try modelContext.fetch(FetchDescriptor<MTGCollection>()).filter { $0.kind == .list }.map(\.name))
+        let items = try modelContext.fetch(descriptor).lazy
+            .filter { !lists.contains($0.collectionName) }
+            .map { CardItem(entry: $0, meta: $0.card) }
+        return CollectionStore.ownedIndex(of: Array(items), deckCounts: try CollectionStore.deckCounts(in: modelContext), stamp: nil)
     }
 
     /// Copies owned per card key (oracle id, else Scryfall id) across the
@@ -300,13 +299,16 @@ actor DeckStore: ModelActor {
     /// lacks are skipped). `owned` says whether any printing is in a
     /// collection.
     func items(scryfallIDs: [String]) async throws -> [CardItem] {
-        let owned = try await ownedIndex().copiesByKey
+        let owned = try await ownedIndex()
         let ids = scryfallIDs
         let metas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { ids.contains($0.scryfallID) }))
         let byID = Dictionary(metas.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
         return scryfallIDs.compactMap { id in
             guard let meta = byID[id] else { return nil }
-            return CardItem(meta: meta, owned: (owned[meta.oracleID ?? meta.scryfallID] ?? 0) > 0)
+            // The owned printing stands in for the one asked (EDHREC's,
+            // a combo's): any printing is the card, and the one shown
+            // should be the one in the binder.
+            return owned.mark(CardItem(meta: meta, owned: false), groupedPrintings: true)
         }
     }
 
@@ -370,7 +372,7 @@ actor DeckStore: ModelActor {
                 chosen[k] = meta
             }
         }
-        return chosen.mapValues { CardItem(meta: $0, owned: (owned[$0.oracleID ?? $0.scryfallID] ?? 0) > 0) }
+        return chosen.mapValues { index.mark(CardItem(meta: $0, owned: (owned[$0.oracleID ?? $0.scryfallID] ?? 0) > 0), groupedPrintings: true) }
     }
 }
 

@@ -51,7 +51,9 @@ final class SearchController {
     private(set) var appliedQuery: CardSearchQuery?
 
     private var nextPage: URL?
-    private var ownedIDs: Set<String> = []
+    /// What the collection owns, for marking hits (and, with Group
+    /// Printings on, swapping a hit to the printing owned).
+    private var ownership: OwnedIndex?
     private var searchTask: Task<Void, Never>?
     private var moreTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
@@ -182,22 +184,36 @@ final class SearchController {
     /// Marks results that are in a collection. Called by the host when its
     /// store's owned set changes (initial load, after add/remove).
     func updateOwned(_ ids: Set<String>) {
-        guard ids != ownedIDs else { return }
-        ownedIDs = ids
+        updateOwned(OwnedIndex(scryfallIDs: ids, copiesByKey: [:], ownedPrintingIDs: ids))
+    }
+
+    /// Marks results from the collection's index: owned, the decks each
+    /// is in, and — when the results group printings — the owned printing
+    /// shown in place of Scryfall's. A hit swapped this way changes id,
+    /// so the results are re-stamped as a new list.
+    func updateOwned(_ index: OwnedIndex) {
+        if let stamp = index.stamp, stamp == ownership?.stamp { return }
+        ownership = index
         guard !results.isEmpty else { return }
-        results = results.map { item in
-            let owned = ids.contains(item.scryfallID)
-            return owned == item.owned ? item : item.withOwned(owned)
+        let grouped = appliedQuery?.groupPrintings ?? false
+        var seen = Set<String>()
+        results = results.compactMap { item in
+            let marked = index.mark(item, groupedPrintings: grouped)
+            return seen.insert(marked.id).inserted ? marked : nil
         }
     }
 
     // MARK: Internals
 
     private func apply(_ page: ScryfallSearchPage, replacing: Bool, generation gen: Int) {
-        let owned = ownedIDs
+        let owned = ownership
+        let grouped = appliedQuery?.groupPrintings ?? false
         let cards = page.cards
         Task.detached(priority: .userInitiated) {
-            let items = cards.map { CardItem(scryfallCard: $0, owned: owned.contains($0.id)) }
+            let items = cards.map { card in
+                let item = CardItem(scryfallCard: card, owned: false)
+                return owned?.mark(item, groupedPrintings: grouped) ?? item
+            }
             await MainActor.run {
                 // The mapping isn't linked to the search task, so check the
                 // generation here too: a newer run may have started meanwhile.

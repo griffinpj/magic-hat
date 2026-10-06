@@ -113,6 +113,7 @@ final class DeckFlowTests: XCTestCase {
         XCTAssertTrue((row.value as? String)?.contains("In collection") == true, "available, not yet built: \(row.value ?? "")")
         row.tap()
         XCTAssertTrue(app.navigationBars["Card 120"].waitForExistence(timeout: 5), "viewer from a deck row")
+        XCTAssertTrue(app.descendants(matching: .any)["viewer-decks"].waitForExistence(timeout: 5), "the card says it is in a deck")
         app.buttons["viewer-close"].tap()
         XCTAssertTrue(app.navigationBars["UI Deck"].waitForExistence(timeout: 5))
 

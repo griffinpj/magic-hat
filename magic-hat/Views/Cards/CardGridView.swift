@@ -161,7 +161,7 @@ struct CardGridView<Header: View, Accessory: View>: View {
         warmedFrom = index
         let upper = min(index + gridImageLookahead, items.count)
         guard index < upper else { return }
-        let urls = items.items[index..<upper].compactMap(\.imageURL)
+        let urls = items.items[index..<upper].compactMap(\.displayImageURL)
         guard !urls.isEmpty else { return }
         let px = CardTile.targetWidth(for: density) * displayScale
         warmTask?.cancel()

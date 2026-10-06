@@ -733,14 +733,14 @@ struct DeckAddCardsView: View {
         // the Collections tab — rather than a fresh read of the collection.
         let store = CollectionStore.shared(for: modelContext.container)
         if let cards = try? await store.ownedCards(stamp: .current), !Task.isCancelled {
-            let (list, byKey, ids) = await Task.detached(priority: .userInitiated) { () -> (CardItemList, [String: Int], Set<String>) in
+            let (list, byKey) = await Task.detached(priority: .userInitiated) { () -> (CardItemList, [String: Int]) in
                 var byKey: [String: Int] = [:]
                 for card in cards { byKey[card.oracleID ?? card.scryfallID, default: 0] += card.quantity }
-                return (CardItemList(cards), byKey, Set(cards.map(\.scryfallID)))
+                return (CardItemList(cards), byKey)
             }.value
             owned = list
             ownedByKey = byKey
-            controller.updateOwned(ids)
+            if let index = try? await store.ownedIndex(stamp: .current) { controller.updateOwned(index) }
         }
         ownedLoaded = true
         runSearch(immediately: true)

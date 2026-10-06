@@ -111,7 +111,7 @@ struct SearchView: View {
                 } message: {
                     Text(controller.query.summary)
                 }
-                .task(id: tracker.revision) { await refreshOwned() }
+                .task(id: "\(tracker.revision)|\(DeckChangeTracker.shared.revision)") { await refreshOwned() }
                 .onChange(of: currencyRaw) { _, _ in if controller.hasResults { controller.run() } }
         }
     }
@@ -390,8 +390,8 @@ struct SearchView: View {
 
     private func refreshOwned() async {
         let store = CollectionStore.shared(for: modelContext.container)
-        guard let ids = try? await store.ownedScryfallIDs(stamp: .current), !Task.isCancelled else { return }
-        controller.updateOwned(ids)
+        guard let index = try? await store.ownedIndex(stamp: .current), !Task.isCancelled else { return }
+        controller.updateOwned(index)
     }
 }
 

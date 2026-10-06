@@ -64,9 +64,9 @@ struct CardTile: View, Equatable {
     static func == (lhs: CardTile, rhs: CardTile) -> Bool {
         let l = lhs.item, r = rhs.item
         guard lhs.targetWidth == rhs.targetWidth, lhs.showsCaption == rhs.showsCaption else { return false }
-        guard l.id == r.id, l.quantity == r.quantity, l.imageURL == r.imageURL,
+        guard l.id == r.id, l.quantity == r.quantity, l.displayImageURL == r.displayImageURL,
               l.aspectRatio == r.aspectRatio, l.owned == r.owned, l.finish == r.finish,
-              l.inCollection == r.inCollection else { return false }
+              l.inCollection == r.inCollection, l.deckCount == r.deckCount else { return false }
         guard l.marketPrice == r.marketPrice, l.purchasePrice == r.purchasePrice else { return false }
         return l.setCode == r.setCode && l.rarity == r.rarity && l.collectorNumber == r.collectorNumber
     }
@@ -108,7 +108,7 @@ struct CardTile: View, Equatable {
     /// grid scrolls as it did (`testGridScrollDoesNotHitch`).
     private var cell: some View {
         let shape = RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous)
-        let glow = tint ?? item.imageURL.flatMap { ImageMemoryCache.shared.tint($0) }
+        let glow = tint ?? item.displayImageURL.flatMap { ImageMemoryCache.shared.tint($0) }
         return ZStack {
             if let glow {
                 shape.fill(LinearGradient(colors: [glow.topColor, glow.bottomColor], startPoint: .top, endPoint: .bottom))
@@ -121,9 +121,12 @@ struct CardTile: View, Equatable {
 
     @ViewBuilder private var image: some View {
         // Sheen on foils, static here so the grid never redraws for it.
-        let art = CardImageView(urlString: item.imageURL, aspectRatio: item.aspectRatio,
+        // The face the user left the card on (a flipped double-faced card
+        // stays flipped).
+        let art = CardImageView(urlString: item.displayImageURL, aspectRatio: item.aspectRatio,
                                 targetWidth: targetWidth, foil: isFoil, tint: showsCaption ? $tint : nil)
             .overlay(alignment: .center) { placeholderName }
+            .overlay(alignment: .topTrailing) { deckBadge }
         if let zoom {
             art.matchedTransitionSource(id: item.id, in: zoom)
         } else {
@@ -233,6 +236,26 @@ struct CardTile: View, Equatable {
         .font(.caption2)
         .foregroundStyle(.secondary)
         .accessibilityLabel("\(item.setCode.uppercased()) #\(item.collectorNumber)")
+    }
+
+    /// "⧉ 2" in the art's top corner when the card is on a deck list —
+    /// the one thing about a card the caption has no room for, and the
+    /// place Photos puts a favourite's heart.
+    @ViewBuilder private var deckBadge: some View {
+        if item.deckCount > 0 {
+            HStack(spacing: 2) {
+                Image(systemName: "rectangle.stack.fill")
+                if item.deckCount > 1 { Text("\(item.deckCount)") }
+            }
+            .font(.system(size: 9, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5).padding(.vertical, 3)
+            .background(.black.opacity(0.55), in: Capsule())
+            .padding(4)
+            .accessibilityLabel(item.deckCount == 1 ? "In 1 deck" : "In \(item.deckCount) decks")
+            .accessibilityIdentifier("tile-decks")
+        }
     }
 
     @ViewBuilder private var placeholderName: some View {

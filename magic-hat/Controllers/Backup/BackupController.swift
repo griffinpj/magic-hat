@@ -35,6 +35,10 @@ nonisolated enum BackupController {
         for key in settingsKeys {
             if let value = UserDefaults.standard.object(forKey: key) { out[key] = "\(value)" }
         }
+        // The flipped faces: a set of ids, joined.
+        if let flipped = UserDefaults.standard.stringArray(forKey: FlippedFaces.key), !flipped.isEmpty {
+            out[FlippedFaces.key] = flipped.joined(separator: ",")
+        }
         return out
     }
 
@@ -42,6 +46,10 @@ nonisolated enum BackupController {
         let ints = [AppSettings.gridColumnsKey, AppSettings.priceRefreshKey]
         let bools = [AppSettings.showPricesKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
                      AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey]
+        if let flipped = settings[FlippedFaces.key] {
+            UserDefaults.standard.set(flipped.split(separator: ",").map(String.init), forKey: FlippedFaces.key)
+            FlippedFaces.reload()
+        }
         for (key, value) in settings where settingsKeys.contains(key) {
             if ints.contains(key), let n = Int(value) {
                 UserDefaults.standard.set(n, forKey: key)
