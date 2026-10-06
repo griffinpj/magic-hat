@@ -43,14 +43,17 @@ final class PreconController {
         if phase == .loading { return }
         if phase == .loaded, !force { return }
         phase = .loading
+        // A seeded run reads no cache either: the simulator's container
+        // keeps Caches/ between runs, and a list a real run left behind
+        // would make the offline test see a list.
+        guard allowsNetwork else {
+            phase = .failed("Preconstructed decks need a connection the first time.")
+            return
+        }
         if !force, let cached = await Self.cache.value([MTGJSONDeckSummary].self, key: Self.listKey, ttl: Self.listTTL) {
             summaries = cached
             loadedAt = await Self.cache.fetchedAt(key: Self.listKey)
             phase = .loaded
-            return
-        }
-        guard allowsNetwork else {
-            phase = .failed("Preconstructed decks need a connection the first time.")
             return
         }
         do {
