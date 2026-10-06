@@ -1623,7 +1623,17 @@ actions, renaming and clearing.
   ("2 hours ago · 3,846 cards · 41s"), and a detail with what it is, when
   it runs (read from the live settings) and the last run. `UITestSeed`
   seeds the log (`seedForTesting`); `SettingsImportTour` shoots it.
-- **The grid's glass cell glows with its card's edge.** `ArtTint` is
+- **The grid's cells are not Liquid Glass.** They were (`glassEffect`
+  per tile); glass is a live material that samples, blurs and refracts
+  what is behind it on every frame, and twelve to fifteen of them
+  scrolling is what kept the grid off 120Hz on a ProMotion phone — the
+  main thread was clean at a 34ms watchdog, so the time was the render
+  server's. Glass belongs to what floats over content (the sort button,
+  the bars), not to the content. `CardTile.cell` is a flat fill, the
+  mesh glow over it and a hairline rim: three draws, nothing read back,
+  nothing redrawn as the cell moves. (A `GlassEffectContainer` around
+  the grid was tried too: it drew its glass over the cards.)
+- **The grid's cell glows with its card's edge.** `ArtTint` is
   eight samples of the frame just inside the printed border — the
   corners and the middle of each side, cells 2–3 in on a 24×32
   rendering of the decoded thumbnail (the border is the outer cell; the

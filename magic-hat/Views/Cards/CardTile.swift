@@ -56,6 +56,7 @@ struct CardTile: View, Equatable {
 
     @ScaledMetric(relativeTo: .caption2) private var symbolSize: CGFloat = 12
     @Environment(\.showsPrices) private var showsPrices
+    @Environment(\.colorScheme) private var colorScheme
     /// The art's colours once its image is decoded (`CardImageView` sets
     /// it); the cell glows with them. A warmed tile reads the cache in its
     /// first frame instead.
@@ -100,26 +101,36 @@ struct CardTile: View, Equatable {
         }
     }
 
-    /// The glass cell, lit by the card's edge: a 3×3 mesh gradient of the
-    /// colours sampled just inside the border (`ArtTint`) sits *behind*
-    /// the glass, so the material does what it does to anything behind it
-    /// — the colour softens and bleeds to the rim — and the glass itself
-    /// takes a faint tint of their mean. Each edge of the cell glows with
-    /// what the card has at that edge: a hybrid's split frame bleeds two
-    /// colours. No blur of our own: a mesh and a tint are a fill each
-    /// (the mesh is one shader pass over the cell, static until the tint
-    /// changes), so the grid scrolls as it did.
+    /// The cell, lit by the card's edge: a 3×3 mesh gradient of the
+    /// colours sampled just inside the border (`ArtTint`) over a flat
+    /// fill, with a hairline rim. Each edge of the cell glows with what the
+    /// card has at that edge: a hybrid's split frame bleeds two colours.
+    ///
+    /// **Not Liquid Glass, deliberately.** It was: a `glassEffect` per
+    /// tile. Glass is a live material — every cell sampled, blurred and
+    /// refracted what was behind it on every frame of a scroll, and twelve
+    /// to fifteen of them at once is what kept the grid off 120Hz on a
+    /// ProMotion phone (the main thread was clean; this was the render
+    /// server's time). Glass is for the controls that float over content
+    /// — the sort button, the bars — not for the content. What is left is
+    /// a fill, a mesh and a stroke: three cheap draws, nothing read back,
+    /// nothing redrawn as the cell moves.
     private var cell: some View {
         let shape = RoundedRectangle(cornerRadius: Self.cardRadius + Self.inset, style: .continuous)
         let glow = tint ?? item.displayImageURL.flatMap { ImageMemoryCache.shared.tint($0) }
-        return ZStack {
-            if let glow {
-                shape.fill(MeshGradient(width: 3, height: 3, points: ArtTint.meshPoints, colors: glow.colors))
-                    .opacity(0.6)
+        return shape
+            .fill(Color(.secondarySystemGroupedBackground))
+            .overlay {
+                if let glow {
+                    shape.fill(MeshGradient(width: 3, height: 3, points: ArtTint.meshPoints, colors: glow.colors))
+                        .opacity(colorScheme == .dark ? 0.42 : 0.5)
+                }
             }
-            shape.fill(.clear)
-                .glassEffect(glow.map { .regular.tint($0.midColor.opacity(0.22)) } ?? .regular, in: shape)
-        }
+            .overlay {
+                // The rim a glass cell had: a light catch on top of the
+                // edge, so the cell still reads as a raised object.
+                shape.strokeBorder(.white.opacity(colorScheme == .dark ? 0.16 : 0.75), lineWidth: 0.5)
+            }
     }
 
     @ViewBuilder private var image: some View {
