@@ -34,6 +34,31 @@ nonisolated struct PlaytestCard: Identifiable, Hashable, Sendable {
     }
 
     var isLand: Bool { (card.typeLine ?? "").contains("Land") }
+
+    /// Where on the table the card sits once played: lands nearest the
+    /// player, artifacts and enchantments above them, creatures (and
+    /// everything else that attacks or is attacked) on top. Read from the
+    /// front face's types, as `DeckStats.primaryType` does, lands first.
+    var tableRow: PlaytestRow {
+        if isLand { return .lands }
+        let type = DeckStats.primaryType(of: card.typeLine)
+        return type == "Artifact" || type == "Enchantment" ? .support : .creatures
+    }
+}
+
+/// The battlefield's rows, top to bottom.
+nonisolated enum PlaytestRow: Int, CaseIterable, Hashable, Sendable, Identifiable {
+    case creatures, support, lands
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .creatures: return "Creatures"
+        case .support: return "Artifacts & Enchantments"
+        case .lands: return "Lands"
+        }
+    }
 }
 
 nonisolated enum PlaytestZone: String, CaseIterable, Hashable, Sendable, Identifiable {
@@ -155,8 +180,12 @@ nonisolated struct PlaytestState: Hashable, Sendable {
     /// Untap everything, draw one.
     mutating func nextTurn() {
         turn += 1
-        for i in battlefield.indices { battlefield[i].isTapped = false }
+        untapAll()
         draw()
+    }
+
+    mutating func untapAll() {
+        for i in battlefield.indices { battlefield[i].isTapped = false }
     }
 
     // MARK: Moving cards
@@ -217,6 +246,8 @@ nonisolated struct PlaytestState: Hashable, Sendable {
 
     var landsOnBattlefield: [PlaytestCard] { battlefield.filter(\.isLand) }
     var spellsOnBattlefield: [PlaytestCard] { battlefield.filter { !$0.isLand } }
+    /// The battlefield by row, in play order within each.
+    func battlefield(in row: PlaytestRow) -> [PlaytestCard] { battlefield.filter { $0.tableRow == row } }
     /// Untapped lands: a rough "mana available" for the status line.
     var untappedLands: Int { landsOnBattlefield.filter { !$0.isTapped }.count }
 }

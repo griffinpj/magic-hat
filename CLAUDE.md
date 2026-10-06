@@ -1090,8 +1090,12 @@ mainboard copy a `PlaytestCard`, commanders in the command zone). It
 shuffles with any `RandomNumberGenerator`, so `PlaytestTests` seed one
 (`SeededGenerator`, SplitMix64) and assert copies are conserved through
 every move. No rules engine: it is a table that keeps count, and it
-writes nothing. The screen: the battlefield on top (lands row, spells
-row; tap to tap, hold for the other zones and View Card), a status line
+writes nothing. The screen: the battlefield on top, laid out as a table
+is — anchored to the bottom and growing upwards from the hand, lands
+nearest the player, artifacts and enchantments above them, creatures
+(and every other permanent) on top (`PlaytestCard.tableRow`,
+`PlaytestRow`); tap to tap, hold for the other zones and View Card;
+cards 72pt on the table, 96pt in hand so they can be hit — a status line
 (turn, library, untapped lands as "Mana", graveyard and exile buttons
 opening a `ZoneSheet`), the hand along the bottom with the command zone
 beside it (tap to play/cast; during a mulligan, tap to bottom, with a
