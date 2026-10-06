@@ -441,7 +441,14 @@ detail screen and actions as an owned card:
   button, or the zoom transition's own drag/pinch.
   The grid keeps its `ScrollViewReader` scrolled to the card the viewer is
   on (via the `currentID` binding), so the zoom-out lands on the right tile
-  and the grid is where the user left off.
+  and the grid is where the user left off. **The card under the anchor
+  becomes current when the pager settles** (`onScrollPhaseChange` →
+  `.idle`), not as the anchor crosses it: committing mid-flight
+  re-rendered the title, panel and toolbar, restarted the neighbour
+  decodes, scrolled the grid and swapped the foil's animated branch
+  during the deceleration — the swipe felt abrupt. Pages carry a
+  `scrollTransition` (scale 0.94, opacity 0.82 at the edges) and
+  programmatic moves animate `.smooth`.
   It is not a ZStack overlay, and shouldn't become one: an overlay drawn
   inside the pushed screen sits *below* the navigation and tab bars (Back
   and the tab pill stay live through the dim), gives VoiceOver no way out,

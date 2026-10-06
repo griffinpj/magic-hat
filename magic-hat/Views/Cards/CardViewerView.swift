@@ -344,19 +344,35 @@ struct CardViewerView: View {
                     .onChange(of: geo.size) { _, _ in pin(proxy) }
                     .onScrollPhaseChange { _, phase in
                         if phase == .interacting { userScrolled = true }
+                        // The card under the anchor becomes current once
+                        // the pager has settled, not mid-flight: committing
+                        // it as the anchor crossed a card re-rendered the
+                        // title, the panel and the toolbar, restarted the
+                        // neighbour decodes, scrolled the grid behind and
+                        // swapped the foil's animated branch — all during
+                        // the deceleration, which is what made a swipe feel
+                        // abrupt.
+                        scrolling = phase != .idle
+                        if phase == .idle { commitVisible() }
                     }
-                    .onChange(of: visibleID) { _, id in
-                        guard userScrolled, let id, id != currentID else { return }
-                        currentID = id
+                    .onChange(of: visibleID) { _, _ in
+                        if !scrolling { commitVisible() }
                     }
                     .onChange(of: currentID) { _, id in
                         // Programmatic moves: a tapped neighbour, the step
                         // after a removal.
                         guard let id, id != visibleID else { return }
-                        withAnimation(.snappy) { visibleID = id }
+                        withAnimation(.smooth(duration: 0.4)) { visibleID = id }
                     }
             }
         }
+    }
+
+    @State private var scrolling = false
+
+    private func commitVisible() {
+        guard userScrolled, let id = visibleID, id != currentID else { return }
+        currentID = id
     }
 
     private func pin(_ proxy: ScrollViewProxy) {
@@ -385,6 +401,15 @@ struct CardViewerView: View {
                             }
                         }
                         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        // Neighbours sit back a little and come forward as
+                        // they are pulled in: a transform and an opacity per
+                        // page, nothing redrawn, and the swipe reads as a
+                        // card changing hands rather than a strip sliding.
+                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
+                            content
+                                .scaleEffect(1 - 0.06 * abs(phase.value))
+                                .opacity(1 - 0.18 * abs(phase.value))
+                        }
                         .onTapGesture {
                             if isCurrent {
                                 if showsDetail { detail = item }
