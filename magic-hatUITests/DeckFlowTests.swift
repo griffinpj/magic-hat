@@ -322,6 +322,41 @@ final class DeckFlowTests: XCTestCase {
         XCTAssertTrue(button.isSelected, "\(name) selected")
     }
 
+    /// Dragging a deck onto a folder files it — in the List layout too,
+    /// where the rows are a UICollectionView's and a row's drop
+    /// destination used to never fire.
+    @MainActor
+    func testDragDeckIntoFolderInListView() { dragDeckIntoFolder(layout: "List") }
+
+    @MainActor
+    func testDragDeckIntoFolderInIconsView() { dragDeckIntoFolder(layout: "Icons") }
+
+    @MainActor
+    private func dragDeckIntoFolder(layout: String) {
+        let app = launchOnDecks()
+        app.buttons["decks-add"].tap()
+        app.buttons["decks-menu-folder"].tap()
+        app.alerts.textFields.firstMatch.typeText("Filed")
+        app.alerts.buttons["Create"].tap()
+        XCTAssertTrue(app.buttons["deck-folder-Filed"].waitForExistence(timeout: 5))
+        createCasualDeck(app, named: "Dragged")
+        app.navigationBars["Dragged"].buttons.firstMatch.tap()
+        XCTAssertTrue(app.navigationBars["Decks"].waitForExistence(timeout: 5))
+        app.buttons["decks-view-menu"].tap()
+        app.buttons[layout].firstMatch.tap()
+
+        let deck = app.buttons["deck-tile-Dragged"].firstMatch
+        let folder = app.buttons["deck-folder-Filed"].firstMatch
+        XCTAssertTrue(deck.waitForExistence(timeout: 5))
+        XCTAssertTrue(folder.exists)
+        deck.press(forDuration: 1.2, thenDragTo: folder, withVelocity: .slow, thenHoldForDuration: 0.6)
+
+        XCTAssertTrue(deck.waitForNonExistence(timeout: 5), "the deck left the root")
+        folder.tap()
+        XCTAssertTrue(app.navigationBars["Filed"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["deck-tile-Dragged"].firstMatch.waitForExistence(timeout: 5), "the deck is in the folder")
+    }
+
     /// A PNG for diagnosing a failed step, when `UITEST_SHOT_DIR` is set.
     private func shot(_ name: String) {
         guard let dir = ProcessInfo.processInfo.environment["UITEST_SHOT_DIR"], !dir.isEmpty else { return }

@@ -220,8 +220,11 @@ struct DeckBrowser: View {
                 Button("Save") { rename(request) }
                 Button("Cancel", role: .cancel) {}
             }
-            .confirmationDialog(deleteTitle, isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                                titleVisibility: .visible, presenting: pendingDelete) { request in
+            // An alert, not a confirmation dialog: from a swipe action a
+            // dialog is presented as a popover anchored to the row, which
+            // reads as a tooltip. A destructive confirmation is modal.
+            .alert(deleteTitle, isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+                   presenting: pendingDelete) { request in
                 Button(request.folder != nil ? "Delete Folder" : "Delete Deck", role: .destructive) { delete(request) }
                 Button("Cancel", role: .cancel) {}
             } message: { request in
@@ -335,9 +338,12 @@ struct DeckBrowser: View {
                 .listRowBackground(dropTarget == node.id ? Color.accentColor.opacity(0.15) : nil)
                 .contextMenu { folderMenu(node) }
                 .draggable(DeckDragItem.folder(node.id).payload)
-                .dropDestination(for: String.self) { items, _ in drop(items, into: node.id) } isTargeted: { over in
-                    dropTarget = over ? node.id : (dropTarget == node.id ? nil : dropTarget)
-                }
+                // Inside a List the rows are a collection view's cells and
+                // the collection view runs the drag: a drop on a cell never
+                // reached the row's `dropDestination` (the grid's tiles take
+                // theirs fine), so the List's collection view is given a
+                // drop delegate of its own — Files' "drop into the row".
+                .background { ListDropInstaller(handler: listDrop) }
                 .swipeActions(edge: .trailing) {
                     Button("Delete", systemImage: "trash", role: .destructive) {
                         pendingDelete = DeleteRequest(deck: nil, folder: node)
@@ -390,6 +396,19 @@ struct DeckBrowser: View {
             }
         }
         .listStyle(.plain)
+        .onAppear { configureListDrop() }
+        .onChange(of: shownFolders.map(\.id)) { configureListDrop() }
+    }
+
+    @State private var listDrop = ListDropHandler()
+
+    /// Folders lead the List, so a destination item index under
+    /// `shownFolders.count` is a folder.
+    private func configureListDrop() {
+        let folders = shownFolders.map(\.id)
+        listDrop.folder = { index in index < folders.count ? folders[index] : nil }
+        listDrop.onTarget = { id in if dropTarget != id { dropTarget = id } }
+        listDrop.onDrop = { payloads, id in _ = drop(payloads, into: id) }
     }
 
     // MARK: Menus
@@ -903,4 +922,86 @@ struct DeckImportSource: Identifiable {
     let suggestedName: String?
     /// Opened from "Import from Link…": the link field has the focus.
     var focusesLink = false
+}
+
+/// The List layout's drop, at UIKit's level: SwiftUI's List is a
+/// UICollectionView whose drag sessions are its own, and it offers a row
+/// no way to be dropped *into*. This delegate takes its place on the
+/// collection view: a folder row under the finger is the target (the
+/// `insertIntoDestinationIndexPath` intent, Files' highlight), anything
+/// else cancels, and the payloads go to the browser's `drop`.
+@MainActor
+final class ListDropHandler: NSObject, UICollectionViewDropDelegate {
+    var folder: (Int) -> UUID? = { _ in nil }
+    var onTarget: (UUID?) -> Void = { _ in }
+    var onDrop: ([String], UUID) -> Void = { _, _ in }
+
+    func collectionView(_ collectionView: UICollectionView, canHandle session: UIDropSession) -> Bool {
+        session.canLoadObjects(ofClass: NSString.self)
+    }
+
+    func collectionView(_ collectionView: UICollectionView, dropSessionDidUpdate session: UIDropSession,
+                        withDestinationIndexPath destinationIndexPath: IndexPath?) -> UICollectionViewDropProposal {
+        if let path = destinationIndexPath, let id = folder(path.item) {
+            onTarget(id)
+            return UICollectionViewDropProposal(operation: .move, intent: .insertIntoDestinationIndexPath)
+        }
+        onTarget(nil)
+        return UICollectionViewDropProposal(operation: .cancel)
+    }
+
+    func collectionView(_ collectionView: UICollectionView, dropSessionDidExit session: UIDropSession) { onTarget(nil) }
+    func collectionView(_ collectionView: UICollectionView, dropSessionDidEnd session: UIDropSession) { onTarget(nil) }
+
+    func collectionView(_ collectionView: UICollectionView, performDropWith coordinator: UICollectionViewDropCoordinator) {
+        onTarget(nil)
+        guard let path = coordinator.destinationIndexPath, let id = folder(path.item) else { return }
+        let providers = coordinator.items.map(\.dragItem.itemProvider).filter { $0.canLoadObject(ofClass: NSString.self) }
+        Task { @MainActor in
+            var payloads: [String] = []
+            for provider in providers {
+                if let text = try? await provider.loadString() { payloads.append(text) }
+            }
+            onDrop(payloads, id)
+        }
+    }
+}
+
+/// Finds the List's collection view from inside a row and hands it the
+/// handler. Harmless when the superview chain has none.
+private struct ListDropInstaller: UIViewRepresentable {
+    let handler: ListDropHandler
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isHidden = true
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        DispatchQueue.main.async { install(from: view) }
+    }
+
+    private func install(from view: UIView) {
+        var current: UIView? = view
+        while let v = current, !(v is UICollectionView) { current = v.superview }
+        guard let collection = current as? UICollectionView, collection.dropDelegate !== handler else { return }
+        collection.dropDelegate = handler
+    }
+}
+
+extension NSItemProvider {
+    /// The provider's text, for a `.onDrop` of a `.draggable(String)`.
+    nonisolated func loadString() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = loadObject(ofClass: NSString.self) { object, error in
+                if let text = object as? NSString {
+                    continuation.resume(returning: text as String)
+                } else {
+                    continuation.resume(throwing: error ?? CocoaError(.fileReadCorruptFile))
+                }
+            }
+        }
+    }
 }
