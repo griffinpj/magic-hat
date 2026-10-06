@@ -11,6 +11,7 @@
 import Foundation
 import SwiftData
 
+
 @MainActor
 enum UITestSeed {
     static let collectionName = "Test Collection"
@@ -168,11 +169,20 @@ enum UITestSeed {
     /// "Real Collection", the way the wizard does it (parsed off-main,
     /// written on the background writer). A store that already has rows
     /// keeps them — the second launch is the one with an existing
-    /// collection, which is what a real user opens every day.
+    /// collection, which is what a real user opens every day. On a device
+    /// the runner cannot hand the app a file, so `environment` reads the
+    /// export from `UITEST_IMPORT_CSV_ZLIB` — zlib-compressed, base64 —
+    /// which the test fills from its bundled copy.
     static func importRealCollectionIfNeeded(_ container: ModelContainer) async {
-        guard let path = ProcessInfo.processInfo.environment["UITEST_IMPORT_CSV"], !path.isEmpty else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let path = env["UITEST_IMPORT_CSV"], !path.isEmpty else { return }
         let store = CollectionStore.shared(for: container)
         if let names = try? await store.entryCollectionNames(), !names.isEmpty { return }
+        var pasted: String?
+        if path == "environment", let packed = env["UITEST_IMPORT_CSV_ZLIB"], let data = Data(base64Encoded: packed),
+           let unpacked = try? (data as NSData).decompressed(using: .zlib) as Data {
+            pasted = String(data: unpacked, encoding: .utf8)
+        }
         // `UITEST_INGEST_FILE` with a real run: the bulk slice stands in for
         // the catalog (the 79MB download is the one thing skipped), so
         // names and ids resolve locally the way they do on a device.
@@ -180,7 +190,7 @@ enum UITestSeed {
             try? await BulkIngester.ingest(file: URL(fileURLWithPath: ingest), dataset: .defaultCards, container: container)
         }
         let rows: [ManaBoxRow] = await Task.detached(priority: .userInitiated) {
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+            guard let text = pasted ?? (try? String(contentsOfFile: path, encoding: .utf8)) else { return [] }
             return (try? CSVParser.parseManaBox(text)) ?? []
         }.value
         guard !rows.isEmpty else { return }

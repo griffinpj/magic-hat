@@ -72,6 +72,9 @@ struct CardGridView<Header: View, Accessory: View>: View {
         ScrollViewReader { proxy in
             ScrollView {
                 header()
+                // Not in a GlassEffectContainer: the container draws its
+                // glass shapes as one layer over everything inside it, and
+                // the cards came out frosted (vetted by screenshot).
                 LazyVGrid(columns: columns, spacing: spacing) {
                     // Over ids, not cards: SwiftUI compares a ForEach's data
                     // element by element on every update (see CardItemList).

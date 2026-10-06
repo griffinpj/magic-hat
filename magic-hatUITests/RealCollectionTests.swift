@@ -25,9 +25,11 @@ final class RealCollectionTests: XCTestCase {
 
     override func setUpWithError() throws {
         let env = ProcessInfo.processInfo.environment
-        guard let csv = env["UITEST_CSV"], !csv.isEmpty, let dir = env["UITEST_PERF_DIR"], !dir.isEmpty else {
+        guard let csv = env["UITEST_CSV"], !csv.isEmpty, var dir = env["UITEST_PERF_DIR"], !dir.isEmpty else {
             throw XCTSkip("Set TEST_RUNNER_UITEST_CSV and TEST_RUNNER_UITEST_PERF_DIR to run against the real collection.")
         }
+        // On a device the runner's own temp dir is the writable place.
+        if dir == "tmp" { dir = NSTemporaryDirectory() }
         self.csv = csv
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let stem = name.filter { $0.isLetter || $0.isNumber }
@@ -40,7 +42,23 @@ final class RealCollectionTests: XCTestCase {
     private func launch(reset: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-uitest-real"]
-        app.launchEnvironment["UITEST_IMPORT_CSV"] = csv
+        // `TEST_RUNNER_UITEST_CSV=bundle`: the export checked in under the
+        // UI tests' Fixtures/, handed over zlib-compressed and base64'd in
+        // the launch environment (~200KB; the pasteboard is not available
+        // to a runner on a device) — the way to run these on a phone,
+        // where the app cannot read the Mac's disk.
+        if csv == "bundle" {
+            let bundle = Bundle(for: RealCollectionTests.self)
+            if let url = bundle.url(forResource: "ManaBox_Collection", withExtension: "csv")
+                ?? bundle.url(forResource: "ManaBox_Collection", withExtension: "csv", subdirectory: "Fixtures"),
+               let data = try? Data(contentsOf: url),
+               let packed = try? (data as NSData).compressed(using: .zlib) as Data {
+                app.launchEnvironment["UITEST_IMPORT_CSV_ZLIB"] = packed.base64EncodedString()
+            }
+            app.launchEnvironment["UITEST_IMPORT_CSV"] = "environment"
+        } else {
+            app.launchEnvironment["UITEST_IMPORT_CSV"] = csv
+        }
         app.launchEnvironment["UITEST_HANG_LOG"] = hangLog.path
         // `TEST_RUNNER_UITEST_HANG_THRESHOLD` lowers the bar for an audit
         // (0.05 is three dropped frames); 100ms is the pass/fail line.
@@ -164,6 +182,10 @@ final class RealCollectionTests: XCTestCase {
         measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric]) {
             for _ in 0..<4 { grid.swipeUp(velocity: .fast) }
             for _ in 0..<4 { grid.swipeDown(velocity: .fast) }
+        }
+        if let dir = ProcessInfo.processInfo.environment["UITEST_SHOT_DIR"], !dir.isEmpty {
+            settle(2)
+            try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("real-grid.png"))
         }
     }
 

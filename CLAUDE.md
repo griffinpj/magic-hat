@@ -1729,6 +1729,25 @@ TEST_RUNNER_UITEST_PERF_DIR=/tmp/perf \
 Two launch-time records are the environment, not the app: UIKit loading
 its accessibility bundle for XCUITest, and the keyboard prewarm's dlopen.
 
+**Frame pacing, not stalls:** `testGridScrollHitchesWithRealImages`
+runs Apple's hitch metric (`XCTOSSignpostMetric.scrollDecelerationMetric`)
+over a fast scroll of the real collection with its images. The
+simulator reports only the deceleration's duration — hitch telemetry
+(hitch time ratio, ms of hitch per second) exists on a device alone — so
+the test can run on a phone: `TEST_RUNNER_UITEST_CSV=bundle` hands the
+export checked in under `magic-hatUITests/Fixtures/` to the app
+zlib-compressed in the launch environment (a runner on a device has no
+file the app can read and no pasteboard), and
+`TEST_RUNNER_UITEST_PERF_DIR=tmp` writes the hang log to the runner's
+temp dir; add `-allowProvisioningUpdates` for the runner's profile. On
+the simulator the same scroll at `TEST_RUNNER_UITEST_HANG_THRESHOLD=0.034`
+(two frames) is the main-thread half of the answer: measured 2026-10-05,
+every stall over two frames during the scroll was XCUITest's
+accessibility reads — no app frame — so what is left to make the grid
+smoother is render-side (the glass cell per tile, the foil sheen), which
+only the device metric can see. A `GlassEffectContainer` around the grid
+is not the answer: it drew its glass over the cards (frosted them).
+
 A behaviour change to anything above lands with its test in the same commit.
 
 Two things the UI tests keep tripping on: a List or Form is lazy, so a row
