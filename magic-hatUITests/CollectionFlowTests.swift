@@ -55,6 +55,32 @@ final class CollectionFlowTests: XCTestCase {
         XCTAssertTrue(close.waitForNonExistence(timeout: 5), "close should dismiss the viewer")
     }
 
+    /// The viewer's price line opens the price history; the seed records
+    /// half a year for the first cards, so the chart draws a line with a
+    /// change over the range, and a finger on it reads a day.
+    @MainActor
+    func testPriceLineOpensTheHistoryChart() {
+        let app = launch()
+        _ = openCollection(app)
+        app.staticTexts["Card 0"].firstMatch.tap()
+        let price = app.buttons["viewer-price"]
+        XCTAssertTrue(price.waitForExistence(timeout: 5))
+        price.tap()
+        let chart = app.descendants(matching: .any).matching(identifier: "price-history-chart").firstMatch
+        XCTAssertTrue(chart.waitForExistence(timeout: 5), "the chart draws")
+        XCTAssertTrue(app.staticTexts["price-history-change"].exists, "a change over three months")
+        app.segmentedControls["price-history-range"].buttons["1M"].tap()
+        XCTAssertTrue(chart.waitForExistence(timeout: 3))
+        chart.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.6)
+        XCTAssertTrue(app.staticTexts["price-history-price"].exists)
+        if let dir = ProcessInfo.processInfo.environment["UITEST_SHOT_DIR"], !dir.isEmpty {
+            try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("price-history-seeded.png"))
+        }
+        app.buttons["price-history-done"].tap()
+        XCTAssertTrue(app.buttons["viewer-close"].waitForExistence(timeout: 5))
+        app.buttons["viewer-close"].tap()
+    }
+
     /// Flipping a double-faced card is remembered: closed and reopened,
     /// the viewer shows the back; flipped again it shows the front.
     @MainActor

@@ -1844,6 +1844,43 @@ preference is a UserDefaults key in `AppSettings` (Utils), bound with
 `colorsRaw == nil` before it), so fields added to `apply` (the back face,
 euro prices) backfill in one hydration pass. `isComplete` is the one test.
 
+## Price history
+
+Scryfall publishes one market price per finish and no history, and the
+sources that have one (MTGJSON's `AllPrices.json`, 90 days per card)
+ship as a file far too big for a device, so **the app records its own**
+(`Models/PriceHistory`): every time prices land for an owned printing —
+the 6h/12h/daily refresh, a hydration, the weekly catalog ingest (owned
+ids only, found by an `IN` query per batch) — `CardMetaWriter.apply`
+records the day's USD / USD foil / EUR / EUR foil (`recordPrices`), one
+sample a day, the day's later refresh replacing the earlier. One
+`PriceHistory` row per printing holds a packed blob (`PriceSeries`: 18
+bytes a day — the day since 2020-01-01 as UInt16, four Float32s, NaN for
+a price Scryfall didn't have; values are quantized to Float32 on record
+so a series equals itself read back), so a year of a card is 6.5KB and a
+3,900-card collection's a few MB. Nothing is backfilled: the record
+starts the day the card is first owned, and the sheet says so. It
+travels in backups (`price-history.json`) — Scryfall-derived, but
+nothing can fetch it again. `CollectionStore.priceHistory(scryfallID:)`
+reads one. **The viewer's price line is a button** (`viewer-price`) that
+opens `CardPriceHistoryView`: Stocks' shape — the price large with the
+change over the range beside it, 1M / 3M / 1Y / All, a line with a soft
+fill coloured by the range's direction, `chartXSelection` to read a
+day, a finish picker when the card has foil prices, and an honest empty
+state ("Price History Starts Here") until two days exist. The seed
+records half a year for the first sixty cards (`seedPrices`, a seeded
+random walk ending at the card's price). `PriceHistoryTests` (the
+series, the blob, the change, the writer recording owned printings on
+an ingest and a refresh), `CollectionFlowTests.testPriceLineOpensTheHistoryChart`.
+
+Other sources, weighed: TCGplayer and Cardmarket no longer issue API
+keys; MTGStocks and MTGGoldfish have history but only through
+undocumented endpoints or page scraping (against their terms, brittle,
+and a scraper in the app would be one more thing to break on a
+release); Card Kingdom publishes no API. A server-side job over
+MTGJSON's `AllPrices.json` could backfill 90 days per card, but needs a
+server this app does not have.
+
 ## Backup and restore
 
 `AppBackup` (Models) is every user table as Codable records; a backup is a

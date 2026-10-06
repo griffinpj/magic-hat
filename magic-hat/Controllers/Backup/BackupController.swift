@@ -78,12 +78,14 @@ nonisolated enum BackupController {
         let audit = try context.fetch(FetchDescriptor<AuditRecord>(sortBy: [SortDescriptor(\.timestamp)])).map(AppBackup.AuditRecordValue.init)
         let names = try context.fetch(FetchDescriptor<HistoryBranchName>()).map { AppBackup.BranchNameRecord(actionID: $0.actionID, name: $0.name) }
         let searches = try context.fetch(FetchDescriptor<SavedSearch>(sortBy: [SortDescriptor(\.sortOrder)])).map(AppBackup.SavedSearchRecord.init)
+        let prices = try context.fetch(FetchDescriptor<PriceHistory>()).map { AppBackup.PriceHistoryRecord(scryfallID: $0.scryfallID, samples: $0.samplesData) }
         let manifest = BackupManifest(format: BackupManifest.currentFormat, createdAt: now, appVersion: appVersion,
                                       collections: collections.count, entries: entries.count,
                                       copies: entries.reduce(0) { $0 + $1.quantity }, decks: decks.count,
                                       historyRecords: audit.count)
         return AppBackup(manifest: manifest, collections: collections, entries: entries, decks: decks, deckCards: deckCards,
-                         folders: folders, deckVersions: versions, deckBranches: branches, audit: audit, branchNames: names, savedSearches: searches, settings: settings)
+                         folders: folders, deckVersions: versions, deckBranches: branches, audit: audit, branchNames: names, savedSearches: searches,
+                         priceHistory: prices, settings: settings)
     }
 
     /// Replaces every user table on `context` with `backup`.
@@ -98,6 +100,7 @@ nonisolated enum BackupController {
         try context.delete(model: AuditRecord.self)
         try context.delete(model: HistoryBranchName.self)
         try context.delete(model: SavedSearch.self)
+        try context.delete(model: PriceHistory.self)
         try context.save()
 
         for c in backup.collections {
@@ -144,6 +147,7 @@ nonisolated enum BackupController {
         }
         for n in backup.branchNames { context.insert(HistoryBranchName(actionID: n.actionID, name: n.name)) }
         for s in backup.savedSearches { context.insert(s.model()) }
+        for p in backup.priceHistory { context.insert(PriceHistory(scryfallID: p.scryfallID, series: PriceSeries(packed: p.samples))) }
         try context.save()
     }
 }

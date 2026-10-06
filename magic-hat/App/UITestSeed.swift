@@ -110,6 +110,7 @@ enum UITestSeed {
             context.insert(entry)
         }
         seedHistory(context)
+        seedPrices(context, count: min(cardCount, 60))
         try? context.save()
         DataActivity.shared.seedForTesting()
         CatalogSyncController.shared.markCatalogReadyForTesting()
@@ -163,6 +164,26 @@ enum UITestSeed {
             UserDefaults.standard.removeObject(forKey: key)
         }
         CatalogSyncController.shared.markCatalogReadyForTesting()
+    }
+
+    /// Half a year of recorded prices for the first `count` cards — a
+    /// seeded random walk ending at the card's price — so the price chart
+    /// has a line to draw in tours and tests.
+    private static func seedPrices(_ context: ModelContext, count: Int) {
+        var rng = SeededGenerator(seed: 7)
+        let today = PriceSample.day(of: Date())
+        for i in 0..<count {
+            let id = String(format: "00000000-0000-4000-8000-%012d", i)
+            let final = Double(i % 50)
+            var series = PriceSeries()
+            var price = max(0.1, final * Double.random(in: 0.6...1.4, using: &rng))
+            for day in stride(from: today - 180, through: today, by: 1) {
+                price = max(0.05, price * Double.random(in: 0.97...1.03, using: &rng))
+                if day == today { price = final }
+                series.record(PriceSample(day: day, usd: price, usdFoil: i % 7 == 0 ? price * 2.5 : nil, eur: price * 0.92, eurFoil: nil))
+            }
+            context.insert(PriceHistory(scryfallID: id, series: series))
+        }
     }
 
     /// `UITEST_IMPORT_CSV=<path to a ManaBox export>`: imported once, into

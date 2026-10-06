@@ -77,17 +77,45 @@ actor CardMetaWriter: ModelActor {
             meta.apply(card)
         }
 
+        // Which of these are owned: every one on a hydration or price
+        // refresh (those run over owned cards), the ones with a collection
+        // row on a catalog ingest (which rewrites every printing's prices).
+        let descriptor = FetchDescriptor<CollectionEntry>(predicate: #Predicate { ids.contains($0.scryfallID) })
+        let entries = (try? modelContext.fetch(descriptor)) ?? []
         if linkEntries {
-            let descriptor = FetchDescriptor<CollectionEntry>(
-                predicate: #Predicate { ids.contains($0.scryfallID) }
-            )
-            if let entries = try? modelContext.fetch(descriptor) {
-                for entry in entries where entry.card == nil {
-                    entry.card = byID[entry.scryfallID]
-                }
+            for entry in entries where entry.card == nil {
+                entry.card = byID[entry.scryfallID]
             }
         }
+        recordPrices(for: linkEntries ? ids : Array(Set(entries.map(\.scryfallID))), metas: byID)
         try modelContext.save()
+    }
+
+    /// Today's prices into each owned printing's history (see
+    /// PriceHistory): a row per printing, the day's sample replacing the
+    /// day's earlier one, so a refresh that runs four times a day leaves
+    /// one point.
+    private func recordPrices(for scryfallIDs: [String], metas: [String: CardMeta]) {
+        guard !scryfallIDs.isEmpty else { return }
+        let ids = scryfallIDs
+        let rows = (try? modelContext.fetch(FetchDescriptor<PriceHistory>(predicate: #Predicate { ids.contains($0.scryfallID) }))) ?? []
+        var byID = Dictionary(rows.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
+        let today = PriceSample.day(of: Date())
+        for id in scryfallIDs {
+            guard let meta = metas[id] else { continue }
+            let sample = PriceSample(meta: meta, day: today)
+            guard !sample.isEmpty else { continue }
+            if let row = byID[id] {
+                var series = row.series
+                if series.record(sample) { row.series = series }
+            } else {
+                var series = PriceSeries()
+                series.record(sample)
+                let row = PriceHistory(scryfallID: id, series: series)
+                modelContext.insert(row)
+                byID[id] = row
+            }
+        }
     }
 
     /// A ManaBox import, on this context (see ImportController).

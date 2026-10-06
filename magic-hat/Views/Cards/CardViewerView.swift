@@ -46,6 +46,8 @@ struct CardViewerView: View {
     @AppStorage(AddTarget.lastKey) private var lastCollection = ""
 
     @State private var detail: CardItem?
+    /// The price chart sheet, from a tap on the price line.
+    @State private var priceHistory: CardItem?
     @State private var synergies: CardItem?
     @State private var adding: CardItem?
     @State private var editing: CardItem?
@@ -133,6 +135,7 @@ struct CardViewerView: View {
         }
         .sheet(item: $adding) { AddCardView(item: $0) }
         .sheet(item: $editing) { EditEntryView(item: $0) }
+        .sheet(item: $priceHistory) { CardPriceHistoryView(item: $0) }
         .alert("Couldn't Update", isPresented: Binding(get: { deleteError != nil },
                                                       set: { if !$0 { deleteError = nil } })) {
             Button("OK", role: .cancel) {}
@@ -149,7 +152,7 @@ struct CardViewerView: View {
             HStack(spacing: 16) {
                 pager
                 if let item = currentItem {
-                    InfoPanel(item: item)
+                    InfoPanel(item: item, onPrice: { priceHistory = item })
                         .frame(maxWidth: 340)
                         .padding(.trailing, 20)
                 }
@@ -158,7 +161,7 @@ struct CardViewerView: View {
             VStack(spacing: 16) {
                 pager
                 if let item = currentItem {
-                    InfoPanel(item: item)
+                    InfoPanel(item: item, onPrice: { priceHistory = item })
                         .padding(.horizontal, 20)
                 }
             }
@@ -624,6 +627,8 @@ private struct DeckAddFeedback: ViewModifier {
 /// "1×" that said nothing.
 private struct InfoPanel: View {
     let item: CardItem
+    /// Tapping the price line: the price history sheet.
+    var onPrice: (() -> Void)? = nil
 
     @Environment(\.showsPrices) private var showsPrices
     private static let rowHeight: CGFloat = 22
@@ -709,7 +714,24 @@ private struct InfoPanel: View {
     }
 
     @ViewBuilder private var priceLine: some View {
-        if showsPrices { marketLine } else { Color.clear }
+        if showsPrices {
+            // The whole line is the button; a chevron says it opens.
+            Button { onPrice?() } label: {
+                HStack(spacing: 6) {
+                    marketLine
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Market price \(PriceFormat.string(item.marketPrice))")
+            .accessibilityHint("Shows the price history")
+            .accessibilityIdentifier("viewer-price")
+        } else {
+            Color.clear
+        }
     }
 
     private var marketLine: some View {

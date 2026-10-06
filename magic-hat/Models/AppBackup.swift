@@ -46,6 +46,9 @@ nonisolated struct AppBackup: Codable, Sendable {
     var audit: [AuditRecordValue]
     var branchNames: [BranchNameRecord]
     var savedSearches: [SavedSearchRecord]
+    /// Recorded prices per printing (see PriceHistory): Scryfall-derived,
+    /// but nothing can fetch them again, so they travel.
+    var priceHistory: [PriceHistoryRecord] = []
     var settings: [String: String]
 
     struct CollectionRecord: Codable, Sendable, Equatable {
@@ -168,6 +171,12 @@ nonisolated struct AppBackup: Codable, Sendable {
         var createdDate: Date
         var lastUsedDate: Date
         var sortOrder: Int
+    }
+
+    struct PriceHistoryRecord: Codable, Sendable, Equatable {
+        var scryfallID: String
+        /// The packed samples (see PriceSeries).
+        var samples: Data
     }
 }
 
@@ -292,6 +301,7 @@ nonisolated extension AppBackup {
         case audit = "history.json"
         case branchNames = "history-branches.json"
         case savedSearches = "saved-searches.json"
+        case priceHistory = "price-history.json"
         case settings = "settings.json"
     }
 
@@ -326,6 +336,7 @@ nonisolated extension AppBackup {
         zip.add(File.audit.rawValue, try e.encode(audit))
         zip.add(File.branchNames.rawValue, try e.encode(branchNames))
         zip.add(File.savedSearches.rawValue, try e.encode(savedSearches))
+        zip.add(File.priceHistory.rawValue, try e.encode(priceHistory))
         zip.add(File.settings.rawValue, try e.encode(settings))
         zip.add(Self.csvName, Data(Self.manaBoxCSV(entries).utf8))
         return zip.finish()
@@ -363,6 +374,7 @@ nonisolated extension AppBackup {
             audit: try table(.audit, [AuditRecordValue].self, empty: []),
             branchNames: try table(.branchNames, [BranchNameRecord].self, empty: []),
             savedSearches: try table(.savedSearches, [SavedSearchRecord].self, empty: []),
+            priceHistory: try table(.priceHistory, [PriceHistoryRecord].self, empty: []),
             settings: try table(.settings, [String: String].self, empty: [:])
         )
     }

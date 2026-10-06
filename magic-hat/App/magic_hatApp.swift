@@ -33,6 +33,7 @@ struct magic_hatApp: App {
             DeckFolder.self,
             DeckVersion.self,
             DeckBranch.self,
+            PriceHistory.self,
         ])
         // Tests run in memory, except when a test wants the real thing:
         // `UITEST_DISK_STORE=1` uses a fresh SQLite file in tmp, so disk

@@ -45,6 +45,16 @@ final class CardScreensTour: XCTestCase {
         XCTAssertTrue(app.buttons["viewer-close"].waitForExistence(timeout: 10))
         sleep(3)
         shot("d01-viewer")
+        // The price line opens the price history: a chart once days have
+        // been recorded, else the sheet says the record starts here.
+        app.buttons["viewer-price"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["price-history-chart"].waitForExistence(timeout: 5)
+                      || app.staticTexts["Price History Starts Here"].waitForExistence(timeout: 5), "the price sheet")
+        shot("d01b-price-history")
+        app.segmentedControls["price-history-range"].buttons["All"].tap()
+        shot("d01c-price-history-all")
+        app.buttons["price-history-done"].tap()
+        XCTAssertTrue(app.buttons["viewer-details"].waitForExistence(timeout: 5))
         app.buttons["viewer-details"].tap()
         sleep(4)
         shot("d02-detail-top")

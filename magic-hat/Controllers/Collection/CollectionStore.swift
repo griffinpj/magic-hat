@@ -622,6 +622,13 @@ actor CollectionStore: ModelActor {
         }
     }
 
+    /// A printing's recorded prices (see PriceHistory); empty when none
+    /// has been recorded yet.
+    func priceHistory(scryfallID: String) throws -> PriceSeries {
+        let rows = try modelContext.fetch(FetchDescriptor<PriceHistory>(predicate: #Predicate { $0.scryfallID == scryfallID }))
+        return rows.first?.series ?? PriceSeries()
+    }
+
     /// Names of all collections and lists, sorted; with `kind`, only those.
     func collectionNames(kind: CollectionKind? = nil) throws -> [String] {
         let all = try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)]))
