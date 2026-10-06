@@ -1039,8 +1039,14 @@ list cached a week, a deck a month under `Caches/Precons`; nothing
 fetched under `-uitest-seed`, the page says it needs a connection).
 `PreconKind` folds MTGJSON's fifty-odd `type` strings into Commander,
 Challenger & Starter, Jumpstart, Theme & Intro and Everything (Secret
-Lair Drops left out of all but Everything); `PreconBrowserView` groups by
-year like the Sets page and the tab's field filters by name, code or
+Lair Drops left out of all but Everything); `PreconBrowserView` is tiles,
+two across under pinned year headers — the deck tiles' shape — each
+with a cover: the lead card's (commander, else first card) Scryfall
+art crop by its documented path (`cards.scryfall.io/art_crop/front/
+<c0>/<c1>/<id>.jpg`, no catalog lookup) and the colours, derived from
+the deck file when the tile appears (`PreconController.cover`, cached a
+year per deck; nothing fetched on a metered path with images off — the
+tile keeps its set symbol). The tab's field filters by name, code or
 type. A row pushes `DeckRoute.precon(fileName)` → `PreconDeckView`: the
 deck screen's shape (Cards / Stats / Details, the search field filtering
 the list, the viewer from a row) over a snapshot built in memory by

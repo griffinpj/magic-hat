@@ -83,9 +83,44 @@ final class PreconController {
         summaries.first { $0.fileName == fileName }
     }
 
+    // MARK: Covers
+
+    /// Covers read so far, for the tiles' first frame.
+    private(set) var covers: [String: PreconCover] = [:]
+    private var coverTasks: [String: Task<PreconCover?, Never>] = [:]
+    private static let coverTTL: TimeInterval = 365 * 24 * 3600
+
+    /// The tile's picture and identity for a deck: its commander's art
+    /// (the first card's for a deck without one) and the colours. Derived
+    /// from the deck file — the list carries no images — and kept a year
+    /// per deck, so the file is read once, not once per launch. On a
+    /// metered path with images off, nothing is fetched: the tile keeps
+    /// its set symbol.
+    func cover(for fileName: String) async -> PreconCover? {
+        if let cover = covers[fileName] { return cover }
+        if let task = coverTasks[fileName] { return await task.value }
+        let task = Task<PreconCover?, Never> { [weak self] in
+            let key = "cover-v2-\(fileName)"
+            if let cached = await Self.cache.value(PreconCover.self, key: key, ttl: Self.coverTTL) { return cached }
+            guard let self else { return nil }
+            if NetworkMonitor.shared.isMetered, !AppSettings.imagesOnCellular { return nil }
+            guard let deck = try? await self.deck(fileName: fileName) else { return nil }
+            let cover = PreconCover(deck: deck)
+            await Self.cache.store(cover, key: key)
+            return cover
+        }
+        coverTasks[fileName] = task
+        let cover = await task.value
+        coverTasks[fileName] = nil
+        if let cover { covers[fileName] = cover }
+        return cover
+    }
+
     /// One deck, cached a month.
     func deck(fileName: String) async throws -> MTGJSONDeck {
-        let key = "deck-\(fileName)"
+        // v2: the decoded shape gained fields (colour identity); a file
+        // cached under the old key would decode without them.
+        let key = "deck-v2-\(fileName)"
         if let cached = await Self.cache.value(MTGJSONDeck.self, key: key, ttl: Self.deckTTL) { return cached }
         guard allowsNetwork else { throw PreconError.offline }
         let deck = try await Self.fetchDeck(fileName: fileName)
@@ -152,4 +187,43 @@ nonisolated struct PreconSection: Identifiable, Hashable, Sendable {
     let year: String
     let decks: [MTGJSONDeckSummary]
     var id: String { year }
+}
+
+/// What a precon tile shows before the deck is opened: the lead card's
+/// art and the deck's colours.
+nonisolated struct PreconCover: Codable, Hashable, Sendable {
+    /// The lead card's Scryfall id — the commander, else the first card.
+    var leadScryfallID: String?
+    var leadName: String
+    /// WUBRG letters, the commander's identity or the union of the list's.
+    var identity: [String]
+
+    init(leadScryfallID: String?, leadName: String, identity: [String]) {
+        self.leadScryfallID = leadScryfallID
+        self.leadName = leadName
+        self.identity = identity
+    }
+
+    init(deck: MTGJSONDeck) {
+        let lead = deck.commander?.first ?? deck.mainBoard.first
+        leadScryfallID = lead?.scryfallID
+        leadName = lead?.name ?? deck.name
+        let letters: Set<String>
+        if let commanders = deck.commander, !commanders.isEmpty {
+            letters = Set(commanders.flatMap { $0.colorIdentity ?? [] })
+        } else {
+            letters = Set(deck.mainBoard.flatMap { $0.colorIdentity ?? [] })
+        }
+        identity = ["W", "U", "B", "R", "G"].filter { letters.contains($0) }
+    }
+
+    /// Scryfall's art crop, by its documented path: the id's first two
+    /// characters as directories. No catalog lookup needed.
+    var artURL: String? {
+        guard let id = leadScryfallID, id.count > 2 else { return nil }
+        let chars = Array(id)
+        return "https://cards.scryfall.io/art_crop/front/\(chars[0])/\(chars[1])/\(id).jpg"
+    }
+
+    var colors: [ManaColor] { identity.compactMap { ManaColor(rawValue: $0) } }
 }

@@ -49,24 +49,37 @@ struct PreconBrowserView: View {
         .task(id: "\(controller.summaries.count)|\(kindRaw)|\(filter)") { await regroup() }
     }
 
+    /// Tiles, two across, under pinned year headers — the Decks tab's
+    /// own look, with each deck's lead card as its cover.
     private var list: some View {
-        List {
-            Section {
-                kindPicker
-            }
-            ForEach(sections) { section in
-                Section(section.year) {
-                    ForEach(section.decks) { deck in
-                        Button { open(.precon(deck.fileName)) } label: {
-                            PreconRow(deck: deck)
+        ScrollView {
+            VStack(spacing: 12) {
+            kindPicker
+                .padding(.horizontal, 2)
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)],
+                      spacing: 12, pinnedViews: [.sectionHeaders]) {
+                ForEach(sections) { section in
+                    Section {
+                        ForEach(section.decks) { deck in
+                            Button { open(.precon(deck.fileName)) } label: {
+                                PreconTile(deck: deck)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("precon-row-\(deck.fileName)")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("precon-row-\(deck.fileName)")
+                    } header: {
+                        Text(section.year)
+                            .font(.title3.weight(.semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
+                            .background(Color(.systemGroupedBackground))
                     }
                 }
             }
+            }
+            .padding(16)
         }
-        .listStyle(.insetGrouped)
+        .background(Color(.systemGroupedBackground))
         .refreshable { await controller.load(force: true) }
     }
 
@@ -105,28 +118,61 @@ struct PreconBrowserView: View {
     }
 }
 
-private struct PreconRow: View {
+/// A precon as a tile: its lead card's art under the name, the product
+/// line and year, and its colours — the shape of the user's own deck
+/// tiles, so the two pages read as one. The cover is read when the tile
+/// appears (`PreconController.cover`); until then, and for a deck with
+/// no art to show, the set's symbol on a tinted field.
+private struct PreconTile: View {
     let deck: MTGJSONDeckSummary
 
+    @State private var controller = PreconController.shared
+    @State private var cover: PreconCover?
+
     var body: some View {
-        HStack(spacing: 12) {
-            SetSymbolView(setCode: deck.code, size: 26, tint: .primary)
-                .frame(width: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(deck.name)
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                Text([deck.code.uppercased(), deck.type, deck.releaseDate.flatMap(SetBrowsing.releaseDate)]
-                    .compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+        ZStack(alignment: .bottomLeading) {
+            if let art = cover?.artURL {
+                CardArtImage(urlString: art)
+            } else {
+                Rectangle()
+                    .fill(Color(.tertiarySystemFill))
+                    .overlay {
+                        SetSymbolView(setCode: deck.code, size: 44, tint: .secondary)
+                            .offset(y: -18)
+                    }
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            LinearGradient(colors: [.black.opacity(0.0), .black.opacity(0.78)], startPoint: .center, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(deck.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                HStack(spacing: 6) {
+                    Text([deck.code.uppercased(), deck.releaseDate.map { String($0.prefix(4)) }].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let cover {
+                        HStack(spacing: 2) {
+                            ForEach(cover.colors, id: \.self) { color in
+                                ManaSymbolView(symbol: ManaSymbol(color.rawValue), size: 13)
+                            }
+                        }
+                    }
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(10)
         }
-        .contentShape(Rectangle())
+        .frame(height: 150)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .task(id: deck.fileName) {
+            cover = controller.covers[deck.fileName]
+            if cover == nil { cover = await controller.cover(for: deck.fileName) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(deck.name), \(deck.type ?? "deck"), \(deck.code.uppercased())")
     }
 }

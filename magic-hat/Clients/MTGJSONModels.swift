@@ -145,6 +145,8 @@ nonisolated struct MTGJSONDeckCard: Codable, Sendable {
     let number: String?
     let setCode: String?
     var isFoil: Bool? = nil
+    /// WUBRG letters.
+    var colorIdentity: [String]? = nil
     let identifiers: MTGJSONIdentifiers
 
     var scryfallID: String? { identifiers.scryfallId }
