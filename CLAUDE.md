@@ -1017,6 +1017,35 @@ copies (a shopping list), which boards; then Share Text, Share File
 Language and tokens are not offered: the list holds English names and no
 token rows. `DeckExportOptions` + `DeckListParser.export(_:options:)`.
 
+## Preconstructed decks
+
+The Decks tab's root leads with **My Decks | Precons** (`DecksMode`; a
+subfolder is decks only). Precons are MTGJSON's — the one source with
+deck data: `DeckList.json` (~3,100 products) and `decks/<fileName>.json`
+(every card in full, ~570KB) through `PreconController` (a singleton;
+list cached a week, a deck a month under `Caches/Precons`; nothing
+fetched under `-uitest-seed`, the page says it needs a connection).
+`PreconKind` folds MTGJSON's fifty-odd `type` strings into Commander,
+Challenger & Starter, Jumpstart, Theme & Intro and Everything (Secret
+Lair Drops left out of all but Everything); `PreconBrowserView` groups by
+year like the Sets page and the tab's field filters by name, code or
+type. A row pushes `DeckRoute.precon(fileName)` → `PreconDeckView`: the
+deck screen's shape (Cards / Stats / Details, the search field filtering
+the list, the viewer from a row) over a snapshot built in memory by
+`DeckStore.preconSnapshot` — cards resolved through the catalog by
+Scryfall id (the ones it lacks fetched once from Scryfall), owned copies
+counted as available, nothing built, `isLocked` so the list draws ×n and
+nothing offers to add a card (no "+", swaps, Try Cards or Recommended).
+`DeckStore.assemble` is the identity/sections/stats step both a stored
+deck and a precon share. Details is its own page (product, set, date,
+value, "In your collection n of m", missing, the source link). One
+action, **Import as a Deck**, in a bottom `safeAreaBar`: a new Deck with
+the list's rows through `DeckEditController.importLines` (Commander
+products → `.commander`, else casual), which replaces the precon on the
+stack so Back lands on the Precons list.
+`RealCollectionTests.testPreconsOpenReadOnlyAndImport` (network),
+`FeatureFlowTests.testPreconsNeedAConnectionOffline`.
+
 ## Deck versions
 
 A deck list has its own history, separate from History (which is the

@@ -10,6 +10,7 @@
 
 import Foundation
 import SwiftData
+import CryptoKit
 
 /// Own serial queue as executor — see CollectionStore for why.
 actor DeckStore: ModelActor {
@@ -114,10 +115,27 @@ actor DeckStore: ModelActor {
             ))
         }
 
+        var branchName: String?
+        if let branchID = deck.currentBranchID {
+            branchName = try modelContext.fetch(FetchDescriptor<DeckBranch>(predicate: #Predicate { $0.id == branchID })).first?.name
+        }
+        var snapshot = Self.assemble(id: deck.id, name: deck.name, format: deck.format, isLocked: deck.isLocked, notes: deck.notes,
+                                     branchName: branchName, createdDate: deck.createdDate, updatedDate: deck.updatedDate, items: items)
+        snapshot.tokens = try tokens(for: snapshot.playedItems.map(\.card.scryfallID), metaByID: metaByID)
+        return snapshot
+    }
+
+    /// The snapshot from its rows: identity (the commanders' when there
+    /// are any, else the mainboard's colours), the mainboard by type in
+    /// play order, and the stats. Shared by a deck in the store and a
+    /// preconstructed deck read from MTGJSON (`preconSnapshot`).
+    nonisolated static func assemble(id: UUID, name: String, format: DeckFormat, isLocked: Bool, notes: String,
+                                     branchName: String?, createdDate: Date, updatedDate: Date,
+                                     items: [DeckCardItem]) -> DeckSnapshot {
         let commanders = items.filter { $0.board == .commander }
         let main = items.filter { $0.board == .main }
         let identity: [ManaColor]
-        if deck.format.hasCommander, !commanders.isEmpty {
+        if format.hasCommander, !commanders.isEmpty {
             let set = Set(commanders.flatMap(\.card.colorIdentity))
             identity = ManaColor.allCases.filter { set.contains($0) }
         } else {
@@ -133,22 +151,87 @@ actor DeckStore: ModelActor {
                                items: group.sorted { ($0.card.name) < ($1.card.name) })
         }
         let played = commanders + main
-        let stats = DeckStats.compute(played: played, format: deck.format, identity: identity, allItems: items)
-
-        var branchName: String?
-        if let branchID = deck.currentBranchID {
-            branchName = try modelContext.fetch(FetchDescriptor<DeckBranch>(predicate: #Predicate { $0.id == branchID })).first?.name
-        }
-        var snapshot = DeckSnapshot(
-            id: deck.id, name: deck.name, format: deck.format, isLocked: deck.isLocked, notes: deck.notes, branchName: branchName,
-            createdDate: deck.createdDate, updatedDate: deck.updatedDate, identity: identity,
+        let stats = DeckStats.compute(played: played, format: format, identity: identity, allItems: items)
+        return DeckSnapshot(
+            id: id, name: name, format: format, isLocked: isLocked, notes: notes, branchName: branchName,
+            createdDate: createdDate, updatedDate: updatedDate, identity: identity,
             commanders: commanders, sections: sections,
             sideboard: items.filter { $0.board == .side }, maybeboard: items.filter { $0.board == .maybe },
             stats: stats
         )
-        snapshot.tokens = try tokens(for: played.map(\.card.scryfallID), metaByID: metaByID)
-        return snapshot
     }
+
+    // MARK: Preconstructed decks
+
+    /// A preconstructed deck (MTGJSON) as a read-only snapshot: every card
+    /// resolved through the catalog by Scryfall id — the ones the catalog
+    /// lacks are fetched once from Scryfall and kept — with the copies the
+    /// collection holds counted as available, nothing built, locked.
+    /// Rows are keyed by board and printing. Cards nothing resolves are
+    /// returned by name so the screen can say so.
+    func preconSnapshot(_ deck: MTGJSONDeck, writer: CardMetaWriter) async throws -> (snapshot: DeckSnapshot, unresolved: [String]) {
+        var lines: [(card: MTGJSONDeckCard, board: DeckBoard)] = []
+        for card in deck.commander ?? [] { lines.append((card, .commander)) }
+        for card in deck.mainBoard { lines.append((card, .main)) }
+        for card in deck.sideBoard ?? [] { lines.append((card, .side)) }
+        let ids = Array(Set(lines.compactMap(\.card.scryfallID)))
+        var metaByID = try metas(ids)
+        let missing = ids.filter { metaByID[$0] == nil }
+        if !missing.isEmpty {
+            for chunk in stride(from: 0, to: missing.count, by: 75).map({ Array(missing[$0..<min($0 + 75, missing.count)]) }) {
+                await EDHRECSynergyLoader.fetchMissing(ids: chunk, writer: writer)
+            }
+            metaByID = try metas(ids)
+        }
+        let owned = try await ownedIndex()
+        var available = owned.copiesByKey
+        var items: [DeckCardItem] = []
+        var unresolved: [String] = []
+        for (card, board) in lines {
+            guard let id = card.scryfallID, let meta = metaByID[id] else { unresolved.append(card.name); continue }
+            let key = meta.oracleID ?? meta.scryfallID
+            let have = min(card.count, available[key] ?? 0)
+            available[key, default: 0] -= have
+            var item = owned.mark(CardItem(meta: meta, owned: false), groupedPrintings: false)
+            item.id = "\(board.rawValue)-\(id)"
+            item.quantity = card.count
+            item.owned = have > 0
+            items.append(DeckCardItem(id: UUID(uuidString: card.uuid) ?? UUID(), board: board, quantity: card.count,
+                                      card: item, builtQuantity: 0, availableQuantity: have))
+        }
+        let format = DeckStore.preconFormat(deck.type)
+        let released = deck.releaseDate.flatMap { Self.releaseDate($0) } ?? Date()
+        var snapshot = Self.assemble(id: UUID.stable(from: "precon-\(deck.code)-\(deck.name)"),
+                                     name: deck.name, format: format, isLocked: true,
+                                     notes: deck.type ?? "", branchName: nil, createdDate: released, updatedDate: released, items: items)
+        snapshot.tokens = try tokens(for: snapshot.playedItems.map(\.card.scryfallID), metaByID: metaByID)
+        return (snapshot, unresolved)
+    }
+
+    private func metas(_ ids: [String]) throws -> [String: CardMeta] {
+        let metas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { ids.contains($0.scryfallID) }))
+        return Dictionary(metas.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// MTGJSON's deck type as the app's format: Commander products are
+    /// Commander; everything else (Challenger, Starter, Planeswalker,
+    /// Theme, Jumpstart…) is a 60-card casual list.
+    nonisolated static func preconFormat(_ type: String?) -> DeckFormat {
+        (type ?? "").localizedCaseInsensitiveContains("commander") ? .commander : .other
+    }
+
+    nonisolated static func releaseDate(_ string: String) -> Date? {
+        Self.dateFormatter.date(from: string)
+    }
+
+    private nonisolated static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
 
     /// The tokens the played cards make, with an image where the catalog
     /// holds the token (default_cards carries every token printing).
@@ -417,5 +500,14 @@ nonisolated extension CardItem {
         self.edhrecRank = meta.edhrecRank
         self.purchaseURIs = meta.purchaseURIs
         self.backImageURL = meta.backImageNormalURL
+    }
+}
+
+nonisolated extension UUID {
+    /// The same UUID for the same string: SHA-256's first sixteen bytes.
+    static func stable(from string: String) -> UUID {
+        let digest = Array(SHA256.hash(data: Data(string.utf8)).prefix(16))
+        return UUID(uuid: (digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+                           digest[8], digest[9], digest[10], digest[11], digest[12], digest[13], digest[14], digest[15]))
     }
 }

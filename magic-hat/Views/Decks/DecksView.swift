@@ -31,6 +31,15 @@ enum DeckRoute: Hashable {
     case folder(UUID)
     /// "Build with what you have": commanders scored by the collection.
     case commanderFinder
+    /// A preconstructed deck (MTGJSON), by its file name, read-only.
+    case precon(String)
+}
+
+/// What the Decks tab's root shows: the user's decks, or the printed ones.
+enum DecksMode: String, CaseIterable, Identifiable {
+    case decks, precons
+    var id: String { rawValue }
+    var label: String { self == .decks ? "My Decks" : "Precons" }
 }
 
 struct DecksView: View {
@@ -44,6 +53,13 @@ struct DecksView: View {
                     case .deck(let id): DeckDetailView(deckID: id)
                     case .folder(let id): DeckBrowser(folderID: id) { path.append($0) }
                     case .commanderFinder: CommanderFinderView()
+                    case .precon(let fileName):
+                        // Imported: the new deck takes the precon's place on
+                        // the stack, so Back goes to the Precons list.
+                        PreconDeckView(fileName: fileName) { id in
+                            if path.last == .precon(fileName) { path.removeLast() }
+                            path.append(.deck(id))
+                        }
                     }
                 }
         }
@@ -97,6 +113,8 @@ struct DeckBrowser: View {
     @State private var importSource: DeckImportSource?
     @State private var importError: String?
     @State private var search = ""
+    /// The root's My Decks | Precons picker (a subfolder shows decks only).
+    @State private var mode: DecksMode = .decks
     @State private var moving: MoveRequest?
     @State private var renaming: RenameRequest?
     @State private var renameText = ""
@@ -159,8 +177,10 @@ struct DeckBrowser: View {
         var id: String { deck?.id.uuidString ?? folder?.id.uuidString ?? "" }
     }
 
+    private var showsPrecons: Bool { folderID == nil && mode == .precons }
+
     var body: some View {
-        content
+        root
             .navigationTitle(title)
             // A subfolder is pushed: inline, as every pushed screen is.
             .navigationBarTitleDisplayMode(folderID == nil ? .automatic : .inline)
@@ -168,10 +188,15 @@ struct DeckBrowser: View {
             // drawer a pushed folder's list started under the hidden field
             // and the field slid over the first row.
             .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: folderID == nil ? "Search decks" : "Search all decks")
+                        prompt: showsPrecons ? "Search precons" : (folderID == nil ? "Search decks" : "Search all decks"))
             .toolbar {
                 if selecting {
                     selectionToolbar
+                } else if showsPrecons {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Managing Decks", systemImage: "info.circle") { showGuide = true }
+                            .accessibilityIdentifier("decks-info")
+                    }
                 } else {
                     ToolbarItem(placement: .topBarLeading) {
                         if folderID == nil {
@@ -248,6 +273,28 @@ struct DeckBrowser: View {
     }
 
     // MARK: Content
+
+    /// The root leads with My Decks | Precons; a subfolder is decks only.
+    private var root: some View {
+        VStack(spacing: 0) {
+            if folderID == nil, !selecting {
+                Picker("Show", selection: $mode) {
+                    ForEach(DecksMode.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+                .accessibilityIdentifier("decks-mode")
+            }
+            if showsPrecons {
+                PreconBrowserView(filter: query, open: open)
+            } else {
+                content
+            }
+        }
+        // The Precons list is grouped grey; the strip above it matches.
+        .background(showsPrecons ? Color(.systemGroupedBackground) : Color.clear, ignoresSafeAreaEdges: .all)
+    }
 
     @ViewBuilder private var content: some View {
         if !hasLoaded {

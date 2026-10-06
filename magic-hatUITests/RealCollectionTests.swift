@@ -189,6 +189,47 @@ final class RealCollectionTests: XCTestCase {
         }
     }
 
+    /// Precons: the list from MTGJSON, a Commander deck opened read-only
+    /// with its pages and Import bar, Details counting what the collection
+    /// holds, and Import creating the deck in its place.
+    @MainActor
+    func testPreconsOpenReadOnlyAndImport() {
+        let app = launch()
+        _ = collectionCard(app)
+        app.tabBars.buttons["Decks"].tap()
+        XCTAssertTrue(app.segmentedControls["decks-mode"].waitForExistence(timeout: 10))
+        app.segmentedControls["decks-mode"].buttons["Precons"].tap()
+        XCTAssertTrue(app.buttons["precons-kind"].waitForExistence(timeout: 30), "the deck list loads")
+        shot(app, "precons-list")
+        let row = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'precon-row-'")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        let fileName = row.identifier.replacingOccurrences(of: "precon-row-", with: "")
+        row.tap()
+        XCTAssertTrue(app.buttons["precon-import"].waitForExistence(timeout: 60), "the deck reads and offers Import")
+        XCTAssertTrue(app.segmentedControls["precon-tabs"].exists)
+        XCTAssertFalse(app.buttons["deck-add-cards"].exists, "nothing adds a card to a printed deck")
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'deck-row-'"))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10), "the list shows")
+        shot(app, "precon-cards")
+        app.segmentedControls["precon-tabs"].buttons["Details"].tap()
+        XCTAssertTrue(app.staticTexts["precon-owned"].waitForExistence(timeout: 5) || app.descendants(matching: .any)["precon-owned"].waitForExistence(timeout: 5))
+        shot(app, "precon-details")
+        app.segmentedControls["precon-tabs"].buttons["Stats"].tap()
+        shot(app, "precon-stats")
+        app.buttons["precon-import"].tap()
+        XCTAssertTrue(app.buttons["deck-add-cards"].waitForExistence(timeout: 15), "the imported deck opens, editable")
+        XCTAssertTrue(app.segmentedControls["deck-tabs"].exists)
+        shot(app, "precon-imported")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.buttons["precon-row-\(fileName)"].waitForExistence(timeout: 10), "Back lands on the Precons list")
+    }
+
+    private func shot(_ app: XCUIApplication, _ name: String) {
+        guard let dir = ProcessInfo.processInfo.environment["UITEST_SHOT_DIR"], !dir.isEmpty else { return }
+        settle(1)
+        try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+    }
+
     private func sortEveryWay(_ app: XCUIApplication, mark: Int, label: String) -> Int {
         var mark = mark
         for option in ["Set", "Rarity", "Price", "Quantity", "Recently Added", "Name"] {

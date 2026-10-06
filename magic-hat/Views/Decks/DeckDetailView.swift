@@ -388,7 +388,7 @@ struct DeckDetailView: View {
 
 /// Relays whether the search session is active (readable only inside the
 /// searchable content) to the screen, which hides Back for its duration.
-private struct SearchSessionReporter: View {
+struct SearchSessionReporter: View {
     @Binding var isActive: Bool
     @Environment(\.isSearching) private var isSearching
 

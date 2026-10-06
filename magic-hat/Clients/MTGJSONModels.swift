@@ -50,8 +50,9 @@ nonisolated struct MTGJSONCard: Decodable, Sendable {
     let purchaseUrls: [String: String]?
 }
 
-nonisolated struct MTGJSONIdentifiers: Decodable, Sendable {
+nonisolated struct MTGJSONIdentifiers: Codable, Sendable {
     let scryfallId: String?
+    var scryfallOracleId: String? = nil
     let tcgplayerProductId: String?
     let cardKingdomId: String?
     let mcmId: String?
@@ -71,7 +72,7 @@ nonisolated struct MTGJSONMeta: Decodable, Sendable {
 // MARK: - Preconstructed decks
 
 /// Entry in `/api/v5/DeckList.json` (634KB for all 3,000+ precons).
-nonisolated struct MTGJSONDeckSummary: Decodable, Sendable, Identifiable, Hashable {
+nonisolated struct MTGJSONDeckSummary: Codable, Sendable, Identifiable, Hashable {
     let code: String
     let fileName: String
     let name: String
@@ -79,6 +80,38 @@ nonisolated struct MTGJSONDeckSummary: Decodable, Sendable, Identifiable, Hashab
     let type: String?
 
     var id: String { fileName }
+}
+
+/// The kinds of preconstructed product the Decks tab offers, folding
+/// MTGJSON's `type` strings (fifty-odd of them) into a handful a player
+/// would look under. Measured against DeckList.json, 2026-10-05: 197
+/// Commander Decks, 22 Challenger, 41 Planeswalker, 570 Jumpstart,
+/// 761 Secret Lair Drops (not decks — left out of every kind but All).
+nonisolated enum PreconKind: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case commander, standard, jumpstart, classic, all
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .commander: return "Commander"
+        case .standard: return "Challenger & Starter"
+        case .jumpstart: return "Jumpstart"
+        case .classic: return "Theme & Intro"
+        case .all: return "Everything"
+        }
+    }
+
+    func matches(_ type: String?) -> Bool {
+        let t = (type ?? "").lowercased()
+        switch self {
+        case .commander: return t.contains("commander") || t.contains("brawl")
+        case .standard: return t.contains("challenger") || t.contains("starter") || t.contains("planeswalker") || t.contains("event deck") || t.contains("welcome")
+        case .jumpstart: return t.contains("jumpstart")
+        case .classic: return t.contains("theme") || t.contains("intro") || t.contains("duel") || t.contains("premium") || t.contains("world championship") || t.contains("clash") || t.contains("archenemy") || t.contains("planechase")
+        case .all: return !t.contains("secret lair")
+        }
+    }
 }
 
 nonisolated struct MTGJSONDeckListResponse: Decodable, Sendable {
@@ -91,22 +124,27 @@ nonisolated struct MTGJSONDeckResponse: Decodable, Sendable {
 
 /// One precon, ~150KB. Each card carries `identifiers.scryfallId`, so a deck
 /// maps straight onto the cards we already store.
-nonisolated struct MTGJSONDeck: Decodable, Sendable {
+nonisolated struct MTGJSONDeck: Codable, Sendable {
     let code: String
     let name: String
     let type: String?
     let releaseDate: String?
+    /// Where the list was taken from (a Wizards article, the wiki).
+    var source: String? = nil
     let commander: [MTGJSONDeckCard]?
     let mainBoard: [MTGJSONDeckCard]
     let sideBoard: [MTGJSONDeckCard]?
+
+    var copies: Int { ((commander ?? []) + mainBoard).reduce(0) { $0 + $1.count } }
 }
 
-nonisolated struct MTGJSONDeckCard: Decodable, Sendable {
+nonisolated struct MTGJSONDeckCard: Codable, Sendable {
     let name: String
     let count: Int
     let uuid: String
     let number: String?
     let setCode: String?
+    var isFoil: Bool? = nil
     let identifiers: MTGJSONIdentifiers
 
     var scryfallID: String? { identifiers.scryfallId }

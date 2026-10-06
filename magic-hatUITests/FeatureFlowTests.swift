@@ -132,6 +132,21 @@ final class FeatureFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["deck-tile-Filed Deck"].firstMatch.waitForExistence(timeout: 5))
     }
 
+    /// Offline (the seed): the Precons page says it needs a connection
+    /// rather than showing nothing, and the mode picker returns to decks.
+    @MainActor
+    func testPreconsNeedAConnectionOffline() {
+        let app = launch()
+        app.tabBars.buttons["Decks"].tap()
+        let mode = app.segmentedControls["decks-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 10))
+        mode.buttons["Precons"].tap()
+        XCTAssertTrue(app.buttons["precons-retry"].waitForExistence(timeout: 10), "offline: the page says so")
+        XCTAssertFalse(app.buttons["decks-add"].exists, "the add menu is for the user's decks")
+        mode.buttons["My Decks"].tap()
+        XCTAssertTrue(app.buttons["decks-add"].waitForExistence(timeout: 5))
+    }
+
     @MainActor
     func testSetsPageAndScanWithoutCamera() {
         let app = launch()
