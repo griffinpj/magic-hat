@@ -155,7 +155,14 @@ struct PlaytestHand: View {
     @State private var touch: Touch?
     @State private var touchBegan = Date.distantPast
     @State private var wandered = false
-    @State private var finger: CGPoint = .zero
+    /// Where the carried card is. A class, so writing it at touch rate
+    /// re-renders the carried card alone (`CarriedCard` reads it), not
+    /// the whole fan: two ForEach over the hand per finger move, before.
+    @State private var finger = FingerPosition()
+
+    @Observable @MainActor final class FingerPosition {
+        var location: CGPoint = .zero
+    }
     @State private var holdTask: Task<Void, Never>?
     @State private var lifted = 0
     @State private var scrubbed = 0
@@ -243,14 +250,28 @@ struct PlaytestHand: View {
 
     /// The card under the finger, a little above it so it isn't covered.
     private func carried(_ card: PlaytestCard) -> some View {
-        PlaytestCardView(card: card, width: cardWidth)
-            .scaleEffect(reduceMotion ? 1 : armed != nil ? 0.9 : 1.08)
-            .shadow(color: .black.opacity(0.4), radius: armed != nil ? 6 : 14, y: 6)
-            .position(x: finger.x, y: finger.y - cardHeight / 2 - 10)
+        CarriedCard(card: card, width: cardWidth, lift: cardHeight / 2 + 10, armed: armed != nil,
+                    reduceMotion: reduceMotion, finger: finger)
             .zIndex(1001)
-            .animation(reduceMotion ? nil : .snappy(duration: 0.15), value: armed != nil)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+
+    private struct CarriedCard: View {
+        let card: PlaytestCard
+        let width: CGFloat
+        let lift: CGFloat
+        let armed: Bool
+        let reduceMotion: Bool
+        let finger: FingerPosition
+
+        var body: some View {
+            PlaytestCardView(card: card, width: width)
+                .scaleEffect(reduceMotion ? 1 : armed ? 0.9 : 1.08)
+                .shadow(color: .black.opacity(0.4), radius: armed ? 6 : 14, y: 6)
+                .position(x: finger.location.x, y: finger.location.y - lift)
+                .animation(reduceMotion ? nil : .snappy(duration: 0.15), value: armed)
+        }
     }
 
     /// An invisible element over the strip of the card that shows.
@@ -328,7 +349,7 @@ struct PlaytestHand: View {
                 // Only a carried card follows the finger: written on every
                 // move of a press or a look too, it re-rendered the hand at
                 // touch rate for nothing.
-                if case .dragging = touch, finger != value.location { finger = value.location }
+                if case .dragging = touch, finger.location != value.location { finger.location = value.location }
             }
             .onEnded { _ in
                 holdTask?.cancel()

@@ -318,15 +318,30 @@ final class DeckAnalysisController {
 
     /// Reads the deck with `signals` off the main actor and publishes.
     private func publish(snapshot: DeckSnapshot, signals: DeckAnalysisSignals, generation gen: Int) async {
+        // A card's reading depends on the card, the identity and the tag
+        // lists; under the same key the ones already read are kept, so a
+        // stepper tap reads the one card that changed, not the hundred.
+        let tagsKey = signals.tags.keys.sorted().map { "\($0):\(signals.tags[$0]!.count)" }.joined(separator: ",")
+        let key = "\(snapshot.identity.map(\.rawValue).joined())|\(tagsKey)"
+        let known = key == deckReadingsKey ? deckReadings : [:]
         let (result, readings) = await Task.detached(priority: .userInitiated) { () -> (DeckAnalysis, [String: CardReading]) in
-            let readings = DeckAnalysis.readings(for: snapshot.playedItems, identity: snapshot.identity, tags: signals.tags)
+            let missing = snapshot.playedItems.filter { known[$0.card.id] == nil }
+            var readings = DeckAnalysis.readings(for: missing, identity: snapshot.identity, tags: signals.tags)
+            for item in snapshot.playedItems { if let r = known[item.card.id] { readings[item.card.id] = r } }
             return (DeckAnalysis.compute(snapshot: snapshot, signals: signals, readings: readings), readings)
         }.value
         guard gen == generation else { return }
+        deckReadingsKey = key
+        deckReadings = readings
         self.signals = signals
         self.readings = readings
         self.analysis = result
     }
+
+    /// The deck's own readings by card id, for `deckReadingsKey`
+    /// (identity + tag lists); the candidates' are `candidateReadings`.
+    private var deckReadings: [String: CardReading] = [:]
+    private var deckReadingsKey = ""
 
     // MARK: Planning
 

@@ -241,8 +241,12 @@ struct ImportWizardView: View {
         .task(id: previewKey) { await refreshPreview() }
     }
 
+    /// A brand-new collection merges nothing, so its name only matters
+    /// once it collides with an existing one: typing it used to re-run the
+    /// dry run (a mergeKey per row) on every letter.
     private var previewKey: String {
-        "\(resolvedCollectionName ?? "")|\(destination == .new ? "add" : (mode == .add ? "add" : "replace"))|\(selected.sorted().joined(separator: ","))"
+        let target = destination == .new ? (newNameCollides ? resolvedCollectionName ?? "" : "") : (resolvedCollectionName ?? "")
+        return "\(target)|\(destination == .new ? "add" : (mode == .add ? "add" : "replace"))|\(selected.sorted().joined(separator: ","))"
     }
 
     private var previewSection: some View {

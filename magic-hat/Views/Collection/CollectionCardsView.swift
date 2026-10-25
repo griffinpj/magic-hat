@@ -185,7 +185,7 @@ struct CollectionCardsView: View {
         .onChange(of: query) { _, _ in applyFilter() }
         // Initial load, and again after any write (import/delete).
         // Deck list edits too: each tile wears how many decks name its card.
-        .task(id: "\(collectionName)|\(tracker.revision)|\(DeckChangeTracker.shared.revision)|\(reloadToken)") {
+        .task(id: "\(collectionName)|\(tracker.revision)|\(DeckChangeTracker.shared.revision)|\(FlipTracker.shared.revision)|\(reloadToken)") {
             await load(thenSync: true)
         }
         .onChange(of: order) { _, _ in applySort() }
@@ -351,7 +351,12 @@ struct CollectionCardsView: View {
         // The run belongs to the controller: leaving this screen doesn't
         // cut a price refresh short. Awaiting its end here only serves the
         // re-sort below.
-        hydrator.sync(pending: snapshot.pendingIDs, stale: snapshot.stalePriceIDs, context: modelContext)
+        // Nothing to sync and nothing running: the snapshot on screen is
+        // final. Awaiting a nil task and refetching anyway assigned the
+        // same items under a new stamp — a second filter pass, grid
+        // body and index build per tracker bump.
+        let queued = hydrator.sync(pending: snapshot.pendingIDs, stale: snapshot.stalePriceIDs, context: modelContext)
+        guard queued || hydrator.syncTask != nil else { return }
         await hydrator.syncTask?.value
         guard !Task.isCancelled else { return }
         // Sync finished: now a full re-sort is welcome (prices/rarity landed).

@@ -11,7 +11,7 @@
 import SwiftUI
 import SwiftData
 
-struct DeckDetailsView: View {
+struct DeckDetailsView: View, Equatable {
     let snapshot: DeckSnapshot
     let onBuild: () -> Void
     let onDisassemble: () -> Void
@@ -19,6 +19,10 @@ struct DeckDetailsView: View {
     let onVersions: () -> Void
     let onPlaytest: () -> Void
     let onDelete: () -> Void
+
+    /// Equal by the snapshot (see DeckStatsView): the closures are the
+    /// deck screen's and never change what this page draws.
+    static func == (lhs: DeckDetailsView, rhs: DeckDetailsView) -> Bool { lhs.snapshot == rhs.snapshot }
 
     @Environment(\.modelContext) private var modelContext
     @State private var name: String

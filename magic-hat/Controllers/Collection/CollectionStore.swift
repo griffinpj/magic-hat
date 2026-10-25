@@ -70,9 +70,23 @@ actor CollectionStore: ModelActor {
         let stale: Bool
     }
 
-    private func cached(_ key: String, _ stamp: StoreStamp?) -> CollectionSnapshot? {
-        guard let stamp, let entry = snapshots[key], entry.stamp == stamp else { return nil }
-        return entry.snapshot
+    private func cached(_ key: String, _ stamp: StoreStamp?) throws -> CollectionSnapshot? {
+        guard let stamp, let entry = snapshots[key] else { return nil }
+        if entry.stamp == stamp { return entry.snapshot }
+        // The sorted items are still the items when only the decks or a
+        // face moved: every kept snapshot is rewritten to the new stamp
+        // in one pass (a stepper tap used to re-sort All Collection's
+        // 3,900 items per order on the next read).
+        guard entry.stamp.sharesRows(with: stamp) else { return nil }
+        let counts = try deckCounts()
+        let labels = try deckLabels()
+        for (k, v) in snapshots where v.stamp.sharesRows(with: stamp) && v.stamp != stamp {
+            var items = v.snapshot.items
+            for i in items.indices { Self.relayer(&items[i], counts: counts, labels: labels) }
+            snapshots[k] = (stamp, CollectionSnapshot(items: items, pendingIDs: v.snapshot.pendingIDs,
+                                                      stalePriceIDs: v.snapshot.stalePriceIDs))
+        }
+        return snapshots[key]?.snapshot
     }
 
     // One store per container so repeated reads share a row cache.
@@ -90,6 +104,16 @@ actor CollectionStore: ModelActor {
     /// "deck:<uuid>" -> "Deck: Name", for rows that live in a deck.
     private func deckLabels() throws -> [String: String] {
         try deckNames().mapValues { "Deck: \($0)" }
+    }
+
+    /// What a built item carries that changes without its row changing:
+    /// the deck count, a deck row's label and the remembered face.
+    private static func relayer(_ item: inout CardItem, counts: [String: Int], labels: [String: String]) {
+        item.deckCount = counts[item.oracleID ?? item.scryfallID] ?? 0
+        if Deck.isDeckCollection(item.collectionName) {
+            item.collectionDisplayName = label(for: item.collectionName, in: labels) ?? ""
+        }
+        item.showsBack = item.backImageURL != nil && FlippedFaces.contains(item.scryfallID)
     }
 
     /// The label for a row's collection: a deck's rows by the deck's
@@ -119,24 +143,18 @@ actor CollectionStore: ModelActor {
     private func allRows(stamp: StoreStamp?) throws -> [Row] {
         if let stamp, let cache = rowsCache {
             if cache.stamp == stamp { return cache.rows }
-            if cache.stamp.change == stamp.change, cache.stamp.hydration == stamp.hydration {
-                // Only the deck lists moved (a stepper tap, a rename, a
-                // folder): the rows are the same rows. Rewrite what the
-                // decks contribute — the deck count and the "Deck: Name"
-                // label — over the cached items instead of fetching every
-                // entry and faulting every CardMeta again (0.25–0.41s on
-                // the real export, per tap, with every deck read and the
-                // add sheet queued behind it).
+            if cache.stamp.sharesRows(with: stamp) {
+                // Only the deck lists or a flipped face moved (a stepper
+                // tap, a rename, a folder, a flip): the rows are the same
+                // rows. Rewrite what those contribute — the deck count, the
+                // "Deck: Name" label, the face — over the cached items
+                // instead of fetching every entry and faulting every
+                // CardMeta again (0.25–0.41s on the real export, per tap,
+                // with every deck read and the add sheet queued behind it).
                 let counts = try deckCounts()
                 let labels = try deckLabels()
                 var rows = cache.rows
-                for i in rows.indices {
-                    let name = rows[i].item.collectionName
-                    rows[i].item.deckCount = counts[rows[i].item.oracleID ?? rows[i].item.scryfallID] ?? 0
-                    if Deck.isDeckCollection(name) {
-                        rows[i].item.collectionDisplayName = Self.label(for: name, in: labels) ?? ""
-                    }
-                }
+                for i in rows.indices { Self.relayer(&rows[i].item, counts: counts, labels: labels) }
                 rowsCache = (stamp, rows)
                 return rows
             }
@@ -248,7 +266,7 @@ actor CollectionStore: ModelActor {
                   stamp: StoreStamp? = nil) throws -> CollectionSnapshot {
         let order = CardOrder(sort, direction)
         let key = "\(collectionName)|\(order.key)"
-        if let hit = cached(key, stamp) { return hit }
+        if let hit = try cached(key, stamp) { return hit }
         let snapshot = Self.snapshot(of: try rows(in: collectionName, stamp: stamp), order: order)
         if let stamp { remember(key, stamp, snapshot) }
         return snapshot
@@ -835,9 +853,18 @@ nonisolated struct StoreStamp: Hashable, Sendable {
     let hydration: Int
     /// Deck list edits: the rows carry how many decks name each card.
     var decks: Int = 0
+    /// Flipped faces: the rows carry which face to show.
+    var flips: Int = 0
 
     @MainActor static var current: StoreStamp {
         StoreStamp(change: CollectionChangeTracker.shared.revision, hydration: CardHydrationController.shared.revision,
-                   decks: DeckChangeTracker.shared.revision)
+                   decks: DeckChangeTracker.shared.revision, flips: FlipTracker.shared.revision)
+    }
+
+    /// True when the rows built under `other` are still the rows: only
+    /// what the decks and the flipped faces contribute may differ, and
+    /// that is rewritten over cached items rather than fetched again.
+    func sharesRows(with other: StoreStamp) -> Bool {
+        change == other.change && hydration == other.hydration
     }
 }

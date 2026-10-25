@@ -389,7 +389,7 @@ private struct OwnershipObserver: View {
 
     var body: some View {
         Color.clear
-            .task(id: "\(CollectionChangeTracker.shared.revision)|\(DeckChangeTracker.shared.revision)") { await refresh() }
+            .task(id: "\(CollectionChangeTracker.shared.revision)|\(DeckChangeTracker.shared.revision)|\(FlipTracker.shared.revision)") { await refresh() }
     }
 }
 

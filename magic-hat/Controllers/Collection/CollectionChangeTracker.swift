@@ -17,3 +17,16 @@ final class CollectionChangeTracker {
     private(set) var revision = 0
     func bump() { revision &+= 1 }
 }
+
+/// A card's remembered face changed (`FlippedFaces`). Its own revision:
+/// a flip used to bump `CollectionChangeTracker`, which refetched every
+/// row, the overview, History and Search for one printing's face. The
+/// store carries it in `StoreStamp` and rewrites `showsBack` over its
+/// cached rows; the grid, the deck screen and Search key on it too.
+@MainActor
+@Observable
+final class FlipTracker {
+    static let shared = FlipTracker()
+    private(set) var revision = 0
+    func bump() { revision &+= 1 }
+}

@@ -235,7 +235,10 @@ final class SearchController {
         let grouped = appliedQuery?.groupPrintings ?? false
         var seen = Set<String>()
         results = results.compactMap { item in
-            let marked = index.mark(item, groupedPrintings: grouped)
+            var marked = index.mark(item, groupedPrintings: grouped)
+            // The remembered face, for a hit that isn't owned (an owned
+            // one comes from the store's rows with it set).
+            marked.showsBack = marked.backImageURL != nil && FlippedFaces.contains(marked.scryfallID)
             return seen.insert(marked.id).inserted ? marked : nil
         }
     }

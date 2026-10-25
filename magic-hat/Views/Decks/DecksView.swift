@@ -154,13 +154,20 @@ struct DeckBrowser: View {
         isSearching ? [] : tree.children(of: folderID)
     }
 
-    private var shownDecks: [DeckSummary] {
+    /// The decks on this level (or the flat search), sorted: worked out
+    /// when the decks, the search or the sort change, not on every read —
+    /// the body read it four or five times a pass, a locale-aware sort
+    /// each time.
+    @State private var shownDecks: [DeckSummary] = []
+
+    private func refreshShownDecks() {
         if isSearching {
-            return sort.sorted(decks.filter {
+            shownDecks = sort.sorted(decks.filter {
                 $0.name.localizedCaseInsensitiveContains(query) || $0.format.label.localizedCaseInsensitiveContains(query)
             })
+        } else {
+            shownDecks = sort.sorted(decks.filter { $0.folderID == folderID })
         }
-        return sort.sorted(decks.filter { $0.folderID == folderID })
     }
 
     struct MoveRequest: Identifiable {
@@ -286,6 +293,8 @@ struct DeckBrowser: View {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
             .task(id: "\(deckTracker.revision)|\(collectionTracker.revision)") { await load() }
+            .onChange(of: "\(query)|\(sortRaw)", initial: true) { _, _ in refreshShownDecks() }
+            .onChange(of: decks) { _, _ in refreshShownDecks() }
     }
 
     // MARK: Content

@@ -11,13 +11,21 @@
 import SwiftUI
 import Charts
 
-struct DeckStatsView: View {
+struct DeckStatsView: View, Equatable {
     let snapshot: DeckSnapshot
     /// The deck's analysis, read off-main; nil in previews and tests that
     /// only want the shape.
     var analysis: DeckAnalysisController? = nil
     /// Opens the add sheet on its Recommended scope.
     var onAddRecommended: (() -> Void)? = nil
+
+    /// Equal by the snapshot and the controller (observed, so its own
+    /// changes still redraw): the page used to rebuild every chart on
+    /// each keystroke in the deck's search field, since its closure input
+    /// never compared equal. A hundred items compare in microseconds.
+    static func == (lhs: DeckStatsView, rhs: DeckStatsView) -> Bool {
+        lhs.snapshot == rhs.snapshot && lhs.analysis === rhs.analysis
+    }
 
     @Environment(\.modelContext) private var modelContext
     @State private var includeGeneric = false

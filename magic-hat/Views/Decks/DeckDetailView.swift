@@ -189,7 +189,7 @@ struct DeckDetailView: View {
         .alert("Something Went Wrong", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(error ?? "") }
-        .task(id: "\(deckID)|\(deckTracker.revision)|\(collectionTracker.revision)|\(hydrationReloads)") { await load() }
+        .task(id: "\(deckID)|\(deckTracker.revision)|\(collectionTracker.revision)|\(FlipTracker.shared.revision)|\(hydrationReloads)") { await load() }
     }
 
     /// The pages, the bars and the selection; `body` adds the sheets.
@@ -251,6 +251,7 @@ struct DeckDetailView: View {
                                   selection: selection)
                         .tag(Tab.cards)
                     DeckStatsView(snapshot: snapshot, analysis: analysis, onAddRecommended: { openAdd(.recommended) })
+                        .equatable()
                         .tag(Tab.stats)
                     DeckDetailsView(snapshot: snapshot, onBuild: { showBuild = true },
                                     onDisassemble: { confirmDisassemble = true },
@@ -258,6 +259,7 @@ struct DeckDetailView: View {
                                     onVersions: { pushed = .versions },
                                     onPlaytest: { showPlaytest = true },
                                     onDelete: { confirmDelete = true })
+                        .equatable()
                         .tag(Tab.details)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))

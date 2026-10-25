@@ -376,7 +376,7 @@ struct CardViewerView: View {
                 flipped[item.id] = back
             }
             FlippedFaces.set(item.scryfallID, showsBack: back)
-            CollectionChangeTracker.shared.bump()
+            FlipTracker.shared.bump()
         } label: {
             Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
                 .font(.system(size: 17, weight: .semibold))

@@ -106,13 +106,17 @@ final class CardHydrationController {
     /// the grid and the app-level refresh both ask on every open.
     /// `pending` is fetched in the order given — the grid passes its
     /// snapshot's, so the first screen fills first.
-    func sync(pending: [String], stale: [String], context: ModelContext) {
-        guard syncTask == nil, !isSyncing else { return }
-        guard !pending.isEmpty || !stale.isEmpty else { return }
+    /// Returns whether a run was started; false when one is already
+    /// going (`syncTask`) or there is nothing to do.
+    @discardableResult
+    func sync(pending: [String], stale: [String], context: ModelContext) -> Bool {
+        guard syncTask == nil, !isSyncing else { return false }
+        guard !pending.isEmpty || !stale.isEmpty else { return false }
         _ = enqueue {
             await self.hydrate(pending: pending, context: context)
             _ = await self.runPrices(stale: stale, context: context, force: false)
         }
+        return true
     }
 
     /// Same as `hydrateAll`, but the caller already knows which ids are

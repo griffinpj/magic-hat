@@ -79,7 +79,25 @@ actor DeckStore: ModelActor {
         try modelContext.fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == id })).first
     }
 
+    /// One snapshot per deck per stamp. Everything a snapshot reads moves
+    /// a tracker the stamp carries — list edits, builds, versions and
+    /// notes bump the deck tracker; collection rows the collection
+    /// tracker; CardMeta the hydration revision — so under one stamp the
+    /// snapshot is the same snapshot, and the deck screen, the add sheet,
+    /// Swaps, Try Cards and every tile of the tab used to build it again,
+    /// serially, on this queue.
+    private var snapshotCache: (stamp: StoreStamp, byDeck: [UUID: DeckSnapshot])?
+
     private func snapshot(of deck: Deck, owned: OwnedIndex) throws -> DeckSnapshot {
+        guard let stamp = owned.stamp else { return try buildSnapshot(of: deck, owned: owned) }
+        if snapshotCache?.stamp != stamp { snapshotCache = (stamp, [:]) }
+        if let hit = snapshotCache?.byDeck[deck.id] { return hit }
+        let built = try buildSnapshot(of: deck, owned: owned)
+        snapshotCache?.byDeck[deck.id] = built
+        return built
+    }
+
+    private func buildSnapshot(of deck: Deck, owned: OwnedIndex) throws -> DeckSnapshot {
         let cards = deck.cards.sorted { a, b in
             if a.board != b.board { return boardOrder(a.board) < boardOrder(b.board) }
             return a.name < b.name

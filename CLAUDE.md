@@ -292,7 +292,19 @@ screen. Instead:
   `deckCount` and "Deck: Name", but when only that part moved (a stepper
   tap, a rename, a folder) `allRows` rewrites those two fields over the
   cached items from the small DeckCard and Deck fetches, instead of
-  fetching every entry and faulting every CardMeta again per tap.
+  fetching every entry and faulting every CardMeta again per tap
+  (`StoreStamp.sharesRows(with:)`, `relayer`). The kept snapshots are
+  rewritten the same way in one pass (`cached`), so no sort re-runs
+  either. A flipped face is the third such field: `FlipTracker` (its own
+  revision, in the stamp as `flips`) replaces the collection tracker bump
+  a flip used to make — which refetched every row, the overview, History
+  and Search for one printing's face; the grid, the deck screen and
+  Search's ownership observer key on it, and `SearchController
+  .updateOwned` re-reads `FlippedFaces` for hits that aren't owned.
+  **`DeckStore` keeps one snapshot per deck per stamp** (`snapshotCache`):
+  everything a snapshot reads moves a tracker the stamp carries, and the
+  deck screen, the add sheet, Swaps, Try Cards and every tile of the tab
+  used to build the same snapshot again, serially, on its queue.
 - The tab shows the **last overview** (`LastOverview`: a few KB in
   UserDefaults, per store, never for seeded UI-test stores) in its first
   frame — read synchronously as the view's initial state, not through an
@@ -431,6 +443,10 @@ hydration batch, per sort and per push into the collection (HangDetector:
   snapshot's non-pending ids on load, so a hydrated collection's
   viewport top-ups never reach the writer (each row of tiles used to
   start a Task and an `IN` fetch to learn nothing was needed).
+  `CardHydrationController.sync` says whether it started a run; the
+  grid re-sorts after a sync only when one ran or was running (it used
+  to await a nil task and assign the same items under a new stamp on
+  every tracker bump).
 - The selection bar takes the screen's `CardItemList` (a deck passes ids
   and a closure); it was a `[CardItem]` ViewModifier input, the whole
   collection compared on every update of the screen.
@@ -1031,7 +1047,11 @@ but take a 44pt square each (`HitArea`); a row stepped to zero hides at
 once. The filtered, sorted sections are one `Layout` worked out off the
 main actor per filter, sort and snapshot (`Layout.make`), never in the
 body — it used to run the query and re-sort every section per keystroke
-and per stepper tap. "Set as Commander" on a mainboard card is a swap:
+and per stepper tap. `DeckStatsView` and `DeckDetailsView` are
+`Equatable` by their snapshot (a hundred items, microseconds) and applied
+`.equatable()`: their closure inputs never compared equal, so each
+keystroke in the deck's search field rebuilt every chart. "Set as
+Commander" on a mainboard card is a swap:
 the old commander goes to the mainboard (`DeckEditController
 .makeCommander`). The Decks tab draws the last overview in its first
 frame (`LastDeckOverview`, like `LastOverview`; never for seeded runs). When the deck breaks a rule of its
@@ -1348,7 +1368,9 @@ needs asking) — letting go there plays it, anywhere else puts it back.
 A two-faced card plays the first face that needs no say-so
 (`PlaytestState.dragPlay`: a modal land back when the land drop is free),
 only ever a back that stays on the battlefield, and the drop zone names
-it. The finger's position is written only while a card is carried.
+it. The finger's position is written only while a card is carried, into
+a small observable (`FingerPosition`) that only the carried card reads,
+so a move re-renders that card, not the fan.
 Which card is under the finger comes from the layout (`index(at:)`),
 not from hit-testing rotated, overlapping views; each card is also an
 invisible accessibility element over the strip of it that shows (what
@@ -1408,7 +1430,9 @@ as "What Will Happen", recomputed on the store
 change; a brand-new collection merges nothing. The generic sheet shows
 "Already in this collection: n" by name (`entryNames`). `UITEST_WIZARD_FILE`
 opens the wizard on a file in a seeded run, since a test can't drive the
-document picker. `ImportPreviewTests`, `SettingsImportTour`. Replace asks
+document picker. The dry run's key leaves a new collection's name out
+until it collides with an existing one: a new collection merges nothing,
+and typing its name re-ran the dry run per letter. `ImportPreviewTests`, `SettingsImportTour`. Replace asks
 first with an alert; the wizard can't be swiped away mid-import; a
 parsed file (`ParsedManaBox`, a class compared by identity) is the
 sheet's item, so its rows go when it closes — they were a `@State`
@@ -1588,7 +1612,9 @@ oracle text, no model) and kept pure so it runs off-main and under test:
   sources, over the colours the deck casts). The controller caches the
   collection's candidates per collection revision and their readings
   across replans, so a signal landing re-plans without re-reading a
-  thousand cards; `DeckPlan.id` lets views key rebuilds on one UUID.
+  thousand cards; `DeckPlan.id` lets views key rebuilds on one UUID. The
+  deck's own readings are cached too (`deckReadings`, by card id under
+  identity + tag lists), so a list change reads the cards that changed.
   Measured by `DeckPlanTimingTests` on the real export (3,100 spare
   cards, debug build, simulator): the spare-card fetch 1.0s, the readings
   0.8s, the plan 0.3s — about two seconds behind the loader the first
@@ -2530,7 +2556,9 @@ decks' covers, or list rows), then decks; icons or list and a sort
 (`decks.layout`, `decks.sort`); drag and drop (`DeckDragItem` payload
 strings) or Move (`DeckMoveSheet` over `DeckFolderPicker`, the sheet a
 precon import asks with too); search is flat across folders and says
-where each result lives.
+where each result lives. The shown decks are a `@State` worked out when
+the decks, the search or the sort change (`refreshShownDecks`), not a
+computed property the body read four or five times a pass.
 
 `DeckSiteClient` turns a link into parser text: Archidekt's deck API,
 Moxfield's v3 API (refused for apps behind its bot check — the error says
