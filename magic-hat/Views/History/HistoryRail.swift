@@ -2,15 +2,12 @@
 //  HistoryRail.swift
 //  magic-hat
 //
-//  The gutter of the History list: a line through the rows of a branch
-//  with a dot per action — the shape a source-control client draws in
-//  its leftmost column, and nothing more. Solid where the actions are
-//  applied, dashed ahead of the head (what Redo would take), a ring on
-//  the head, hollow dots for anything undone; another branch draws in
-//  secondary and runs off the bottom of its card toward the action it
-//  forks from, which its header names. Drawn per row with a Canvas
-//  sized to the whole cell (row insets are zero vertically), so the line
-//  is continuous.
+//  The line in History's gutter: a stroke through each row and a dot per
+//  action — filled where applied, hollow where undone, a ring on the head
+//  (what Undo takes next), dashed ahead of the head (what Redo would take).
+//  A Canvas per row, drawn with zero vertical insets so it reads as one
+//  continuous rail across a day's card. On a branch's page the same rail
+//  draws in secondary, since nothing on it is applied.
 //
 
 import SwiftUI
@@ -19,8 +16,6 @@ import UIKit
 nonisolated enum RailStroke: Hashable, Sendable { case solid, dashed }
 nonisolated enum RailDot: Hashable, Sendable {
     case applied, undone, head
-    /// The foot of a branch's card: where it joins the action it splits from.
-    case junction
     /// The foot of a cut list: older actions carry on, not drawn.
     case more
 }
@@ -31,8 +26,9 @@ nonisolated struct RailMark: Hashable, Sendable {
     /// Toward the older row below; nil at the bottom of the history.
     var below: RailStroke?
     var dot: RailDot
-    /// A branch leaves here: a short curve peels off the dot toward the
-    /// cards below, where that branch is listed.
+    /// A branch leaves here: a short curve peels off the dot. History's
+    /// feed says it with a tag instead; the deck versions rail still
+    /// draws it beside a version another branch forks from.
     var stub = false
 }
 
@@ -57,7 +53,7 @@ struct HistoryRail: View {
                                style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: dash))
             }
             let gap: CGFloat = mark.dot == .more ? 5 : 0
-            if let above = mark.above { stroke(above, from: 0, to: y - radius - gap - (mark.dot == .junction ? 0.5 : 2)) }
+            if let above = mark.above { stroke(above, from: 0, to: y - radius - gap - 2) }
             if let below = mark.below { stroke(below, from: y + radius + gap + 2, to: size.height) }
 
             if mark.stub {
@@ -86,10 +82,6 @@ struct HistoryRail: View {
                     let dot = CGRect(x: x - 1.25, y: y + offset - 1.25, width: 2.5, height: 2.5)
                     context.fill(Path(ellipseIn: dot), with: .color(color.opacity(0.7)))
                 }
-            case .junction:
-                let small = dotRect.insetBy(dx: 1.5, dy: 1.5)
-                context.fill(Path(ellipseIn: small), with: .color(Color(uiColor: .secondarySystemGroupedBackground)))
-                context.stroke(Path(ellipseIn: small), with: .color(color), lineWidth: 1.5)
             }
         }
         .accessibilityHidden(true)

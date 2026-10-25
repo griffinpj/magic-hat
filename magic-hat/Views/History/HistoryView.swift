@@ -9,31 +9,25 @@
 //  Removed Cards"), with ⌘Z / ⇧⌘Z on a keyboard. Any number of steps in
 //  either direction.
 //
-//  The timeline is a tree (see HistoryTimeline) and the list shows it as
-//  branches, git's idea without git's chrome: the current line first —
-//  what is applied, and above it, dimmed, what Redo would take — then a
-//  section per other branch, named by the user or for the action it
-//  forks from, with a Switch button (checkout) and Rename in its context
-//  menu. A rail in the gutter (HistoryRail) draws each branch as a line
-//  with a dot per action, so a fork reads at a glance without a graph
-//  mode; a lane graph over a mostly linear history is noise, and no
-//  toggle means one list to keep right. At a fork the Redo button opens
-//  a menu of the branches on tap (Mail's reply arrow: one control,
-//  several outcomes, a menu on tap) — no hidden gesture, no sheet. Any row pushes
-//  its detail: the cards it changed, and the one button that undoes,
-//  redoes or switches to it.
+//  One chronological list: the current line — what is applied, and above
+//  it, dimmed, what Redo would take — by day, "Today", "Yesterday",
+//  "Monday", "September 28", each day its own card (Mail's and Photos'
+//  landmarks in a long stream), with a rail in the gutter (HistoryRail)
+//  that says which rows stand and where the head is. The timeline is a
+//  tree (see HistoryTimeline), but the tree is not drawn here: the row a
+//  branch leaves from wears one tag naming it, and the tag opens the
+//  branch's own page (HistoryBranchView) — its actions, what it splits
+//  from, Switch as the one prominent button. The feed used to interleave
+//  every branch as a card of its own between the day cards, each with a
+//  header, a Switch, a menu and a junction row, and a fork was drawn three
+//  times over; the timeline read as cut into pieces.
 //
-//  A long history reads the way Mail and Photos read a long stream: the
-//  current line by day — "Today", "Yesterday", "Monday", "September 28" —
-//  each day its own card, rows giving only the time; each other branch
-//  drawn right after the action it splits from, the day's card carrying
-//  on below it; and older history loading as the foot of the list comes
-//  into view (the
-//  window, HistoryWindow, laid out as a HistoryFeed: forty actions of the
-//  current line at a time, each other branch's newest eight with Show
-//  All, no branch whose fork isn't drawn). Nothing sits below the end of
-//  the line but the row that loads more, so nothing is ever out of reach
-//  behind it. Search finds an action by any card it touched (an import's
+//  At a fork the Redo button opens a menu of the branches on tap (Mail's
+//  reply arrow: one control, several outcomes) — no hidden gesture, no
+//  sheet. Any row pushes its detail: the cards it changed, and the one
+//  button that undoes, redoes or switches to it. Older history loads as
+//  the foot of the list comes into view (HistoryWindow: forty actions at
+//  a time). Search finds an action by any card it touched (an import's
 //  thousands, not only the names a row shows), a collection or a deck.
 //
 //  No @Query: the ledger is a large table, and a query over it re-ran on
@@ -48,14 +42,14 @@ import SwiftData
 struct HistoryView: View {
     @Environment(\.modelContext) private var modelContext
     private var tracker: CollectionChangeTracker { .shared }
-    private var deckTracker: DeckChangeTracker { .shared }
     private var undo: UndoController { .shared(for: modelContext.container) }
-    @State private var renaming: HistoryLine?
-    @State private var renameText = ""
+    /// Typed, so a branch's page can be taken out from under the detail
+    /// pushed over it once the branch is switched to (`prune`): a view
+    /// can't dismiss itself from the middle of a stack.
+    @State private var path: [HistoryRoute] = []
     @State private var showGuide = false
-    /// How much of the current line is drawn, and which branches in full.
+    /// How much of the current line is drawn.
     @State private var shownLimit = HistoryLog.pageSize
-    @State private var expandedBranches: Set<UUID> = []
     @State private var query = ""
     /// What the search found, worked out in the debounced task below —
     /// the ledger's answer plus every action's title and detail matched
@@ -63,7 +57,7 @@ struct HistoryView: View {
     @State private var found = HistorySearchResults()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if !undo.isLoaded {
                     ProgressView()
@@ -81,6 +75,9 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("History")
+            // "3 applied · 2 to redo", led by the line's name when it has
+            // one: what the Timeline header used to say, without a header.
+            .navigationSubtitle(undo.isLoaded && !undo.log.actions.isEmpty ? subtitle : "")
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic),
                         prompt: "Cards, collections, decks")
             .task(id: "\(query)|\(undo.revision)") {
@@ -97,7 +94,13 @@ struct HistoryView: View {
                 guard !Task.isCancelled else { return }
                 found = results
             }
-            .navigationDestination(for: UUID.self) { HistoryDetailView(actionID: $0) }
+            .navigationDestination(for: HistoryRoute.self) { route in
+                switch route {
+                case .detail(let id): HistoryDetailView(actionID: id)
+                case .branch(let id): HistoryBranchView(lineID: id, onOpenBranch: open)
+                }
+            }
+            .onChange(of: undo.revision) { _, _ in prune() }
             .toolbar { toolbar }
             .sheet(isPresented: $showGuide) { HistoryGuideView() }
             // The ledger's tracker alone: deck list edits write no records,
@@ -127,33 +130,49 @@ struct HistoryView: View {
         }
     }
 
+    /// "Side quest · 3 applied · 2 to redo".
+    private var subtitle: String {
+        let applied = undo.log.timeline.applied.count
+        var parts: [String] = []
+        if let line = undo.log.currentLine, let name = undo.log.customName(of: line) { parts.append(name) }
+        parts.append(applied == 1 ? "1 applied" : "\(applied.formatted()) applied")
+        if let line = undo.log.currentLine {
+            let ahead = line.actions.count - applied
+            if ahead > 0 { parts.append(ahead == 1 ? "1 to redo" : "\(ahead) to redo") }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func open(_ line: HistoryLine) {
+        path.append(.branch(line.id))
+    }
+
+    /// A branch page whose branch is now the timeline (switched to here,
+    /// from a row's detail, or from Redo's menu) has nothing to show:
+    /// taken off the stack, whatever sits above it stays.
+    private func prune() {
+        let lines = undo.log.lines
+        path.removeAll { route in
+            guard case .branch(let id) = route else { return false }
+            return !lines.contains { $0.id == id && !$0.isCurrent }
+        }
+    }
+
     // MARK: List
 
     private var list: some View {
-        let feed = undo.log.feed(limit: shownLimit, expanded: expandedBranches)
-        return ScrollViewReader { proxy in
-            List {
-                ForEach(feed.blocks) { block in
-                    switch block {
-                    case .day(let day):
-                        daySection(day, feed: feed, proxy: proxy)
-                    case .branch(let section):
-                        lineSection(section, proxy: proxy, shown: feed.shownLines)
-                    case .more:
-                        if let line = feed.line {
-                            Section {
-                                earlierRow(line: line, hidden: feed.hidden, hiddenBranches: feed.hiddenBranches)
-                            }
-                        }
-                    }
+        let feed = undo.log.feed(limit: shownLimit)
+        return List {
+            ForEach(feed.blocks) { block in
+                switch block {
+                case .day(let day):
+                    daySection(day, feed: feed)
+                case .roots(let lines):
+                    rootsSection(lines)
+                case .more:
+                    Section { earlierRow(hidden: feed.hidden) }
                 }
             }
-            // A new list when the branches change (a fork, a switch): a row
-            // that changes section is then drawn fresh in its new place,
-            // never animated across from a cell left behind in the old one.
-            // The log's lines, not the window's: loading earlier days
-            // bringing a branch into view must not throw the list to the top.
-            .id(undo.log.lines.map(\.id))
         }
         .listStyle(.insetGrouped)
         // Keyed on the read, not the log: comparing every action of a long
@@ -163,69 +182,77 @@ struct HistoryView: View {
             if undo.isBusy { busyPill }
         }
         .animation(.default, value: undo.isBusy)
-        .alert("Rename Branch", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { line in
-            TextField("Name", text: $renameText)
-            Button("Save") {
-                let name = renameText
-                Task { await undo.rename(line, to: name) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Leave it empty to use the default name.")
-        }
     }
 
-    /// A run of one day of the current line: its rows on the rail (which
-    /// runs on across the cards), under the day's header unless it carries
-    /// on after a branch's card, the newest under the line's own header.
-    @ViewBuilder private func daySection(_ day: HistoryFeed.Day, feed: HistoryFeed, proxy: ScrollViewProxy) -> some View {
-        if let line = feed.line {
-            Section {
-                ForEach(day.rows, id: \.self) { id in
-                    if let action = undo.log.action(id), let index = feed.rowIndex[id] {
-                        let branches = undo.log.branches(from: id).filter { feed.shownLines.contains($0.id) }
-                        actionRow(action, line: line, mark: mark(for: line, rows: feed.currentRows, index: index, stub: !branches.isEmpty),
-                                  branches: branches, showsDate: false, proxy: proxy)
-                    }
-                }
-            } header: {
-                if day.isNewest || day.showsHeader {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if day.isNewest {
-                            lineHeader(line)
-                                .id("line-\(line.id.uuidString)")
-                        }
-                        if day.showsHeader {
-                            Text(HistoryDayTitle.title(for: day.start))
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .textCase(nil)
-                                .accessibilityAddTraits(.isHeader)
-                                .accessibilityIdentifier("history-day")
-                        }
-                    }
+    /// One day of the current line: its rows on the rail, under the day's
+    /// header.
+    private func daySection(_ day: HistoryFeed.Day, feed: HistoryFeed) -> some View {
+        Section {
+            ForEach(day.rows, id: \.self) { id in
+                if let action = undo.log.action(id), let index = feed.rowIndex[id] {
+                    actionRow(action, mark: mark(rows: feed.currentRows, index: index, hidden: feed.hidden),
+                              branches: undo.log.branches(from: id))
                 }
             }
+        } header: {
+            Text(HistoryDayTitle.title(for: day.start))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("history-day")
         }
     }
 
     /// A row of the list: the action on its rail, pushing its detail.
-    private func actionRow(_ action: HistoryAction, line: HistoryLine, mark: RailMark, branches: [HistoryLine],
-                           showsDate: Bool, proxy: ScrollViewProxy) -> some View {
+    private func actionRow(_ action: HistoryAction, mark: RailMark, branches: [HistoryLine]) -> some View {
         let id = action.actionID
-        return NavigationLink(value: id) {
-            HistoryRow(action: action, mark: mark, emphasized: line.isCurrent, branches: branches.map { undo.log.title(of: $0) },
-                       blocked: undo.log.blocked[id], showsDate: showsDate) { branchIndex in
-                // Tags only for branches on screen: a tag that scrolls to
-                // nothing is worse than none.
-                withAnimation { proxy.scrollTo("line-\(branches[branchIndex].id.uuidString)", anchor: .top) }
-            }
+        return NavigationLink(value: HistoryRoute.detail(id)) {
+            HistoryRow(action: action, mark: mark, emphasized: true, branches: branches.map { undo.log.title(of: $0) },
+                       blocked: undo.log.blocked[id], showsDate: false) { index in open(branches[index]) }
         }
         .id(id)
-        .contextMenu { menu(for: action) }
+        .contextMenu { HistoryActionMenu(action: action, undo: undo) }
         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
         .accessibilityIdentifier("history-row-\(id.uuidString)")
+    }
+
+    /// Branches that split from before the first action: nothing wears
+    /// their tag, so they are listed once, under the oldest day.
+    private func rootsSection(_ lines: [HistoryLine]) -> some View {
+        Section {
+            ForEach(lines) { line in
+                Button {
+                    open(line)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(undo.log.title(of: line))
+                                .font(.body.weight(.medium))
+                            Text(line.actions.count == 1 ? "1 action · splits from the start" : "\(line.actions.count) actions · splits from the start")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("history-root-branch-\(line.id.uuidString)")
+            }
+        } header: {
+            Text(lines.count == 1 ? "Branch" : "Branches")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(nil)
+        }
     }
 
     // MARK: Search
@@ -240,12 +267,12 @@ struct HistoryView: View {
                 Section(HistoryDayTitle.title(for: day.start)) {
                     ForEach(day.actions, id: \.self) { id in
                         if let action = undo.log.action(id) {
-                            NavigationLink(value: action.actionID) {
+                            NavigationLink(value: HistoryRoute.detail(action.actionID)) {
                                 let dot: RailDot = action.actionID == undo.log.timeline.head ? .head : (action.isApplied ? .applied : .undone)
                                 HistoryRow(action: action, mark: RailMark(above: nil, below: nil, dot: dot), emphasized: true,
                                            blocked: undo.log.blocked[action.actionID], showsDate: false)
                             }
-                            .contextMenu { menu(for: action) }
+                            .contextMenu { HistoryActionMenu(action: action, undo: undo) }
                             .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
                             .accessibilityIdentifier("history-result-\(action.actionID.uuidString)")
                         }
@@ -277,70 +304,19 @@ struct HistoryView: View {
         .accessibilityIdentifier("history-busy")
     }
 
-    /// One branch: its actions newest first on a rail, under a header
-    /// that names it and, for another branch, offers Switch; a row that a
-    /// branch leaves from carries a tag naming it (tap: the branch's
-    /// card), and another branch's card ends in a junction row saying
-    /// which action it splits from (tap: that row) and what Switch does.
-    @ViewBuilder private func lineSection(_ section: HistoryWindow.Section, proxy: ScrollViewProxy,
-                                          shown: Set<UUID>, hiddenBranches: Int = 0) -> some View {
-        let line = section.line
-        let rows = section.rows
-        Section {
-            ForEach(Array(rows.enumerated()), id: \.element) { index, id in
-                if let action = undo.log.action(id) {
-                    let branches = undo.log.branches(from: id).filter { shown.contains($0.id) }
-                    actionRow(action, line: line, mark: mark(for: line, rows: rows, index: index, stub: !branches.isEmpty),
-                              branches: branches, showsDate: true, proxy: proxy)
-                }
-            }
-            if section.hidden > 0 {
-                earlierRow(line: line, hidden: section.hidden, hiddenBranches: hiddenBranches)
-            }
-            if !line.isCurrent {
-                let cost = undo.log.switchCost(of: line)
-                Button {
-                    withAnimation {
-                        if let fork = line.forkFrom {
-                            proxy.scrollTo(fork, anchor: .center)
-                        } else if let start = undo.log.currentLine?.actions.first {
-                            proxy.scrollTo(start, anchor: .bottom)
-                        }
-                    }
-                } label: {
-                    HistoryJunctionRow(origin: junctionText(for: line), cost: cost)
-                }
-                .buttonStyle(.plain)
-                .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
-                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
-                .accessibilityIdentifier("history-junction-\(line.id.uuidString)")
-            }
-        } header: {
-            lineHeader(line, nested: section.nested)
-                .id("line-\(line.id.uuidString)")
-        }
-    }
-
     /// The foot of a cut list: how much older history there is, and the
-    /// button that draws more of it. On the current line it also says how
-    /// many branches split from actions not drawn yet.
-    private func earlierRow(line: HistoryLine, hidden: Int, hiddenBranches: Int) -> some View {
+    /// button that draws more of it.
+    private func earlierRow(hidden: Int) -> some View {
         Button {
-            withAnimation {
-                if line.isCurrent { shownLimit += HistoryLog.pageSize } else { expandedBranches.insert(line.id) }
-            }
+            withAnimation { shownLimit += HistoryLog.pageSize }
         } label: {
             HStack(alignment: .center, spacing: 12) {
                 Color.clear.frame(width: 20, height: 1)
-                Image(systemName: "ellipsis")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 20)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(line.isCurrent ? "Show Earlier" : "Show All \(line.actions.count) Actions")
+                    Text("Show Earlier")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.tint)
-                    Text(earlierCaption(hidden: hidden, branches: line.isCurrent ? hiddenBranches : 0))
+                    Text(hidden == 1 ? "1 earlier action" : "\(hidden.formatted()) earlier actions")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -348,7 +324,7 @@ struct HistoryView: View {
             }
             .padding(.vertical, 10)
             .background(alignment: .leading) {
-                HistoryRail(mark: RailMark(above: .solid, below: line.isCurrent ? nil : .solid, dot: .more), emphasized: line.isCurrent)
+                HistoryRail(mark: RailMark(above: .solid, below: nil, dot: .more), emphasized: true)
                     .frame(width: 20)
             }
             .contentShape(Rectangle())
@@ -356,116 +332,29 @@ struct HistoryView: View {
         .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
         .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
-        .accessibilityIdentifier(line.isCurrent ? "history-show-earlier" : "history-show-all-\(line.id.uuidString)")
-        // Scrolling to the foot of the current line draws the next page
-        // on its own; the row stays a button for a tap that gets there
-        // first. Not animated: a page arriving under a scroll should land,
-        // not slide.
+        .accessibilityIdentifier("history-show-earlier")
+        // Scrolling to the foot draws the next page on its own; the row
+        // stays a button for a tap that gets there first. Not animated: a
+        // page arriving under a scroll should land, not slide.
         .onAppear {
-            guard line.isCurrent, hidden > 0 else { return }
+            guard hidden > 0 else { return }
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { shownLimit += HistoryLog.pageSize }
         }
     }
 
-    private func earlierCaption(hidden: Int, branches: Int) -> String {
-        var parts = [hidden == 1 ? "1 earlier action" : "\(hidden.formatted()) earlier actions"]
-        if branches > 0 { parts.append(branches == 1 ? "1 branch splits from them" : "\(branches) branches split from them") }
-        return parts.joined(separator: " · ")
-    }
-
-    /// "Splits from Added Sol Ring in Timeline", or "Splits from the start".
-    private func junctionText(for line: HistoryLine) -> String {
-        guard let fork = undo.log.action(line.forkFrom) else { return "Splits from the start" }
-        if let host = undo.log.line(containing: fork.actionID) {
-            return "Splits from \(fork.title) in \(undo.log.title(of: host))"
-        }
-        return "Splits from \(fork.title)"
-    }
-
-    private func mark(for line: HistoryLine, rows: [UUID], index: Int, stub: Bool) -> RailMark {
+    private func mark(rows: [UUID], index: Int, hidden: Int) -> RailMark {
         let timeline = undo.log.timeline
         let id = rows[index]
         func stroke(newer: UUID) -> RailStroke {
-            line.isCurrent && timeline.state(of: newer) == .undone ? .dashed : .solid
+            timeline.state(of: newer) == .undone ? .dashed : .solid
         }
         let above: RailStroke? = index == 0 ? nil : stroke(newer: rows[index - 1])
-        let below: RailStroke?
-        if index < rows.count - 1 || line.actions.count > rows.count {
-            below = stroke(newer: id)               // on into the next row, or the Show Earlier row
-        } else {
-            below = line.isCurrent ? nil : .solid   // on into the junction row
-        }
+        // On into the next row, or the Show Earlier row.
+        let below: RailStroke? = index < rows.count - 1 || hidden > 0 ? stroke(newer: id) : nil
         let dot: RailDot = id == timeline.head ? .head : (timeline.state(of: id) == .applied ? .applied : .undone)
-        return RailMark(above: above, below: below, dot: dot, stub: stub)
-    }
-
-    @ViewBuilder private func lineHeader(_ line: HistoryLine, nested: Int = 0) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(undo.log.title(of: line))
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                lineCaption(line, nested: nested)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !line.isCurrent {
-                let cost = undo.log.switchCost(of: line)
-                Button("Switch") {
-                    Task { await undo.switchTo(line) }
-                }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
-                .font(.subheadline.weight(.semibold))
-                .disabled(undo.isBusy)
-                .help("Undo \(cost.back) and redo \(cost.forward)")
-                .accessibilityLabel("Switch to this branch: \(cost.back) back, \(cost.forward) forward")
-                .accessibilityIdentifier("history-switch-\(line.id.uuidString)")
-            }
-            Menu {
-                Button("Rename…", systemImage: "pencil") {
-                    renameText = undo.log.customName(of: line) ?? ""
-                    renaming = line
-                }
-                if !line.isCurrent {
-                    Button("Switch to This Branch", systemImage: "arrow.triangle.branch") {
-                        Task { await undo.switchTo(line) }
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.body)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Branch options")
-            .accessibilityIdentifier("history-line-menu-\(line.id.uuidString)")
-        }
-        .textCase(nil)
-        .padding(.bottom, 4)
-    }
-
-    /// "3 applied · 2 to redo" for the current line; "2 actions · 1 branch
-    /// · 5 minutes ago" for another — its own branches are drawn once it
-    /// is switched to.
-    private func lineCaption(_ line: HistoryLine, nested: Int = 0) -> Text {
-        if line.isCurrent {
-            let applied = undo.log.timeline.applied.count
-            let ahead = line.actions.count - applied
-            var parts: [String] = [applied == 1 ? "1 applied" : "\(applied) applied"]
-            if ahead > 0 { parts.append(ahead == 1 ? "1 to redo" : "\(ahead) to redo") }
-            return Text(parts.joined(separator: " · "))
-        }
-        var count = line.actions.count == 1 ? "1 action" : "\(line.actions.count) actions"
-        if nested > 0 { count += nested == 1 ? " · 1 branch" : " · \(nested) branches" }
-        if let latest = undo.log.latest(on: line) {
-            return Text("\(count) · \(latest, format: .relative(presentation: .named))")
-        }
-        return Text(count)
+        return RailMark(above: above, below: below, dot: dot)
     }
 
     private func branchLength(_ option: HistoryAction) -> String {
@@ -537,11 +426,17 @@ struct HistoryView: View {
             .accessibilityIdentifier("history-redo")
         }
     }
+}
 
-    /// Jumps: several steps at once, back through an applied action,
-    /// forward through an undone one below the head, or across to another
-    /// branch — undoing to the fork and redoing down the other side.
-    @ViewBuilder private func menu(for action: HistoryAction) -> some View {
+/// A row's context menu, here and on a branch's page. Jumps: several
+/// steps at once, back through an applied action, forward through an
+/// undone one below the head, or across to another branch — undoing to
+/// the fork and redoing down the other side.
+struct HistoryActionMenu: View {
+    let action: HistoryAction
+    let undo: UndoController
+
+    var body: some View {
         switch action.state {
         case .applied:
             let steps = undo.log.timeline.undoPath(through: action.actionID).count
@@ -599,10 +494,12 @@ nonisolated struct HistorySearchResults: Sendable {
     }
 }
 
-/// One action on the rail: icon, title, what and where, when; the copies
-/// at the trailing end. Dimmed when undone; on the current line an
-/// undone row is also marked, since it is what Redo would take.
-private struct HistoryRow: View {
+/// One action on the rail: title, what and where, when; the copies at the
+/// trailing end. The rail's dot is the state — filled, hollow, ringed —
+/// so the row carries no second icon for it. Dimmed when undone; on the
+/// current line an undone row is also marked, since it is what Redo
+/// would take.
+struct HistoryRow: View {
     let action: HistoryAction
     let mark: RailMark
     let emphasized: Bool
@@ -610,19 +507,14 @@ private struct HistoryRow: View {
     var branches: [String] = []
     /// Why it can't be undone or redone from here, when it can't.
     var blocked: String? = nil
-    /// Under a day's header the time alone; in a branch's card, which runs
-    /// across days, the date too.
+    /// Under a day's header the time alone; on a branch's page, which
+    /// runs across days, the date too.
     var showsDate = true
     var onBranchTap: (Int) -> Void = { _ in }
-
-    private var icon: String { action.action.systemImage }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Color.clear.frame(width: 20, height: 1)
-            Image(systemName: icon)
-                .foregroundStyle(action.isApplied ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
-                .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 3) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -631,9 +523,6 @@ private struct HistoryRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(action.timestamp, format: showsDate ? .dateTime.day().month().year().hour().minute() : .dateTime.hour().minute())
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
                 }
                 // One element for the text; the branch tags stay their own,
                 // so a tag is a button to VoiceOver and the tests, not
@@ -652,8 +541,8 @@ private struct HistoryRow: View {
                         .accessibilityIdentifier("history-blocked")
                 }
 
-                // Where a branch leaves: under the text, beside the stub
-                // peeling off the rail, one tag per branch.
+                // Where a branch leaves: one tag per branch, opening its
+                // page. The only sign of the tree in the feed.
                 if !branches.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(Array(branches.prefix(2).enumerated()), id: \.offset) { index, name in
@@ -690,6 +579,7 @@ private struct HistoryRow: View {
 
             // Its own width, always: squeezed, "+98" wrapped a digit per
             // line under a long detail line. The text truncates instead.
+            // The time sits under the count, where the eye already is.
             VStack(alignment: .trailing, spacing: 2) {
                 if action.action == .deckBuild || action.action == .deckDisassemble {
                     // Copies moved, not added or removed.
@@ -720,6 +610,9 @@ private struct HistoryRow: View {
                             .foregroundStyle(action.isApplied ? .red : .secondary)
                     }
                 }
+                Text(action.timestamp, format: showsDate ? .dateTime.day().month().hour().minute() : .dateTime.hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
                 if !action.isApplied, emphasized {
                     Text("Undone")
                         .font(.caption2.weight(.semibold))
@@ -739,40 +632,6 @@ private struct HistoryRow: View {
                 .frame(width: 20)
         }
         .opacity(action.isApplied ? 1 : 0.6)
-    }
-}
-
-/// The foot of another branch's card: the rail runs into a small dot and
-/// the text says which action the branch splits from and what Switch
-/// would do. Tapping it scrolls to that action.
-private struct HistoryJunctionRow: View {
-    let origin: String
-    let cost: (back: Int, forward: Int)
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Color.clear.frame(width: 20, height: 1)
-            Image(systemName: "arrow.triangle.branch")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(origin)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text("Switch: \(cost.back) back, \(cost.forward) forward")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            Spacer()
-        }
-        .padding(.vertical, 8)
-        .background(alignment: .leading) {
-            HistoryRail(mark: RailMark(above: .solid, below: nil, dot: .junction), emphasized: false)
-                .frame(width: 20)
-        }
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
     }
 }
 

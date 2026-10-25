@@ -200,10 +200,10 @@ struct HistoryTimelineTests {
     }
 
     /// The list as it scrolls: the current line by day, newest first, and
-    /// each branch right after the row it splits from (the day carrying on
-    /// below it) — never below the foot of the line, where loading more
-    /// would push it out of reach. The load-more row is last of all.
-    @Test func theFeedGroupsTheLineByDayAndPutsEachBranchAfterItsFork() {
+    /// nothing else — a branch is reached from the row it splits from, not
+    /// drawn between the days. The load-more row is last of all; branches
+    /// off the start are listed once the whole line is drawn.
+    @Test func theFeedGroupsTheLineByDayAndKeepsBranchesOffIt() {
         var r = Recorder()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
@@ -233,38 +233,40 @@ struct HistoryTimelineTests {
         func shape(_ feed: HistoryFeed) -> [String] {
             feed.blocks.map { block in
                 switch block {
-                case .day(let day): return (day.showsHeader ? "day " : "… ") + day.rows.map { String($0.uuidString.prefix(4)) }.joined(separator: ",")
-                case .branch(let section): return "branch " + section.rows.map { String($0.uuidString.prefix(4)) }.joined(separator: ",")
+                case .day(let day): return "day " + day.rows.map { String($0.uuidString.prefix(4)) }.joined(separator: ",")
+                case .roots(let lines): return "roots " + lines.map { String($0.id.uuidString.prefix(4)) }.joined(separator: ",")
                 case .more: return "more"
                 }
             }
         }
         func ids(_ list: [UUID]) -> String { list.map { String($0.uuidString.prefix(4)) }.joined(separator: ",") }
-        #expect(shape(feed) == ["day " + ids([e]), "day " + ids([y, x, c]), "branch " + ids([d]), "day " + ids([b, a])],
-                "the branch off c follows c; c is the last of its day, so the next card is the day before")
-        guard case .day(let newest) = feed.blocks.first else { Issue.record("a day first"); return }
-        #expect(newest.isNewest && feed.hidden == 0 && feed.hiddenBranches == 0)
+        #expect(shape(feed) == ["day " + ids([e]), "day " + ids([y, x, c]), "day " + ids([b, a])],
+                "days only; the branch off c is c's tag, not a block")
+        #expect(log.branches(from: c).map(\.id) == [d], "the row it splits from names it")
+        #expect(feed.hidden == 0)
 
-        // Cut to three rows: the fork isn't drawn, so neither is its branch,
-        // and the load-more row closes the list, under nothing.
+        // Cut to three rows: the load-more row closes the list, under nothing.
         let cut = log.feed(limit: 3, calendar: calendar)
-        #expect(cut.currentRows == [e, y, x] && cut.hidden == 3 && cut.hiddenBranches == 1)
+        #expect(cut.currentRows == [e, y, x] && cut.hidden == 3)
         #expect(shape(cut) == ["day " + ids([e]), "day " + ids([y, x]), "more"])
 
-        // A fork in the middle of a day: the day carries on under the
-        // branch's card, without its header again.
+        // A branch from before the first action has no row to hang from:
+        // listed under the oldest day once the whole line is drawn.
         var m = Recorder()
         m.clock = Date(timeIntervalSince1970: 1_790_000_000)
-        let first = m.act(), p = m.act(), q = m.act(), s = m.act()
-        m.undo(); m.undo()                                        // q, s: a branch off p
-        let t = m.act(), u = m.act()
+        let first = m.act()
+        m.undo()                                                  // first: a branch off the start
+        let t = m.act(), u = m.act(), v = m.act()
         let mt = m.timeline
         let mActions = m.steps.filter { $0.kind.isUserAction }.map {
             HistoryAction(actionID: $0.id, timestamp: $0.timestamp, added: 1, removed: 0, scopes: [], action: .manualAdd,
                           state: mt.state(of: $0.id))
         }
         let mid = HistoryLog(actions: mActions, timeline: mt).feed(calendar: calendar)
-        #expect(shape(mid) == ["day " + ids([u, t, p]), "branch " + ids([s, q]), "… " + ids([first])])
+        #expect(shape(mid) == ["day " + ids([v, u, t]), "roots " + ids([first])])
+        // Cut (the window keeps the head and one applied row under it,
+        // whatever the limit): not while earlier rows are still to come.
+        #expect(shape(HistoryLog(actions: mActions, timeline: mt).feed(limit: 1, calendar: calendar)) == ["day " + ids([v, u]), "more"])
     }
 
     @Test func dayHeadersReadLikeMail() {

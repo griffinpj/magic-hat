@@ -1737,26 +1737,35 @@ Counterspell and 1 more · Main" under it, "Built Atraxa · from Main",
 "Imported 3,846 Cards" — because at a fork two branches can both be
 "Added Cards" (`HistoryAction.title` / `detail`; the store keeps the
 three largest names, the printing count and the deck's name per
-action). **The list shows the tree as branches** — git's idea without
-git's chrome. `HistoryTimeline.lines()` decomposes it: the current line
-(the applied path, then what Redo would take, out to a leaf) and every
-other chain hanging off a placed line, nearest the head first; every
-action is on exactly one line. One section per line: the current one
-headed "Timeline · 3 applied · 2 to redo", each other headed by its name
-or what it starts with ("Removed Sol Ring and 2 more") with "n actions ·
-5 minutes ago", a **Switch** button (checkout: `jump(to: line.tip)`) and
-a "…" menu with Rename (a List header takes no context menu). Where a
-branch hangs is drawn both ways: the row it splits from wears a stub on
-the rail and a tag naming the branch (tap: scroll to its card), and the
-branch's card ends in a **junction row** — the rail runs into a small
-dot, "Splits from Added Sol Ring in Timeline", and "Switch: 2 back, 1
-forward", which is what Switch does (tap: scroll to that row). A rail in
-the gutter (`HistoryRail`, a Canvas per row, rows with zero vertical
-insets so it is continuous) draws each branch as a line with a dot per
-action — solid where applied, dashed ahead of the head, a ring on the
-head, hollow when undone, secondary for another branch. Deliberately not
-a lane graph and not a toggle: no consumer Apple app draws a commit
-graph, most histories never fork, and a second mode is a second thing
+action). **One chronological list; branches one tap away.** The tree
+(`HistoryTimeline.lines()`: the current line — the applied path, then
+what Redo would take, out to a leaf — and every other chain hanging off
+a placed line, nearest the head first; every action on exactly one
+line) is not drawn in the feed. The feed is the current line by day. The
+row a branch splits from wears **one tag** naming it (`HistoryLog
+.branches(from:)`), and the tag pushes the branch's page
+(`HistoryBranchView`, `HistoryBranchRoute` on the stack's path): its
+actions newest first on a secondary rail, "Splits from Added Sol Ring"
+as the footer, **Switch to This Branch** as the one prominent button in
+a bottom `safeAreaBar` with "2 steps back, 1 step forward" under it,
+Rename in its "…" menu; a branch off that branch wears its tag there,
+so every chain is reachable. Once switched to, the line is current and
+the page pops itself. A branch that splits from before the first action
+has no row to hang from: once the whole line is drawn it is listed
+under the oldest day (`HistoryFeed.Block.roots`). "3 applied · 2 to
+redo", led by the line's name when it has one, is the navigation
+subtitle. Before, every branch was a card of its own between the day
+cards — a header with name, caption, Switch and "…", full dates in its
+rows, a junction row at its foot — and a fork was drawn three times
+(tag, rail stub, junction) with Switch offered four ways; the timeline
+read as cut into pieces. A rail in the gutter (`HistoryRail`, a Canvas
+per row, rows with zero vertical insets so it is continuous) is the
+row's state — solid where applied, dashed ahead of the head, a ring on
+the head, hollow when undone, secondary on a branch's page — and the
+row carries no second icon for it; the time sits under the count.
+Deliberately not a lane graph and not a toggle: no consumer Apple app
+draws a commit graph, most histories never fork, and a second mode is
+a second thing
 to keep right. Names (`HistoryBranchName`, a SwiftData table: actionID →
 name) are set on the line's tip; a line's name is the one nearest its
 tip, so it stays with the work it was given to — new actions on top
@@ -1838,48 +1847,34 @@ key (`DeckBuilder` now records `deck:<uuid>`; History labels it). Deck
 over the window below): the current line's drawn rows grouped by
 calendar day, newest first, each day its own card under a header —
 "Today", "Yesterday", the weekday within the week, "September 28", then
-with the year (`HistoryDayTitle`) — rows giving the time alone; the
-line's own header (Timeline · n applied, its menu) rides on the newest
-day. The rail runs on across the day cards. **Each branch is drawn right
-after the day holding the action it splits from**, never below the line:
-the line keeps loading as its foot comes into view, and anything under
-an endlessly loading list can't be scrolled to (it used to be every
-branch card). The only thing under the oldest day is the row that loads
-more. **Search** (`.searchable`, a pull-down drawer) asks the ledger —
-`CollectionStore.historyMatches`: records whose card or collection name
-contains the text, and a live deck's key by its name, undo/redo steps
-left out — so an import is found by any of its thousands of cards, not
-only the three its row names; titles and places match too. Results are
-every matching action on any branch, by day.
+with the year (`HistoryDayTitle`) — rows giving the time alone. The
+rail runs on across the day cards. The only things under the oldest day
+are the row that loads more or, once everything is drawn, the Branches
+section for lines off the start: anything under an endlessly loading
+list can't be scrolled to. **Search** (`.searchable`, a pull-down
+drawer) asks the ledger — `CollectionStore.historyMatches`: records
+whose card or collection name contains the text, and a live deck's key
+by its name, undo/redo steps left out — so an import is found by any of
+its thousands of cards, not only the three its row names; titles and
+places match too. Results are every matching action on any branch, by
+day.
 
-**The window under it** (`HistoryLog.window`,
-`HistoryWindow`): the newest forty actions of the current line — never
-fewer than reach the head and one applied row under it — with a Show
-Earlier row (how many more, and how many branches split from them), each
-other branch's newest eight with Show All, and *no branch whose fork is
-not drawn*: a card saying "splits from" an action that isn't on screen
-points nowhere, so it comes into view with its fork. Reaching the foot
-of the current line draws the next page on its own (the row's
-`onAppear`, unanimated; it stays a button). **Only branches off the
-current line are drawn**: a branch off another branch is that branch's
-history — its host's card says "· 2 branches" (`Section.nested`) and
-they appear once the host is switched to — and a row's fork tags name
-only branches on screen. `HistoryLog.action`
-is a dictionary lookup (a scan per row made a long list quadratic), as
-are a row's place in the feed (`HistoryFeed.rowIndex`) and its state
-(`HistoryTimeline.appliedSet`); the list animates on
-`UndoController.revision`, not by comparing every action; and a search's
-title/detail matches are worked out in the debounced task, off the main
-actor (`HistorySearchResults`), and
-the List is re-identified when the log's set of lines changes (not the
-window's: Show Earlier bringing a branch into view must not throw the
-list to the top), so a row that changes section (an undone action
-becoming a branch when something new follows it) is drawn fresh rather
-than animated across.
+**The window under it** (`HistoryLog.window`, `HistoryWindow`): the
+newest forty actions of the current line — never fewer than reach the
+head and one applied row under it — with a Show Earlier row (how many
+more). Reaching the foot of the current line draws the next page on its
+own (the row's `onAppear`, unanimated; it stays a button). The window
+still works out each other branch's rows and its nesting (tested;
+`HistoryTimelineTests`), but the feed takes only its current line.
+`HistoryLog.action` is a dictionary lookup (a scan per row made a long
+list quadratic), as are a row's place in the feed (`HistoryFeed
+.rowIndex`) and its state (`HistoryTimeline.appliedSet`); the list
+animates on `UndoController.revision`, not by comparing every action;
+and a search's title/detail matches are worked out in the debounced
+task, off the main actor (`HistorySearchResults`).
 `UITEST_HISTORY_COUNT` seeds a long ledger with an old and a near branch
-for `ChangesTour`. `HistoryTimelineTests` covers the feed (days, a
-branch after its fork's day, the cut) and the day headers; `UndoRedoTests`
-the ledger search.
+for `ChangesTour`. `HistoryTimelineTests` covers the feed (days, the
+cut, the roots) and the day headers; `UndoRedoTests` the ledger search.
 
 **A row says where before it says what.** `HistoryAction.detail` leads
 with the place ("Main · Sol Ring, Counterspell and 1 more"): the line is
@@ -1926,9 +1921,11 @@ returns, the refusals), `HistoryDetailTests` (titles and detail lines,
 `historyDetail` merging printings and grouping by collection, a build
 as moves, the cap and the filter, an import named by its size),
 `HistoryFlowTests` (UI: undo a removal, redo it, undo again, add
-something — the removal is now a branch section with Switch; undo that
-and Redo's sheet lists both; take the original; rename the other from
-its header; its detail screen switches back to it, name and all).
+something — the removal is now a branch, listed under the line with its
+own page and Switch; undo that and Redo's menu lists both; take the
+original; rename the other from its page's menu; its detail screen
+switches back to it, name and all; a fork off a row wears the tag that
+opens the branch's page).
 `HistoryTimelineTests` also covers `lines()` (a branch off a branch, a
 fork at the start) and `UndoRedoTests` a name through switches, new
 actions, renaming and clearing.

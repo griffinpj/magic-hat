@@ -52,16 +52,20 @@ final class ChangesTour: XCTestCase {
         let earlier = app.buttons["history-show-earlier"]
         // Scrolling to the foot of the current line draws the next page on
         // its own (the row is a button too); kept scrolling, everything is
-        // drawn and the branch that split from the tenth action comes into
-        // view with its fork.
-        for _ in 0..<40 where earlier.exists || !app.staticTexts["Splits from Added Card 4 in Timeline"].exists {
+        // drawn and the row the old branch split from (the fifth action)
+        // comes into view wearing its tag.
+        let oldTag = app.buttons.matching(NSPredicate(format: "identifier == 'history-branch-tag' AND label CONTAINS 'Card 5'")).firstMatch
+        for _ in 0..<40 where earlier.exists || !oldTag.exists {
             app.swipeUp(velocity: .fast)
         }
         shot("c04-history-show-earlier")
         for _ in 0..<10 { app.swipeUp(velocity: .fast) }
         XCTAssertFalse(earlier.exists, "nothing earlier is left")
-        XCTAssertTrue(app.staticTexts["Splits from Added Card 4 in Timeline"].exists, "the old branch shows once its fork does")
+        XCTAssertTrue(oldTag.exists, "the old branch's tag shows once its fork does")
         shot("c06-history-all-with-old-branch")
+        oldTag.tap()
+        XCTAssertTrue(app.buttons["history-branch-switch"].waitForExistence(timeout: 5))
+        shot("c07-history-old-branch-page")
     }
 
     @MainActor

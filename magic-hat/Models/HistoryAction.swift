@@ -326,36 +326,32 @@ nonisolated extension HistoryLog {
 /// The History list as it scrolls: the current line's drawn rows by day,
 /// newest first, each day its own card under a "Today" / "Yesterday" /
 /// "Monday" / "September 28" header — Mail's and Photos' landmarks in a
-/// long chronological list — and each branch drawn right after the row it
-/// splits from, the day's card carrying on below it. Last, and only when
-/// there is more, the row that loads earlier history: nothing sits below
-/// it, since anything under an endlessly loading list can never be
-/// scrolled to (every branch card used to).
+/// long chronological list. Branches are not blocks of the feed: the row a
+/// branch splits from wears its tag (`HistoryLog.branches(from:)`), and
+/// the tag opens the branch's page. The ones that split from before the
+/// first action have no row to hang from, so once the whole line is drawn
+/// they are listed under it (`.roots`). Last, and only when there is more,
+/// the row that loads earlier history: nothing sits below it, since
+/// anything under an endlessly loading list can never be scrolled to.
 nonisolated struct HistoryFeed: Hashable, Sendable {
-    /// A run of one day's rows: the whole day, or the part of it between
-    /// branches.
     struct Day: Hashable, Sendable {
         /// The start of the day.
         let start: Date
         /// Newest first.
         let rows: [UUID]
-        /// The newest run drawn: it carries the line's own header.
-        let isNewest: Bool
-        /// The day's first run carries the day's header; a run carrying on
-        /// after a branch card doesn't repeat it.
-        let showsHeader: Bool
     }
 
     nonisolated enum Block: Hashable, Sendable, Identifiable {
         case day(Day)
-        case branch(HistoryWindow.Section)
+        /// Branches off the start of the history, under the oldest day.
+        case roots([HistoryLine])
         /// The row that loads earlier history.
         case more
 
         var id: String {
             switch self {
             case .day(let day): return "day-\(day.rows.first?.uuidString ?? "")"
-            case .branch(let section): return "branch-\(section.line.id.uuidString)"
+            case .roots: return "roots"
             case .more: return "more"
             }
         }
@@ -372,35 +368,20 @@ nonisolated struct HistoryFeed: Hashable, Sendable {
     let rowIndex: [UUID: Int]
     /// Older actions of the current line not drawn yet.
     let hidden: Int
-    /// Branches left out because where they split from isn't drawn yet.
-    let hiddenBranches: Int
-    let shownLines: Set<UUID>
 }
 
 nonisolated extension HistoryLog {
-    /// The window (`window(limit:expanded:)`) laid out by day.
-    func feed(limit: Int = HistoryLog.pageSize, expanded: Set<UUID> = [], calendar: Calendar = .current) -> HistoryFeed {
-        let window = window(limit: limit, expanded: expanded)
+    /// The window's current line (`window(limit:)`) laid out by day.
+    func feed(limit: Int = HistoryLog.pageSize, calendar: Calendar = .current) -> HistoryFeed {
+        let window = window(limit: limit)
         let rows = window.current?.rows ?? []
         let rowIndex = Dictionary(rows.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
-        var byFork: [UUID: [HistoryWindow.Section]] = [:]
-        var fromStart: [HistoryWindow.Section] = []
-        for section in window.branches {
-            if let fork = section.line.forkFrom, rowIndex[fork] != nil {
-                byFork[fork, default: []].append(section)
-            } else {
-                fromStart.append(section)
-            }
-        }
         var blocks: [HistoryFeed.Block] = []
         var run: [UUID] = []
         var runDay: Date?
-        var dayHasHeader = false
         func close() {
             guard let day = runDay, !run.isEmpty else { return }
-            blocks.append(.day(HistoryFeed.Day(start: day, rows: run, isNewest: !blocks.contains { if case .day = $0 { true } else { false } },
-                                               showsHeader: !dayHasHeader)))
-            dayHasHeader = true
+            blocks.append(.day(HistoryFeed.Day(start: day, rows: run)))
             run = []
         }
         for id in rows {
@@ -408,19 +389,18 @@ nonisolated extension HistoryLog {
             if day != runDay {
                 close()
                 runDay = day
-                dayHasHeader = false
             }
             run.append(id)
-            if let branches = byFork[id] {
-                close()
-                blocks += branches.map(HistoryFeed.Block.branch)
-            }
         }
         close()
-        blocks += fromStart.map(HistoryFeed.Block.branch)
-        if window.current?.hidden ?? 0 > 0 { blocks.append(.more) }
-        return HistoryFeed(line: window.current?.line, blocks: blocks, currentRows: rows, rowIndex: rowIndex, hidden: window.current?.hidden ?? 0,
-                           hiddenBranches: window.hiddenBranches, shownLines: window.shownLines)
+        let hidden = window.current?.hidden ?? 0
+        if hidden > 0 {
+            blocks.append(.more)
+        } else {
+            let roots = otherLines.filter { $0.forkFrom == nil }
+            if !roots.isEmpty { blocks.append(.roots(roots)) }
+        }
+        return HistoryFeed(line: window.current?.line, blocks: blocks, currentRows: rows, rowIndex: rowIndex, hidden: hidden)
     }
 }
 

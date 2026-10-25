@@ -38,13 +38,13 @@ struct HistoryGuideView: View {
 
                 Section {
                     GuideRow(icon: "arrow.triangle.branch", title: "A new change starts a branch",
-                             text: "Undo a few steps, then change something. Nothing is thrown away: the steps you undid become a branch of their own, listed under the timeline.")
+                             text: "Undo a few steps, then change something. Nothing is thrown away: the steps you undid become a branch of their own. The step it split from wears a tag naming it; tap the tag to open the branch.")
                     GuideRow(icon: "arrow.left.arrow.right", title: "Switch",
-                             text: "Switch on a branch undoes back to where the branches split, then redoes along that branch. It says how many steps each way before you tap.")
+                             text: "Switch, on a branch's page, undoes back to where the branches split, then redoes along that branch. It says how many steps each way before you tap.")
                     GuideRow(icon: "list.bullet", title: "Redo at a fork",
                              text: "When the undone step has more than one branch after it, Redo becomes a menu: pick which branch to continue.")
                     GuideRow(icon: "pencil", title: "Name a branch",
-                             text: "Use a branch's … menu to rename it. The name stays with that work as you add to it or switch away.")
+                             text: "Use the … menu on a branch's page to rename it. The name stays with that work as you add to it or switch away.")
                 } header: {
                     Text("Branches")
                 } footer: {
@@ -58,12 +58,8 @@ struct HistoryGuideView: View {
                                text: "Applied")
                     RailKeyRow(mark: RailMark(above: .dashed, below: .dashed, dot: .undone), emphasized: true,
                                text: "Undone — Redo would bring it back")
-                    RailKeyRow(mark: RailMark(above: .solid, below: .solid, dot: .applied, stub: true), emphasized: true,
-                               text: "A branch leaves here")
                     RailKeyRow(mark: RailMark(above: .solid, below: .solid, dot: .undone), emphasized: false,
-                               text: "On another branch")
-                    RailKeyRow(mark: RailMark(above: .solid, below: nil, dot: .junction), emphasized: false,
-                               text: "Where a branch joins the one it split from")
+                               text: "On another branch — its page opens from the tag on the step it split from")
                 }
 
                 Section("What can't be undone") {

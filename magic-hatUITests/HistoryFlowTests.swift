@@ -93,12 +93,19 @@ final class HistoryFlowTests: XCTestCase {
         XCTAssertTrue(undo.waitForExistence(timeout: 5))
         XCTAssertTrue(undo.isEnabled, "the add can be undone")
         XCTAssertFalse(redo.isEnabled, "a new action after an undo leaves nothing to redo from here")
-        let switches = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-switch-'"))
-        XCTAssertTrue(switches.firstMatch.waitForExistence(timeout: 5), "the other branch is a section with Switch")
-        XCTAssertTrue(app.staticTexts["Splits from the start"].firstMatch.exists, "the junction row says where it hangs")
-        XCTAssertTrue(app.staticTexts["Added Card 0"].firstMatch.exists && app.staticTexts["Removed Card 1"].firstMatch.exists,
-                      "rows are named for their cards")
+        // The removal split from the start, so it has no row to hang from:
+        // it is listed once, under the oldest day, and opens its own page.
+        let root = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-root-branch-'")).firstMatch
+        XCTAssertTrue(root.waitForExistence(timeout: 5), "the other branch is listed under the line")
+        XCTAssertTrue(app.staticTexts["Added Card 0"].firstMatch.exists, "rows are named for their cards")
+        XCTAssertTrue(root.label.contains("Removed Card 1"), "the branch is named for what it starts with: \(root.label)")
         shot(app, "history-branches")
+        root.tap()
+        XCTAssertTrue(app.buttons["history-branch-switch"].waitForExistence(timeout: 5), "the branch's page offers Switch")
+        XCTAssertTrue(app.staticTexts["Splits from the start"].firstMatch.exists, "and says where it hangs")
+        XCTAssertTrue(app.staticTexts["Removed Card 1"].firstMatch.exists)
+        shot(app, "history-branch-page")
+        app.navigationBars.buttons.firstMatch.tap()
 
         // Back to the fork: Redo is back and asks which branch.
         undo.tap()
@@ -114,20 +121,22 @@ final class HistoryFlowTests: XCTestCase {
         app.tabBars.buttons["Collection"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForNonExistence(timeout: 10), "the original branch again: the removal stands")
 
-        // Name the other branch from its header's menu.
+        // Name the other branch (the add, now) from its page's menu. It
+        // split from the start too, so it is in the Branches section.
         app.tabBars.buttons["History"].tap()
-        XCTAssertTrue(app.staticTexts["Splits from the start"].firstMatch.waitForExistence(timeout: 5))
-        let lineMenu = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history-line-menu-'")).element(boundBy: 1)
-        XCTAssertTrue(lineMenu.waitForExistence(timeout: 5), "the other branch's header has a menu")
-        lineMenu.tap()
+        XCTAssertTrue(root.waitForExistence(timeout: 5))
+        root.tap()
+        let branchMenu = app.buttons["history-branch-menu"]
+        XCTAssertTrue(branchMenu.waitForExistence(timeout: 5), "the branch's page has a menu")
+        branchMenu.tap()
         let rename = app.buttons["Rename…"].firstMatch
-        XCTAssertTrue(rename.waitForExistence(timeout: 5), "the header's menu offers Rename")
+        XCTAssertTrue(rename.waitForExistence(timeout: 5), "the menu offers Rename")
         rename.tap()
         let field = app.textFields.firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         field.typeText("Side quest")
         app.buttons["Save"].tap()
-        XCTAssertTrue(app.staticTexts["Side quest"].firstMatch.waitForExistence(timeout: 10), "the branch carries its name")
+        XCTAssertTrue(app.navigationBars["Side quest"].waitForExistence(timeout: 10), "the branch carries its name")
         shot(app, "history-renamed")
 
         // Its row opens the detail; the one button switches to it.
@@ -144,7 +153,11 @@ final class HistoryFlowTests: XCTestCase {
         while Date() < deadline, !act.label.contains("Undo This Action") { usleep(200_000) }
         XCTAssertTrue(act.label.contains("Undo This Action"), "switched: the action stands, so the button undoes it")
         app.navigationBars.buttons.firstMatch.tap()
-        XCTAssertTrue(app.staticTexts["Side quest"].firstMatch.waitForExistence(timeout: 5), "the name came along: it heads the current line now")
+        // Switched: the branch's page has nothing to show and pops itself;
+        // the name came along and heads the feed.
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Side quest'")).firstMatch.waitForExistence(timeout: 10),
+                      "the name came along: it heads the current line now")
+        XCTAssertTrue(app.buttons["history-branch-switch"].waitForNonExistence(timeout: 5), "the branch's page popped")
         shot(app, "history-switched")
         app.tabBars.buttons["Collection"].tap()
         XCTAssertTrue(app.staticTexts["Card 1"].firstMatch.waitForExistence(timeout: 10), "the removal is undone on this branch")
@@ -163,11 +176,13 @@ final class HistoryFlowTests: XCTestCase {
         app.buttons["viewer-close"].tap()
         app.tabBars.buttons["History"].tap()
         XCTAssertTrue(app.staticTexts["Added Card 10"].firstMatch.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Side quest"].firstMatch.exists, "new work on the branch keeps its name")
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS 'Side quest'")).firstMatch.exists,
+                      "new work on the branch keeps its name")
         shot(app, "history-two-rows")
 
         // A fork off a row: undo the add, add another. The row it splits
-        // from wears the branch's tag; the branch's card says where it hangs.
+        // from wears the branch's tag; the tag opens the branch's page,
+        // which says where it hangs and what Switch would do.
         undo.tap()
         XCTAssertTrue(app.descendants(matching: .any)["history-busy"].waitForNonExistence(timeout: 10))
         app.tabBars.buttons["Collection"].tap()
@@ -183,10 +198,13 @@ final class HistoryFlowTests: XCTestCase {
         let tag = app.buttons["history-branch-tag"].firstMatch
         XCTAssertTrue(tag.waitForExistence(timeout: 5), "the fork row carries the branch's tag")
         XCTAssertTrue(tag.label.contains("Added Card 10"), "named for what the branch starts with: \(tag.label)")
-        XCTAssertTrue(app.staticTexts["Splits from Added Card 0 in Side quest"].firstMatch.exists, "the branch's junction names the fork and its line")
-        XCTAssertTrue(app.staticTexts["Switch: 1 back, 1 forward"].firstMatch.exists, "and what Switch would do")
         shot(app, "history-fork-off-row")
         tag.tap()
+        XCTAssertTrue(app.buttons["history-branch-switch"].waitForExistence(timeout: 5), "the tag opens the branch's page")
+        XCTAssertTrue(app.staticTexts["Splits from Added Card 0"].firstMatch.exists, "which names the fork")
+        XCTAssertTrue(app.staticTexts["1 step back, 1 step forward"].firstMatch.exists, "and what Switch would do")
+        shot(app, "history-branch-off-row")
+        app.navigationBars.buttons.firstMatch.tap()
 
         // Search asks the ledger: an action is found by a card it touched,
         // on any branch.
