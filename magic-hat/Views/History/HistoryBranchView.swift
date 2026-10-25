@@ -91,9 +91,11 @@ struct HistoryBranchView: View {
                         NavigationLink(value: HistoryRoute.detail(id)) {
                             HistoryRow(action: action,
                                        mark: RailMark(above: index == 0 ? nil : .solid,
-                                                      below: index == rows.count - 1 ? nil : .solid, dot: .undone),
-                                       emphasized: false, branches: branches.map { undo.log.title(of: $0) },
-                                       showsDate: true) { tapped in onOpenBranch(branches[tapped]) }
+                                                      below: index == rows.count - 1 ? nil : .solid, dot: .undone,
+                                                      stub: !branches.isEmpty),
+                                       emphasized: false, branches: branches.map { undo.log.title(of: $0) }) { tapped in
+                                onOpenBranch(branches[tapped])
+                            }
                         }
                         .contextMenu { HistoryActionMenu(action: action, undo: undo) }
                         .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))

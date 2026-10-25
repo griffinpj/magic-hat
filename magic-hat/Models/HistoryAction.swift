@@ -321,92 +321,64 @@ nonisolated extension HistoryLog {
     }
 }
 
-// MARK: - The feed: the window by day
+// MARK: - The feed
 
-/// The History list as it scrolls: the current line's drawn rows by day,
-/// newest first, each day its own card under a "Today" / "Yesterday" /
-/// "Monday" / "September 28" header — Mail's and Photos' landmarks in a
-/// long chronological list. Branches are not blocks of the feed: the row a
-/// branch splits from wears its tag (`HistoryLog.branches(from:)`), and
-/// the tag opens the branch's page. The ones that split from before the
-/// first action have no row to hang from, so once the whole line is drawn
-/// they are listed under it (`.roots`). Last, and only when there is more,
-/// the row that loads earlier history: nothing sits below it, since
-/// anything under an endlessly loading list can never be scrolled to.
+/// The History list as it scrolls: the current line's drawn rows, newest
+/// first, one continuous rail — each row carrying its own date ("Today,
+/// 7:58 PM", "Monday, 5:30 PM", "Oct 2, 5:30 PM"). Day cards were tried
+/// and dropped: they cut the rail into pieces. Branches are not rows of
+/// the feed either: the row a branch splits from wears its tag
+/// (`HistoryLog.branches(from:)`) and a stub on the rail, and the tag
+/// opens the branch's page. The ones that split from before the first
+/// action have no row to hang from, so once the whole line is drawn they
+/// are listed under it (`roots`). Older history loads at the foot.
 nonisolated struct HistoryFeed: Hashable, Sendable {
-    struct Day: Hashable, Sendable {
-        /// The start of the day.
-        let start: Date
-        /// Newest first.
-        let rows: [UUID]
-    }
-
-    nonisolated enum Block: Hashable, Sendable, Identifiable {
-        case day(Day)
-        /// Branches off the start of the history, under the oldest day.
-        case roots([HistoryLine])
-        /// The row that loads earlier history.
-        case more
-
-        var id: String {
-            switch self {
-            case .day(let day): return "day-\(day.rows.first?.uuidString ?? "")"
-            case .roots: return "roots"
-            case .more: return "more"
-            }
-        }
-    }
-
     let line: HistoryLine?
-    let blocks: [Block]
-    /// Every drawn row of the current line, newest first: where a row sits
-    /// on the rail, across the day cards.
-    let currentRows: [UUID]
-    /// Where each of `currentRows` sits: every drawn row asks for its
-    /// place on the rail, and `firstIndex(of:)` per row made a page of
-    /// rows quadratic.
+    /// Every drawn row of the current line, newest first.
+    let rows: [UUID]
+    /// Where each of `rows` sits: every drawn row asks for its place on
+    /// the rail, and `firstIndex(of:)` per row made a page of rows
+    /// quadratic.
     let rowIndex: [UUID: Int]
     /// Older actions of the current line not drawn yet.
     let hidden: Int
+    /// Branches off the start, listed once everything is drawn.
+    let roots: [HistoryLine]
 }
 
 nonisolated extension HistoryLog {
-    /// The window's current line (`window(limit:)`) laid out by day.
-    func feed(limit: Int = HistoryLog.pageSize, calendar: Calendar = .current) -> HistoryFeed {
+    /// The window's current line (`window(limit:)`) as the feed.
+    func feed(limit: Int = HistoryLog.pageSize) -> HistoryFeed {
         let window = window(limit: limit)
         let rows = window.current?.rows ?? []
         let rowIndex = Dictionary(rows.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
-        var blocks: [HistoryFeed.Block] = []
-        var run: [UUID] = []
-        var runDay: Date?
-        func close() {
-            guard let day = runDay, !run.isEmpty else { return }
-            blocks.append(.day(HistoryFeed.Day(start: day, rows: run)))
-            run = []
-        }
-        for id in rows {
-            let day = calendar.startOfDay(for: action(id)?.timestamp ?? .distantPast)
-            if day != runDay {
-                close()
-                runDay = day
-            }
-            run.append(id)
-        }
-        close()
         let hidden = window.current?.hidden ?? 0
-        if hidden > 0 {
-            blocks.append(.more)
-        } else {
-            let roots = otherLines.filter { $0.forkFrom == nil }
-            if !roots.isEmpty { blocks.append(.roots(roots)) }
-        }
-        return HistoryFeed(line: window.current?.line, blocks: blocks, currentRows: rows, rowIndex: rowIndex, hidden: hidden)
+        let roots = hidden > 0 ? [] : otherLines.filter { $0.forkFrom == nil }
+        return HistoryFeed(line: window.current?.line, rows: rows, rowIndex: rowIndex, hidden: hidden, roots: roots)
     }
 }
 
 /// A day's header: "Today", "Yesterday", the weekday within the week,
 /// then "September 28", and "September 28, 2025" from another year.
 nonisolated enum HistoryDayTitle {
+    /// A row's own date: "Today, 7:58 PM", "Yesterday, 5:33 PM",
+    /// "Monday, 5:30 PM", then "Oct 2, 5:30 PM", with the year from
+    /// another year.
+    static func rowDate(for date: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+        let style = Date.FormatStyle(calendar: calendar, timeZone: calendar.timeZone).locale(calendar.locale ?? .current)
+        let time = date.formatted(style.hour().minute())
+        if calendar.isDate(date, inSameDayAs: now) { return "Today, \(time)" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday, \(time)"
+        }
+        let today = calendar.startOfDay(for: now)
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: today).day ?? 0
+        if days >= 0, days < 7 { return "\(date.formatted(style.weekday(.wide))), \(time)" }
+        var day = style.month(.abbreviated).day()
+        if calendar.component(.year, from: date) != calendar.component(.year, from: now) { day = day.year() }
+        return "\(date.formatted(day)), \(time)"
+    }
+
     static func title(for start: Date, now: Date = .now, calendar: Calendar = .current) -> String {
         if calendar.isDate(start, inSameDayAs: now) { return "Today" }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(start, inSameDayAs: yesterday) {

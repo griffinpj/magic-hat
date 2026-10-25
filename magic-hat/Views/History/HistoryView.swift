@@ -9,11 +9,11 @@
 //  Removed Cards"), with ⌘Z / ⇧⌘Z on a keyboard. Any number of steps in
 //  either direction.
 //
-//  One chronological list: the current line — what is applied, and above
-//  it, dimmed, what Redo would take — by day, "Today", "Yesterday",
-//  "Monday", "September 28", each day its own card (Mail's and Photos'
-//  landmarks in a long stream), with a rail in the gutter (HistoryRail)
-//  that says which rows stand and where the head is. The timeline is a
+//  One continuous list: the current line — what is applied, and above
+//  it, dimmed, what Redo would take — newest first on one rail in the
+//  gutter (HistoryRail) that says which rows stand and where the head is,
+//  each row carrying its own date ("Today, 7:58 PM"; day cards cut the
+//  rail into pieces). The timeline is a
 //  tree (see HistoryTimeline), but the tree is not drawn here: the row a
 //  branch leaves from wears one tag naming it, and the tag opens the
 //  branch's own page (HistoryBranchView) — its actions, what it splits
@@ -163,16 +163,19 @@ struct HistoryView: View {
     private var list: some View {
         let feed = undo.log.feed(limit: shownLimit)
         return List {
-            ForEach(feed.blocks) { block in
-                switch block {
-                case .day(let day):
-                    daySection(day, feed: feed)
-                case .roots(let lines):
-                    rootsSection(lines)
-                case .more:
-                    Section { earlierRow(hidden: feed.hidden) }
+            // One section, one rail: every row carries its own date. Day
+            // cards cut the rail into pieces.
+            Section {
+                ForEach(feed.rows, id: \.self) { id in
+                    if let action = undo.log.action(id), let index = feed.rowIndex[id] {
+                        let branches = undo.log.branches(from: id)
+                        actionRow(action, mark: mark(rows: feed.rows, index: index, hidden: feed.hidden, stub: !branches.isEmpty),
+                                  branches: branches)
+                    }
                 }
+                if feed.hidden > 0 { earlierRow(hidden: feed.hidden) }
             }
+            if !feed.roots.isEmpty { rootsSection(feed.roots) }
         }
         .listStyle(.insetGrouped)
         // Keyed on the read, not the log: comparing every action of a long
@@ -184,32 +187,12 @@ struct HistoryView: View {
         .animation(.default, value: undo.isBusy)
     }
 
-    /// One day of the current line: its rows on the rail, under the day's
-    /// header.
-    private func daySection(_ day: HistoryFeed.Day, feed: HistoryFeed) -> some View {
-        Section {
-            ForEach(day.rows, id: \.self) { id in
-                if let action = undo.log.action(id), let index = feed.rowIndex[id] {
-                    actionRow(action, mark: mark(rows: feed.currentRows, index: index, hidden: feed.hidden),
-                              branches: undo.log.branches(from: id))
-                }
-            }
-        } header: {
-            Text(HistoryDayTitle.title(for: day.start))
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(nil)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier("history-day")
-        }
-    }
-
     /// A row of the list: the action on its rail, pushing its detail.
     private func actionRow(_ action: HistoryAction, mark: RailMark, branches: [HistoryLine]) -> some View {
         let id = action.actionID
         return NavigationLink(value: HistoryRoute.detail(id)) {
             HistoryRow(action: action, mark: mark, emphasized: true, branches: branches.map { undo.log.title(of: $0) },
-                       blocked: undo.log.blocked[id], showsDate: false) { index in open(branches[index]) }
+                       blocked: undo.log.blocked[id]) { index in open(branches[index]) }
         }
         .id(id)
         .contextMenu { HistoryActionMenu(action: action, undo: undo) }
@@ -270,7 +253,7 @@ struct HistoryView: View {
                             NavigationLink(value: HistoryRoute.detail(action.actionID)) {
                                 let dot: RailDot = action.actionID == undo.log.timeline.head ? .head : (action.isApplied ? .applied : .undone)
                                 HistoryRow(action: action, mark: RailMark(above: nil, below: nil, dot: dot), emphasized: true,
-                                           blocked: undo.log.blocked[action.actionID], showsDate: false)
+                                           blocked: undo.log.blocked[action.actionID])
                             }
                             .contextMenu { HistoryActionMenu(action: action, undo: undo) }
                             .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
@@ -344,7 +327,7 @@ struct HistoryView: View {
         }
     }
 
-    private func mark(rows: [UUID], index: Int, hidden: Int) -> RailMark {
+    private func mark(rows: [UUID], index: Int, hidden: Int, stub: Bool) -> RailMark {
         let timeline = undo.log.timeline
         let id = rows[index]
         func stroke(newer: UUID) -> RailStroke {
@@ -354,7 +337,7 @@ struct HistoryView: View {
         // On into the next row, or the Show Earlier row.
         let below: RailStroke? = index < rows.count - 1 || hidden > 0 ? stroke(newer: id) : nil
         let dot: RailDot = id == timeline.head ? .head : (timeline.state(of: id) == .applied ? .applied : .undone)
-        return RailMark(above: above, below: below, dot: dot)
+        return RailMark(above: above, below: below, dot: dot, stub: stub)
     }
 
     private func branchLength(_ option: HistoryAction) -> String {
@@ -507,9 +490,6 @@ struct HistoryRow: View {
     var branches: [String] = []
     /// Why it can't be undone or redone from here, when it can't.
     var blocked: String? = nil
-    /// Under a day's header the time alone; on a branch's page, which
-    /// runs across days, the date too.
-    var showsDate = true
     var onBranchTap: (Int) -> Void = { _ in }
 
     var body: some View {
@@ -523,6 +503,9 @@ struct HistoryRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    Text(HistoryDayTitle.rowDate(for: action.timestamp))
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
                 // One element for the text; the branch tags stay their own,
                 // so a tag is a button to VoiceOver and the tests, not
@@ -542,7 +525,7 @@ struct HistoryRow: View {
                 }
 
                 // Where a branch leaves: one tag per branch, opening its
-                // page. The only sign of the tree in the feed.
+                // page, beside the stub peeling off the rail.
                 if !branches.isEmpty {
                     HStack(spacing: 6) {
                         ForEach(Array(branches.prefix(2).enumerated()), id: \.offset) { index, name in
@@ -579,7 +562,8 @@ struct HistoryRow: View {
 
             // Its own width, always: squeezed, "+98" wrapped a digit per
             // line under a long detail line. The text truncates instead.
-            // The time sits under the count, where the eye already is.
+            // The date is the text's third line, so this column stays
+            // narrow and the tag and lock line keep their room.
             VStack(alignment: .trailing, spacing: 2) {
                 if action.action == .deckBuild || action.action == .deckDisassemble {
                     // Copies moved, not added or removed.
@@ -610,9 +594,6 @@ struct HistoryRow: View {
                             .foregroundStyle(action.isApplied ? .red : .secondary)
                     }
                 }
-                Text(action.timestamp, format: showsDate ? .dateTime.day().month().hour().minute() : .dateTime.hour().minute())
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
                 if !action.isApplied, emphasized {
                     Text("Undone")
                         .font(.caption2.weight(.semibold))

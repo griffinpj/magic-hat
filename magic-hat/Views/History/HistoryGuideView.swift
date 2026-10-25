@@ -58,8 +58,10 @@ struct HistoryGuideView: View {
                                text: "Applied")
                     RailKeyRow(mark: RailMark(above: .dashed, below: .dashed, dot: .undone), emphasized: true,
                                text: "Undone — Redo would bring it back")
+                    RailKeyRow(mark: RailMark(above: .solid, below: .solid, dot: .applied, stub: true), emphasized: true,
+                               text: "A branch leaves here — its tag opens the branch's page")
                     RailKeyRow(mark: RailMark(above: .solid, below: .solid, dot: .undone), emphasized: false,
-                               text: "On another branch — its page opens from the tag on the step it split from")
+                               text: "On another branch")
                 }
 
                 Section("What can't be undone") {

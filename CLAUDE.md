@@ -1741,9 +1741,13 @@ action). **One chronological list; branches one tap away.** The tree
 (`HistoryTimeline.lines()`: the current line — the applied path, then
 what Redo would take, out to a leaf — and every other chain hanging off
 a placed line, nearest the head first; every action on exactly one
-line) is not drawn in the feed. The feed is the current line by day. The
-row a branch splits from wears **one tag** naming it (`HistoryLog
-.branches(from:)`), and the tag pushes the branch's page
+line) is not drawn in the feed. The feed is the current line, newest
+first, one continuous rail; each row carries its own date
+(`HistoryDayTitle.rowDate`: "Today, 7:58 PM", "Monday, 5:30 PM", "Oct 2,
+5:30 PM") — day cards were tried and cut the rail into pieces. The row
+a branch splits from wears **one tag** naming it (`HistoryLog
+.branches(from:)`) and a stub on the rail, and the tag pushes the
+branch's page
 (`HistoryBranchView`, `HistoryBranchRoute` on the stack's path): its
 actions newest first on a secondary rail, "Splits from Added Sol Ring"
 as the footer, **Switch to This Branch** as the one prominent button in
@@ -1762,7 +1766,7 @@ read as cut into pieces. A rail in the gutter (`HistoryRail`, a Canvas
 per row, rows with zero vertical insets so it is continuous) is the
 row's state — solid where applied, dashed ahead of the head, a ring on
 the head, hollow when undone, secondary on a branch's page — and the
-row carries no second icon for it; the time sits under the count.
+row carries no second icon for it; the date is the row's third line.
 Deliberately not a lane graph and not a toggle: no consumer Apple app
 draws a commit graph, most histories never fork, and a second mode is
 a second thing
@@ -1843,15 +1847,12 @@ existed, which carry the display label "Deck: Name" instead of the deck's
 key (`DeckBuilder` now records `deck:<uuid>`; History labels it). Deck
 *list* edits write no ledger and are not undoable — a list is a wish.
 
-**A long history reads by day** (`HistoryLog.feed` → `HistoryFeed`, laid
-over the window below): the current line's drawn rows grouped by
-calendar day, newest first, each day its own card under a header —
-"Today", "Yesterday", the weekday within the week, "September 28", then
-with the year (`HistoryDayTitle`) — rows giving the time alone. The
-rail runs on across the day cards. The only things under the oldest day
-are the row that loads more or, once everything is drawn, the Branches
+**A long history** (`HistoryLog.feed` → `HistoryFeed`, laid over the
+window below) is the current line's drawn rows, newest first, with
+"Show Earlier" at the foot and, once everything is drawn, the Branches
 section for lines off the start: anything under an endlessly loading
-list can't be scrolled to. **Search** (`.searchable`, a pull-down
+list can't be scrolled to. `HistoryDayTitle.title` still heads search
+results by day. **Search** (`.searchable`, a pull-down
 drawer) asks the ledger — `CollectionStore.historyMatches`: records
 whose card or collection name contains the text, and a live deck's key
 by its name, undo/redo steps left out — so an import is found by any of
@@ -1873,8 +1874,9 @@ animates on `UndoController.revision`, not by comparing every action;
 and a search's title/detail matches are worked out in the debounced
 task, off the main actor (`HistorySearchResults`).
 `UITEST_HISTORY_COUNT` seeds a long ledger with an old and a near branch
-for `ChangesTour`. `HistoryTimelineTests` covers the feed (days, the
-cut, the roots) and the day headers; `UndoRedoTests` the ledger search.
+for `ChangesTour`. `HistoryTimelineTests` covers the feed (the rows, the
+cut, the roots, a row's date) and the day headers; `UndoRedoTests` the
+ledger search.
 
 **A row says where before it says what.** `HistoryAction.detail` leads
 with the place ("Main · Sol Ring, Counterspell and 1 more"): the line is

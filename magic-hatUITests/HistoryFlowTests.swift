@@ -53,7 +53,8 @@ final class HistoryFlowTests: XCTestCase {
         let undo = app.buttons["history-undo"]
         let redo = app.buttons["history-redo"]
         XCTAssertTrue(undo.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Today"].firstMatch.waitForExistence(timeout: 5), "the line reads by day")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Today, '")).firstMatch.waitForExistence(timeout: 5),
+                      "each row carries its own date")
         XCTAssertTrue(undo.isEnabled, "a removal to undo")
         XCTAssertFalse(redo.isEnabled, "nothing to redo yet")
         undo.tap()
