@@ -24,8 +24,19 @@ struct CardPriceHistoryView: View {
     @State private var range: Range = .threeMonths
     @State private var foil: Bool
     @State private var selectedDate: Date?
+    /// The range's points and change, worked out when the series, the
+    /// range or the finish changes — not per render: a finger on the chart
+    /// re-renders per move, and each render unpacked the series three times.
+    @State private var shown: Shown?
+    /// Whether the series has any foil prices; read once per load.
+    @State private var seriesHasFoil = false
 
     private let currency = AppSettings.currency
+
+    private struct Shown {
+        let points: [(date: Date, price: Double)]
+        let change: (amount: Double, percent: Double)?
+    }
 
     enum Range: String, CaseIterable, Identifiable {
         case month = "1M", threeMonths = "3M", year = "1Y", all = "All"
@@ -48,8 +59,8 @@ struct CardPriceHistoryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let series {
-                    content(series)
+                if let series, let shown {
+                    content(series, shown)
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -70,8 +81,15 @@ struct CardPriceHistoryView: View {
     // MARK: Content
 
     private var hasFoilPrices: Bool {
-        guard let series else { return item.priceFoil != nil }
-        return !series.points(foil: true, currency: currency).isEmpty && item.priceFoil != nil
+        guard series != nil else { return item.priceFoil != nil }
+        return seriesHasFoil && item.priceFoil != nil
+    }
+
+    private func recompute() {
+        guard let series else { shown = nil; return }
+        let change = range.days.map { series.change(over: $0, foil: foil, currency: currency) }
+            ?? series.change(over: 100_000, foil: foil, currency: currency)
+        shown = Shown(points: visiblePoints(series), change: change)
     }
 
     private func visiblePoints(_ series: PriceSeries) -> [(date: Date, price: Double)] {
@@ -85,11 +103,10 @@ struct CardPriceHistoryView: View {
         return inRange
     }
 
-    private func content(_ series: PriceSeries) -> some View {
-        let points = visiblePoints(series)
+    private func content(_ series: PriceSeries, _ shown: Shown) -> some View {
+        let points = shown.points
         let latest = points.last?.price ?? item.marketPrice
-        let change = range.days.map { series.change(over: $0, foil: foil, currency: currency) }
-            ?? series.change(over: 100_000, foil: foil, currency: currency)
+        let change = shown.change
         return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header(latest: latest, change: change, points: points)
@@ -112,8 +129,8 @@ struct CardPriceHistoryView: View {
             }
             .padding(16)
         }
-        .onChange(of: range) { _, _ in selectedDate = nil }
-        .onChange(of: foil) { _, _ in selectedDate = nil }
+        .onChange(of: range) { _, _ in selectedDate = nil; recompute() }
+        .onChange(of: foil) { _, _ in selectedDate = nil; recompute() }
     }
 
     /// The price in large type and the change over the range; with a
@@ -229,6 +246,8 @@ struct CardPriceHistoryView: View {
                                       usd: currency == .usd ? item.price : nil, usdFoil: currency == .usd ? item.priceFoil : nil,
                                       eur: currency == .eur ? item.price : nil, eurFoil: currency == .eur ? item.priceFoil : nil))
         }
+        seriesHasFoil = !loaded.points(foil: true, currency: currency).isEmpty
         series = loaded
+        recompute()
     }
 }

@@ -113,6 +113,17 @@ struct HistoryDetailView: View {
                 .font(.subheadline)
             }
         }
+        if action.action == .deckCreate {
+            Section {
+                Label {
+                    Text("Undo removes the deck — its list, versions and branches kept with this record — and Redo brings it back as it was. A built deck has to be taken apart first.")
+                        .foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "rectangle.stack.badge.plus").foregroundStyle(.tint)
+                }
+                .font(.subheadline)
+            }
+        }
     }
 
     private func icon(for action: HistoryAction) -> String { action.action.systemImage }

@@ -70,13 +70,7 @@ nonisolated struct PriceSeries: Hashable, Sendable {
     @discardableResult
     mutating func record(_ sample: PriceSample) -> Bool {
         guard !sample.isEmpty else { return false }
-        // Stored as Float32: hold the same precision in memory, so a
-        // series compares equal to itself read back.
-        var sample = sample
-        sample.usd = sample.usd.map { Double(Float($0)) }
-        sample.usdFoil = sample.usdFoil.map { Double(Float($0)) }
-        sample.eur = sample.eur.map { Double(Float($0)) }
-        sample.eurFoil = sample.eurFoil.map { Double(Float($0)) }
+        let sample = sample.quantized
         if let i = samples.firstIndex(where: { $0.day == sample.day }) {
             guard samples[i] != sample else { return false }
             samples[i] = sample
@@ -110,34 +104,54 @@ nonisolated struct PriceSeries: Hashable, Sendable {
 
     var packed: Data {
         var data = Data(capacity: samples.count * Self.recordSize)
-        for s in samples {
-            var day = UInt16(clamping: max(0, s.day)).littleEndian
-            withUnsafeBytes(of: &day) { data.append(contentsOf: $0) }
-            for v in [s.usd, s.usdFoil, s.eur, s.eurFoil] {
-                var f = Float(v ?? .nan).bitPattern.littleEndian
-                withUnsafeBytes(of: &f) { data.append(contentsOf: $0) }
-            }
-        }
+        for s in samples { Self.append(s, to: &data) }
         return data
     }
 
-    init(packed data: Data) {
-        var out: [PriceSample] = []
-        out.reserveCapacity(data.count / Self.recordSize)
-        var offset = 0
-        while offset + Self.recordSize <= data.count {
-            let day = Int(UInt16(littleEndian: data.subdata(in: offset..<(offset + 2)).withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }))
-            var values: [Double?] = []
-            for i in 0..<4 {
-                let start = offset + 2 + i * 4
-                let bits = UInt32(littleEndian: data.subdata(in: start..<(start + 4)).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
-                let f = Float(bitPattern: bits)
-                values.append(f.isNaN ? nil : Double(f))
-            }
-            out.append(PriceSample(day: day, usd: values[0], usdFoil: values[1], eur: values[2], eurFoil: values[3]))
-            offset += Self.recordSize
+    /// One sample's 18 bytes onto the end of a blob.
+    static func append(_ s: PriceSample, to data: inout Data) {
+        var day = UInt16(clamping: max(0, s.day)).littleEndian
+        withUnsafeBytes(of: &day) { data.append(contentsOf: $0) }
+        for v in [s.usd, s.usdFoil, s.eur, s.eurFoil] {
+            var f = Float(v ?? .nan).bitPattern.littleEndian
+            withUnsafeBytes(of: &f) { data.append(contentsOf: $0) }
         }
-        self.init(samples: out)
+    }
+
+    /// The sample at `offset` of a packed buffer.
+    static func sample(in raw: UnsafeRawBufferPointer, at offset: Int) -> PriceSample {
+        func value(_ i: Int) -> Double? {
+            let f = Float(bitPattern: UInt32(littleEndian: raw.loadUnaligned(fromByteOffset: offset + 2 + i * 4, as: UInt32.self)))
+            return f.isNaN ? nil : Double(f)
+        }
+        let day = Int(UInt16(littleEndian: raw.loadUnaligned(fromByteOffset: offset, as: UInt16.self)))
+        return PriceSample(day: day, usd: value(0), usdFoil: value(1), eur: value(2), eurFoil: value(3))
+    }
+
+    /// Read in place: five `subdata` copies a sample (a year of a card is
+    /// 1,800 allocations) were most of what decoding cost. The blob is
+    /// written oldest first, so it isn't sorted again.
+    init(packed data: Data) {
+        let count = data.count / Self.recordSize
+        var out: [PriceSample] = []
+        out.reserveCapacity(count)
+        data.withUnsafeBytes { raw in
+            for i in 0..<count { out.append(Self.sample(in: raw, at: i * Self.recordSize)) }
+        }
+        samples = out
+    }
+}
+
+nonisolated extension PriceSample {
+    /// At the precision the blob keeps (Float32), so a series compares
+    /// equal to itself read back.
+    var quantized: PriceSample {
+        var s = self
+        s.usd = usd.map { Double(Float($0)) }
+        s.usdFoil = usdFoil.map { Double(Float($0)) }
+        s.eur = eur.map { Double(Float($0)) }
+        s.eurFoil = eurFoil.map { Double(Float($0)) }
+        return s
     }
 }
 
@@ -158,6 +172,38 @@ nonisolated final class PriceHistory {
     var series: PriceSeries {
         get { PriceSeries(packed: samplesData) }
         set { samplesData = newValue.packed; lastDay = newValue.last?.day ?? -1 }
+    }
+
+    /// `PriceSeries.record` on the blob, without decoding it in the two
+    /// cases every refresh is: a new day is 18 bytes appended, today's
+    /// again is the last 18 compared and overwritten. Only a day before
+    /// the last (a clock moved back) decodes and repacks. Every refresh
+    /// batch used to decode and repack every owned series it touched.
+    @discardableResult
+    func record(_ sample: PriceSample) -> Bool {
+        guard !sample.isEmpty else { return false }
+        let sample = sample.quantized
+        let size = PriceSeries.recordSize
+        let tail = samplesData.count - size
+        if samplesData.isEmpty || (tail >= 0 && sample.day > lastDay && lastDay >= 0) {
+            var data = samplesData
+            PriceSeries.append(sample, to: &data)
+            samplesData = data
+            lastDay = sample.day
+            return true
+        }
+        if tail >= 0, sample.day == lastDay {
+            let current = samplesData.withUnsafeBytes { PriceSeries.sample(in: $0, at: tail) }
+            guard current != sample else { return false }
+            var data = samplesData.prefix(tail)
+            PriceSeries.append(sample, to: &data)
+            samplesData = data
+            return true
+        }
+        var series = series
+        guard series.record(sample) else { return false }
+        self.series = series
+        return true
     }
 }
 

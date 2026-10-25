@@ -40,6 +40,7 @@ struct CardViewerView: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.modelContext) private var modelContext
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Where a quick add goes (the long-press menu on Add). Small table.
     @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
     @Environment(\.browsingCollection) private var browsingCollection
@@ -57,10 +58,6 @@ struct CardViewerView: View {
     /// "Added Sol Ring to Main" after a quick add, briefly.
     @State private var quickAdded: String?
     @State private var quickAddCount = 0
-    /// What the pager reports as centred. Separate from `currentID`, which
-    /// is the truth until the user swipes: see `pager`.
-    @State private var visibleID: String?
-    @State private var userScrolled = false
     /// Faces flipped in this viewer, by card id, over what the items say
     /// (`CardItem.showsBack`, the remembered face). The flip is written to
     /// `FlippedFaces` and the tracker bumped, so the grid behind and the
@@ -117,6 +114,18 @@ struct CardViewerView: View {
             _ = await (printings, art)
         }
         .onChange(of: items) { old, new in reconcile(old: old, new: new) }
+        // A modal alert on the viewer, not a popover pointing at the trash
+        // (it read as a tooltip).
+        .alert(
+            "Remove \(pendingDelete?.name ?? "")?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { item in
+            Button("Remove \(item.quantity) from \(item.displayCollection)", role: .destructive) { remove(item) }
+            Button("Cancel", role: .cancel) {}
+        } message: { item in
+            Text("\(item.setName) #\(item.collectorNumber) · \(item.finish.displayName). Recorded in History.")
+        }
         // Only a deck's viewer steps copies; elsewhere the haptic never
         // fires, so its feedback machinery isn't set up on the first open.
         .modifier(DeckAddFeedback(enabled: deck != nil, trigger: deckAdds))
@@ -276,17 +285,21 @@ struct CardViewerView: View {
         return (ordered(.collection), ordered(.list))
     }
 
-    /// One copy of the printing on screen: its finish if it is an owned
-    /// row's, else normal; near mint; the default card language; the
-    /// market price as the price paid, as the Add sheet would fill it.
+    /// One copy of the printing on screen, filled as the Add sheet would
+    /// fill it: an owned row's finish and condition, else Settings › Adding's
+    /// defaults; the default card language; the market price as the price
+    /// paid.
     private func quickAdd(to name: String) {
         guard let item = currentItem else { return }
         let printing = PrintingSelection(item: item)
-        let finish = item.isEntry ? item.finish : .normal
+        let finish = item.isEntry ? item.finish : AppSettings.defaultFinish
+        let condition = item.isEntry
+            ? (CardCondition(rawValue: item.condition)?.rawValue ?? AppSettings.defaultCondition)
+            : AppSettings.defaultCondition
         do {
             try CollectionEditController.add(
                 .init(printing: printing, collectionName: name, quantity: 1, finish: finish,
-                      condition: CardCondition.nearMint.rawValue,
+                      condition: condition,
                       language: item.isEntry && !item.language.isEmpty ? item.language : AppSettings.cardLanguage,
                       purchasePrice: printing.marketPrice(for: finish)),
                 context: modelContext
@@ -304,147 +317,52 @@ struct CardViewerView: View {
         Button("Remove", systemImage: "trash") { pendingDelete = currentItem }
             .disabled(!canEditCurrent)
             .accessibilityIdentifier("viewer-remove")
-            // On the button, not the screen: iOS 26 presents this as a
-            // popover anchored to its source, so it points at the trash.
-            .confirmationDialog(
-                "Remove \(pendingDelete?.name ?? "")?",
-                isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                titleVisibility: .visible,
-                presenting: pendingDelete
-            ) { item in
-                Button("Remove \(item.quantity) from \(item.collectionName)", role: .destructive) { remove(item) }
-                Button("Cancel", role: .cancel) {}
-            } message: { item in
-                Text("\(item.setName) #\(item.collectorNumber) · \(item.finish.displayName). Recorded in History.")
-            }
     }
 
     // MARK: Pager
 
-    /// The scroll view's position binding is not `currentID` itself. The
-    /// pager is laid out while the zoom transition is still growing it out
-    /// of the tapped tile, so the card width and the offsets are moving
-    /// targets; in that window the scroll view reports whatever ends up
-    /// under the anchor — the first card, when the card asked for was the
-    /// one right after it, which already peeked in at the edge — and a
-    /// direct binding took that as the new current card. So: until the
-    /// user swipes, `currentID` is the truth and every size change re-pins
-    /// the pager to it; once the user has swiped, the pager is the truth.
+    /// `CardPager`: a UIKit paging scroll view, the one Photos uses, so the
+    /// physics are its own. It reports the card the finger let go towards
+    /// as it lets go, so the title and the panel follow the card as it
+    /// glides in; programmatic moves (a tapped neighbour, the step after a
+    /// removal) come through `currentID`. Every size change re-pins to the
+    /// current card without animation — the zoom transition is still
+    /// growing the pager when it first lays out, and a rotation changes
+    /// the card width.
     private var pager: some View {
         GeometryReader { geo in
             // Fit by both axes: 80% of the width alone is far taller than the
             // space left in landscape and on iPad, and ran into the panel.
             let cardWidth = min(geo.size.width * 0.80, geo.size.height * Self.cardAspect)
-            let sideInset = (geo.size.width - cardWidth) / 2
-
-            ScrollViewReader { proxy in
-                pagerContent(cardWidth: cardWidth, height: geo.size.height, sideInset: sideInset)
-                    .onAppear { pin(proxy) }
-                    // Every size change re-centres the current card: before
-                    // the user swipes the zoom is still growing the pager,
-                    // and after it a rotation changes the card width and the
-                    // margins, which left the card off-centre in landscape.
-                    .onChange(of: geo.size) { _, _ in pin(proxy) }
-                    .onScrollPhaseChange { _, phase in
-                        if phase == .interacting {
-                            userScrolled = true
-                            // Where the swipe started, for the paging
-                            // behaviour: one card from here, whatever the
-                            // anchor crosses on the way.
-                            dragStart = (visibleID ?? currentID).flatMap { items.index(of: $0) } ?? 0
-                        }
-                        // The card under the anchor becomes current as soon
-                        // as the finger lifts — the panel follows the card
-                        // as it glides in, not after it has stopped — but
-                        // never while the finger is still down, so a slow
-                        // drag back and forth doesn't thrash the title, the
-                        // panel and the neighbour decodes.
-                        dragging = phase == .interacting
-                        if !dragging { commitVisible() }
-                    }
-                    .onChange(of: visibleID) { _, _ in
-                        if !dragging { commitVisible() }
-                    }
-                    .onChange(of: currentID) { _, id in
-                        // Programmatic moves: a tapped neighbour, the step
-                        // after a removal.
-                        guard let id, id != visibleID else { return }
-                        withAnimation(.smooth(duration: 0.4)) { visibleID = id }
-                    }
-            }
-        }
-    }
-
-    @State private var dragging = false
-    @State private var dragStart = 0
-
-    private func commitVisible() {
-        guard userScrolled, let id = visibleID, id != currentID else { return }
-        currentID = id
-    }
-
-    private func pin(_ proxy: ScrollViewProxy) {
-        guard let currentID else { return }
-        var t = Transaction()
-        t.disablesAnimations = true
-        withTransaction(t) {
-            visibleID = currentID
-            proxy.scrollTo(currentID, anchor: .center)
-        }
-    }
-
-    private func pagerContent(cardWidth: CGFloat, height: CGFloat, sideInset: CGFloat) -> some View {
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: 14) {
-                    ForEach(items.ids, id: \.self) { id in
-                        if let item = items.item(for: id) {
-                        let isCurrent = item.id == currentID
-                        FlippableCard(item: item, showsBack: showsBack(item), isCurrent: isCurrent)
-                        .frame(width: cardWidth)
-                        // Tapping the card flips nothing: the button does,
-                        // so a tap keeps meaning Details.
-                        .overlay(alignment: .topTrailing) {
-                            if isCurrent, item.backImageURL != nil {
-                                flipButton(for: item)
-                            }
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        // Neighbours sit back a little and come forward as
-                        // they are pulled in: a transform and an opacity per
-                        // page, nothing redrawn, and the swipe reads as a
-                        // card changing hands rather than a strip sliding.
-                        .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                            content
-                                .scaleEffect(1 - 0.06 * abs(phase.value))
-                                .opacity(1 - 0.18 * abs(phase.value))
-                        }
-                        .onTapGesture {
-                            if isCurrent {
-                                if showsDetail { detail = item }
-                            } else {
-                                // A peeking neighbour: bring it to the middle
-                                // rather than acting on the wrong card.
-                                currentID = item.id
-                            }
-                        }
-                        .id(item.id)
-                        }
-                    }
+            CardPager(items: items, currentID: $currentID, pageWidth: cardWidth, spacing: 14,
+                      height: geo.size.height, reduceMotion: reduceMotion) { id, isCurrent in
+                if let item = items.item(for: id) {
+                    page(item, isCurrent: isCurrent)
                 }
-                .scrollTargetLayout()
-                .frame(height: height)
             }
-            // Not `.viewAligned`: that behaviour runs the scroll view at
-            // its fast deceleration rate, so a flick stopped on the next
-            // card almost at once — the "snap". This one picks the same
-            // target (the card the flick is headed for, one at a time) and
-            // leaves the normal rate alone, so the card glides in and
-            // settles the way a photo does in Photos.
-            .scrollTargetBehavior(CardPagingBehavior(step: cardWidth + 14, count: items.count, start: dragStart,
-                                                     visible: visibleID.flatMap { items.index(of: $0) } ?? dragStart))
-            .scrollPosition(id: $visibleID, anchor: .center)
-            .contentMargins(.horizontal, sideInset, for: .scrollContent)
-            .scrollIndicators(.hidden)
+        }
+    }
+
+    private func page(_ item: CardItem, isCurrent: Bool) -> some View {
+        FlippableCard(item: item, showsBack: showsBack(item), isCurrent: isCurrent)
+            // Tapping the card flips nothing: the button does,
+            // so a tap keeps meaning Details.
+            .overlay(alignment: .topTrailing) {
+                if isCurrent, item.backImageURL != nil {
+                    flipButton(for: item)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .onTapGesture {
+                if isCurrent {
+                    if showsDetail { detail = item }
+                } else {
+                    // A peeking neighbour: bring it to the middle
+                    // rather than acting on the wrong card.
+                    currentID = item.id
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// Turns a double-faced card over: a glass button in the card's corner,
@@ -453,7 +371,8 @@ struct CardViewerView: View {
     private func flipButton(for item: CardItem) -> some View {
         Button {
             let back = !showsBack(item)
-            withAnimation(.spring(duration: 0.45, bounce: 0.15)) {
+            // Reduce Motion: the faces crossfade in place (see FlippableCard).
+            withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : .spring(duration: 0.45, bounce: 0.15)) {
                 flipped[item.id] = back
             }
             FlippedFaces.set(item.scryfallID, showsBack: back)
@@ -565,6 +484,8 @@ private struct FlippableCard: View {
 
     static let targetWidth: CGFloat = 480
     @State private var backRequested = false
+    /// Reduce Motion: no half turn — the two faces crossfade in place.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -574,7 +495,7 @@ private struct FlippableCard: View {
                 face(back, foil: item.finish != .normal)
                     // Pre-turned, so it reads the right way round once the
                     // stack has rotated half a turn.
-                    .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
+                    .rotation3DEffect(.degrees(reduceMotion ? 0 : 180), axis: (x: 0, y: 1, z: 0))
                     .opacity(showsBack ? 1 : 0)
             }
         }
@@ -588,7 +509,7 @@ private struct FlippableCard: View {
                 .padding(1)
                 .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
         }
-        .rotation3DEffect(.degrees(showsBack ? 180 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
+        .rotation3DEffect(.degrees(showsBack && !reduceMotion ? 180 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.4)
         .onChange(of: showsBack, initial: true) { _, back in if back { backRequested = true } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.name)
@@ -603,7 +524,7 @@ private struct FlippableCard: View {
             cornerRadius: 18,
             targetWidth: Self.targetWidth,
             // The grid's decode, already in memory, while this one loads.
-            fallbackTargetWidth: CardTile.targetWidth(for: AppSettings.gridDensity),
+            fallbackTargetWidth: CardTile.lastTargetWidth,
             foil: foil,
             // Animated only for the card in the middle; the neighbours
             // stay static so the pager isn't redrawing three cards.
@@ -789,38 +710,5 @@ private struct InfoPanel: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(.quaternary, in: Capsule())
-    }
-}
-
-/// Paging by one card per swipe at the scroll view's normal deceleration
-/// (see `pagerContent`), in place of `.viewAligned`. What the context
-/// offers: the system's target in a space where card i sits at `i * step`
-/// (the content margin already taken off — card 0 reads 0 at rest), and
-/// the release velocity in points per millisecond. No current offset, so
-/// the view hands in where the drag started (`start`) and the card under
-/// the anchor now (`visible`). A flick moves one card from where the
-/// swipe began — never two, however hard — and a drag that stopped
-/// settles on whichever card the anchor is over, so a slow pull past
-/// halfway lands on the next card and a short one comes back.
-private struct CardPagingBehavior: ScrollTargetBehavior {
-    let step: CGFloat
-    let count: Int
-    let start: Int
-    let visible: Int
-
-    /// Points per millisecond; a deliberate flick, not the tail of a drag.
-    private static let flick: CGFloat = 0.25
-
-    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
-        guard step > 0, count > 0 else { return }
-        let v = context.velocity.dx
-        var to: Int
-        if abs(v) > Self.flick {
-            to = start + (v > 0 ? 1 : -1)
-        } else {
-            to = visible
-        }
-        to = min(max(to, 0), count - 1)
-        target.rect.origin.x = CGFloat(to) * step
     }
 }

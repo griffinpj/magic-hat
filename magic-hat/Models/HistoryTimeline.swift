@@ -65,6 +65,10 @@ nonisolated struct HistoryTimeline: Hashable, Sendable {
     private(set) var lastVisit: [UUID: Int] = [:]
     /// The applied path, oldest first; `last` is the head.
     private(set) var applied: [UUID] = []
+    /// `applied` as a set: `state(of:)` runs once per action when the log
+    /// is built, and `contains` on the array made that quadratic on a long
+    /// ledger.
+    private(set) var appliedSet: Set<UUID> = []
 
     var nextUndo: UUID? { head }
 
@@ -81,7 +85,7 @@ nonisolated struct HistoryTimeline: Hashable, Sendable {
     var isFork: Bool { redoOptions.count > 1 }
 
     func state(of actionID: UUID) -> HistoryState {
-        applied.contains(actionID) ? .applied : .undone
+        appliedSet.contains(actionID) ? .applied : .undone
     }
 
     /// Every action the timeline knows, applied or not.
@@ -118,6 +122,7 @@ nonisolated struct HistoryTimeline: Hashable, Sendable {
             }
         }
         t.applied = t.path(to: t.head)
+        t.appliedSet = Set(t.applied)
         return t
     }
 

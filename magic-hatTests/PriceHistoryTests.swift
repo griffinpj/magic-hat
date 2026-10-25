@@ -54,6 +54,34 @@ struct PriceHistoryTests {
         #expect(PriceSeries().change(over: 30, foil: false, currency: .usd) == nil)
     }
 
+    /// The row records in the blob without decoding it — a new day
+    /// appended, today's again overwritten in place, an earlier day by a
+    /// full repack — and every path leaves the same bytes a repack of the
+    /// whole series would.
+    @Test func appendMatchesAFullRepack() {
+        let steps: [PriceSample] = [
+            PriceSample(day: 5, usd: 1.1, usdFoil: nil, eur: 0.95, eurFoil: nil),
+            PriceSample(day: 6, usd: 1.2, usdFoil: 4.3, eur: nil, eurFoil: nil),
+            PriceSample(day: 6, usd: 1.25, usdFoil: 4.3, eur: nil, eurFoil: nil),   // today's later refresh
+            PriceSample(day: 6, usd: 1.25, usdFoil: 4.3, eur: nil, eurFoil: nil),   // unchanged
+            PriceSample(day: 9, usd: 0.333, usdFoil: nil, eur: 0.3, eurFoil: 2.0 / 3.0),
+            PriceSample(day: 7, usd: 1.3, usdFoil: nil, eur: nil, eurFoil: nil),    // a day before the last
+            PriceSample(day: 10, usd: nil, usdFoil: nil, eur: nil, eurFoil: nil),   // empty
+            PriceSample(day: 11, usd: 2, usdFoil: nil, eur: nil, eurFoil: nil),
+        ]
+        let row = PriceHistory(scryfallID: "x")
+        var series = PriceSeries()
+        for step in steps {
+            let changedRow = row.record(step)
+            let changedSeries = series.record(step)
+            #expect(changedRow == changedSeries, "day \(step.day): both say whether it changed")
+            #expect(row.samplesData == series.packed, "day \(step.day): the same bytes as a full repack")
+            #expect(row.lastDay == series.last?.day ?? -1)
+        }
+        #expect(row.series == series)
+        #expect(row.series.samples.map(\.day) == [5, 6, 7, 9, 11])
+    }
+
     @Test func dayArithmetic() {
         let d = PriceSample.day(of: PriceSample.epoch.addingTimeInterval(86_400 * 3 + 100))
         #expect(d == 3)

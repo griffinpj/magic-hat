@@ -420,6 +420,11 @@ extension CollectionEditController {
         let oldQuantity = entry.quantity
         let oldFinish = entry.finish
         let oldCondition = entry.condition
+        // The old identity's record must carry the row as it was: an undo
+        // rebuilds that row from this snapshot, and taken after the edits
+        // below it brought back the old finish with the new language and
+        // price paid.
+        let oldSnapshot = EntrySnapshot(entry)
 
         entry.quantity = edits.quantity
         entry.finish = edits.finish
@@ -441,7 +446,7 @@ extension CollectionEditController {
                 actionID: actionID, action: .manualRemove, timestamp: now,
                 scryfallID: scryfallID, cardName: entry.name, collectionName: collectionName,
                 finish: oldFinish, condition: oldCondition, quantityDelta: -oldQuantity,
-                collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
+                collectionEntryID: entry.id, snapshot: oldSnapshot
             ))
             if let other = siblings.first(where: { $0.id != entry.id && $0.mergeKey == newKey }) {
                 other.quantity += entry.quantity

@@ -99,6 +99,12 @@ nonisolated struct CardItem: Identifiable, Hashable, Sendable {
     /// back. Only meaningful with a `backImageURL`.
     var showsBack = false
 
+    /// In-memory search's folded text and parsed cost, made the first time
+    /// a search reads them (`CardSearchMatcher`). A shared reference that
+    /// takes no part in `==` or hashing, so the value stays cheap to copy
+    /// and compare; every field it is made from is a `let`.
+    let searchCache = CardSearchCache()
+
     /// The face to draw where one image stands for the card.
     var displayImageURL: String? { showsBack ? (backImageURL ?? imageURL) : imageURL }
 

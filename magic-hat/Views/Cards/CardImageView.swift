@@ -37,8 +37,43 @@ struct CardImageView: View {
     /// a parent that glows with them; nil when nobody asked.
     var tint: Binding<ArtTint?>? = nil
 
+    /// Seeded from the memory cache (see `memoryImage`), so a warmed tile's
+    /// first body draws the image and `load()` finds nothing to write: it
+    /// used to set the same image again and render the tile a second time.
     @State private var image: UIImage?
     @State private var didFail = false
+    /// The load is waiting on the network rather than failed: images kept
+    /// off cellular on a metered path, Scryfall's 429 hold, no connection.
+    /// The tile keeps its plain placeholder — not the broken-photo glyph —
+    /// and loads again when the path changes (see `taskKey`).
+    @State private var waitingForNetwork = false
+
+    init(urlString: String?, aspectRatio: Double, cornerRadius: CGFloat = 10, targetWidth: CGFloat = 150,
+         fallbackTargetWidth: CGFloat? = nil, foil: Bool = false, foilAnimated: Bool = false,
+         foilIntensity: Double = 0.16, foilSheen: FoilSheenStyle = .shader, tint: Binding<ArtTint?>? = nil) {
+        self.urlString = urlString
+        self.aspectRatio = aspectRatio
+        self.cornerRadius = cornerRadius
+        self.targetWidth = targetWidth
+        self.fallbackTargetWidth = fallbackTargetWidth
+        self.foil = foil
+        self.foilAnimated = foilAnimated
+        self.foilIntensity = foilIntensity
+        self.foilSheen = foilSheen
+        self.tint = tint
+        // The environment isn't available yet; the screen's scale is the
+        // one the grid draws at.
+        _image = State(initialValue: Self.memoryImage(urlString, targetWidth: targetWidth,
+                                                      fallbackTargetWidth: fallbackTargetWidth,
+                                                      scale: Self.screenScale))
+    }
+
+    /// Looked up once: this init runs for every tile a grid builds, and
+    /// walked the connected scenes each time.
+    private static let screenScale: CGFloat = {
+        let scene = UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first
+        return scene?.screen.scale ?? UITraitCollection.current.displayScale
+    }()
 
     private var maxPixel: CGFloat {
         // 3-wide grid tile is ~130pt; scale to device pixels so images stay
@@ -52,10 +87,14 @@ struct CardImageView: View {
     /// placeholder first and swap the image in a frame later, even when the
     /// grid had warmed it; and the viewer's zoom grew out of a grey card.
     private var memoryImage: UIImage? {
+        Self.memoryImage(urlString, targetWidth: targetWidth, fallbackTargetWidth: fallbackTargetWidth, scale: displayScale)
+    }
+
+    private static func memoryImage(_ urlString: String?, targetWidth: CGFloat, fallbackTargetWidth: CGFloat?, scale: CGFloat) -> UIImage? {
         guard let urlString, !urlString.isEmpty else { return nil }
-        if let exact = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, maxPixel)) { return exact }
+        if let exact = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, targetWidth * scale)) { return exact }
         guard let fallbackTargetWidth else { return nil }
-        return ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, fallbackTargetWidth * displayScale))
+        return ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, fallbackTargetWidth * scale))
     }
 
     var body: some View {
@@ -97,8 +136,40 @@ struct CardImageView: View {
         }
         .aspectRatio(aspectRatio, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: urlString) { await load() }
+        // Keyed on the size too: the grid's decode size follows its width,
+        // and a tile already showing the smaller decode must fetch the
+        // larger one.
+        .task(id: taskKey) { await load() }
         .onChange(of: image, initial: true) { _, _ in reportTint() }
+    }
+
+    /// The load's identity: the image and its size, plus — only while the
+    /// load is waiting on the network — the network path, so joining Wi-Fi
+    /// or coming back online loads it. Only a waiting tile reads the
+    /// monitor, so only those observe it.
+    private var taskKey: String {
+        let base = "\(urlString ?? "")|\(Int(maxPixel))"
+        guard waitingForNetwork else { return base }
+        let net = NetworkMonitor.shared
+        return "\(base)|\(net.isConnected)|\(net.isMetered)"
+    }
+
+    /// An error that means "not now" rather than "this image is broken".
+    private static func isWaitingOnNetwork(_ error: Error) -> Bool {
+        if error is ImageLoadError { return true }
+        if case HTTPError.rateLimited = error { return true }
+        if case HTTPError.transport(let underlying) = error { return isWaitingOnNetwork(underlying) }
+        if let url = error as? URLError {
+            return [.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost,
+                    .dataNotAllowed, .internationalRoamingOff].contains(url.code)
+        }
+        return false
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if case HTTPError.transport(let underlying) = error { return isCancellation(underlying) }
+        return (error as? URLError)?.code == .cancelled
     }
 
     private func reportTint() {
@@ -113,26 +184,41 @@ struct CardImageView: View {
     private static let spinnerMinWidth: CGFloat = 300
 
     private func load() async {
-        didFail = false
-        guard let urlString, !urlString.isEmpty else { image = nil; return }
+        if didFail { didFail = false }
+        guard let urlString, !urlString.isEmpty else { if image != nil { image = nil }; return }
 
         let px = maxPixel
-        // Synchronous memory hit: no actor hop, no placeholder flash on reuse.
+        // Synchronous memory hit: no actor hop, no placeholder flash on
+        // reuse — and no write when the body already drew this object.
         if let cached = ImageMemoryCache.shared.image(ImageMemoryCache.key(urlString, px)) {
-            image = cached
+            if image !== cached { image = cached }
             return
         }
         if let fallback = fallbackTargetWidth,
            let smaller = ImageMemoryCache.shared.image(
                 ImageMemoryCache.key(urlString, fallback * displayScale)) {
-            image = smaller           // upscaled briefly; replaced below
-        } else {
+            if image !== smaller { image = smaller }   // upscaled briefly; replaced below
+        } else if image != nil {
             image = nil
         }
         do {
-            image = try await ImageLoader.shared.image(for: urlString, maxPixel: px)
+            let loaded = try await ImageLoader.shared.image(for: urlString, maxPixel: px)
+            if image !== loaded { image = loaded }
+            if waitingForNetwork { waitingForNetwork = false }
         } catch {
-            didFail = true
+            // Scrolled away or re-keyed (the next task loads it), or the
+            // shared load was cancelled under it (Clear Image Cache).
+            if Task.isCancelled || Self.isCancellation(error) { return }
+            guard Self.isWaitingOnNetwork(error) else { didFail = true; return }
+            // Changing the key restarts this task; the path changing
+            // restarts it again.
+            if !waitingForNetwork { waitingForNetwork = true }
+            if case HTTPError.rateLimited(let retryAfter) = error {
+                // The hold ends on a clock, not a path change: try again then.
+                try? await Task.sleep(for: .seconds(max(retryAfter, 1)))
+                if Task.isCancelled { return }
+                await load()
+            }
         }
     }
 }

@@ -119,6 +119,17 @@ nonisolated enum DeckListParser {
     private static let trailingQuantity = try! NSRegularExpression(pattern: #"^(.*\S)\s+[xX×]\s?(\d+)$"#)
     private static let bracket = try! NSRegularExpression(pattern: #"\s*\[([^\]]*)\]"#)
     private static let caretTag = try! NSRegularExpression(pattern: #"\s*\^[^^]*\^"#)
+    // Compiled once: `range(of:options: .regularExpression)` compiles its
+    // pattern on every call, and `normalize` used five per line.
+    private static let parenSet = try! NSRegularExpression(pattern: #"\([A-Za-z0-9]{2,6}\)"#)
+    private static let bracketCode = try! NSRegularExpression(pattern: #"^[A-Z0-9]{2,5}$"#)
+    private static let trailingMarks = try! NSRegularExpression(pattern: #"(\s+#?\d+[a-z]?)?(\s+\*[FE]\*)?\s*$"#)
+    private static let hashNumber = try! NSRegularExpression(pattern: #"\) #(\d)"#)
+    private static let leadingCount = try! NSRegularExpression(pattern: #"^\d+\s*[xX]?\s+"#)
+
+    private static func found(_ regex: NSRegularExpression, in s: String) -> Bool {
+        regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
 
     /// The line with what other tools hang on it folded into the one
     /// shape `pattern` reads: bullets and "SB:" off the front, a trailing
@@ -137,14 +148,14 @@ nonisolated enum DeckListParser {
         s = caretTag.stringByReplacingMatches(in: s, range: ns(s), withTemplate: "")
         // "[M10]" is a set when the line names none in parentheses and it
         // is written as a code; any other bracket is a category or a note.
-        let hasParenSet = s.range(of: #"\([A-Za-z0-9]{2,6}\)"#, options: .regularExpression) != nil
+        let hasParenSet = found(parenSet, in: s)
         var setFromBracket: String?
         for match in bracket.matches(in: s, range: ns(s)) {
             guard let r = Range(match.range(at: 1), in: s) else { continue }
             let inner = String(s[r])
             if inner.lowercased() == "foil" { continue }
             if !hasParenSet, setFromBracket == nil,
-               inner.range(of: #"^[A-Z0-9]{2,5}$"#, options: .regularExpression) != nil {
+               found(bracketCode, in: inner) {
                 setFromBracket = inner
             }
         }
@@ -154,13 +165,13 @@ nonisolated enum DeckListParser {
         s = bracket.stringByReplacingMatches(in: s, range: ns(s), withTemplate: "")
         if let setFromBracket {
             // Before a collector number or foil mark that followed the bracket.
-            let marks = s.range(of: #"(\s+#?\d+[a-z]?)?(\s+\*[FE]\*)?\s*$"#, options: .regularExpression)
+            let marks = trailingMarks.firstMatch(in: s, range: ns(s)).flatMap { Range($0.range, in: s) }
             let insertAt = marks?.lowerBound ?? s.endIndex
             s.insert(contentsOf: " (\(setFromBracket))", at: insertAt)
-            s = s.replacingOccurrences(of: #"\) #(\d)"#, with: ") $1", options: .regularExpression)
+            s = hashNumber.stringByReplacingMatches(in: s, range: ns(s), withTemplate: ") $1")
         }
         // "Lightning Bolt x4" → "4 Lightning Bolt", when no count leads.
-        if s.range(of: #"^\d+\s*[xX]?\s+"#, options: .regularExpression) == nil,
+        if !found(leadingCount, in: s),
            let m = trailingQuantity.firstMatch(in: s, range: ns(s)),
            let nameRange = Range(m.range(at: 1), in: s), let countRange = Range(m.range(at: 2), in: s) {
             s = "\(s[countRange]) \(s[nameRange])"

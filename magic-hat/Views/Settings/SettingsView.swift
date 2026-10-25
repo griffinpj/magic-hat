@@ -248,8 +248,10 @@ struct SettingsView: View {
         Task {
             defer { refreshingPrices = false }
             let store = CollectionStore.shared(for: context.container)
-            guard let all = try? await store.snapshot(collectionName: CollectionScope.allKey, sort: .name, stamp: .current) else { return }
-            let ids = all.items.map(\.scryfallID)
+            // The ids alone: a sorted All Collection snapshot was built
+            // only to read them.
+            guard let owned = try? await store.ownedScryfallIDs(stamp: .current) else { return }
+            let ids = Array(owned)
             pricesRefreshed = await hydrator.refreshPrices(stale: ids, context: context, force: true)
         }
     }
@@ -319,9 +321,7 @@ private struct CardDataSection: View {
                 HStack {
                     Label("Data Activity", systemImage: "list.bullet.clipboard")
                     Spacer()
-                    if DataActivity.shared.isAnythingRunning {
-                        ProgressView().controlSize(.small)
-                    }
+                    DataActivitySpinner()
                 }
             }
             .accessibilityIdentifier("settings-data-activity")
@@ -350,6 +350,15 @@ private struct CardDataSection: View {
                     Text(availableLine(bytes: bytes, builtAt: builtAt))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    // A download that failed says so here; the row used to
+                    // revert as if nothing had been tried. The next tap
+                    // starts a new run, which clears it.
+                    if case .failed(let message) = sync.phase {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("settings-update-failed")
+                    }
                 }
             }
             .accessibilityIdentifier("settings-download-update")
@@ -379,6 +388,17 @@ private struct CardDataSection: View {
         if let builtAt { parts.append("Built \(builtAt.formatted(date: .abbreviated, time: .omitted))") }
         if let bytes { parts.append(ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)) }
         return parts.isEmpty ? "A newer catalog is available" : parts.joined(separator: " · ")
+    }
+}
+
+/// The Data Activity row's spinner, in a view of its own: DataActivity
+/// changes on every progress tick of every load, and read in the section's
+/// body it re-rendered the whole Card Data section each time.
+private struct DataActivitySpinner: View {
+    var body: some View {
+        if DataActivity.shared.isAnythingRunning {
+            ProgressView().controlSize(.small)
+        }
     }
 }
 

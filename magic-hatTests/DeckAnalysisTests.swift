@@ -44,6 +44,60 @@ struct DeckAnalysisTests {
         #expect(vanilla.roles.isEmpty)
     }
 
+    /// The three patterns that read too much: an anthem as a wipe, someone
+    /// else's draw as card draw, a counterspell as removal and a counter.
+    @Test func anthemsOthersDrawingAndCounterspellsAreNotMiscounted() throws {
+        let crusade = try Self.reading(Self.card("Cathars' Crusade", type: "Enchantment",
+                                                 text: "Whenever a creature you control enters, put a +1/+1 counter on each creature you control.",
+                                                 cost: "{3}{W}{W}", colors: ["W"]))
+        #expect(!crusade.roles.contains(.wipes), "an anthem is not a wipe: \(crusade.roles)")
+        let anthem = try Self.reading(Self.card("Anthem", type: "Enchantment", text: "Each other creature you control gets +1/+1.", cost: "{2}{W}", colors: ["W"]))
+        #expect(!anthem.roles.contains(.wipes))
+        let pestilence = try Self.reading(Self.card("Pestilence", type: "Enchantment", text: "{B}: Pestilence deals 1 damage to each creature and each player.", cost: "{2}{B}{B}", colors: ["B"]))
+        #expect(pestilence.roles.contains(.wipes), "damage to each creature still is")
+        let shrink = try Self.reading(Self.card("Shrink", type: "Sorcery", text: "Each creature gets -2/-2 until end of turn.", cost: "{2}{B}", colors: ["B"]))
+        #expect(shrink.roles.contains(.wipes))
+        let oneSided = try Self.reading(Self.card("One Sided", type: "Sorcery", text: "Destroy each creature your opponents control.", cost: "{4}{B}", colors: ["B"]))
+        #expect(oneSided.roles.contains(.wipes))
+
+        let study = try Self.reading(Self.card("Rhystic Study", type: "Enchantment", text: "Whenever an opponent casts a spell, you may draw a card unless that player pays {1}.", cost: "{2}{U}", colors: ["U"]))
+        #expect(study.roles == [.draw], "you drawing off an opponent's spell is draw")
+        let dreams = try Self.reading(Self.card("Underworld Dreams", type: "Enchantment", text: "Whenever an opponent draws a card, Underworld Dreams deals 1 damage to that player.", cost: "{B}{B}{B}", colors: ["B"]))
+        #expect(!dreams.roles.contains(.draw), "an opponent drawing is not the deck's draw: \(dreams.roles)")
+        let nekusar = try Self.reading(Self.card("Nekusar, the Mindrazer", type: "Legendary Creature — Zombie Wizard",
+                                                 text: "At the beginning of each player's draw step, that player draws an additional card.\nWhenever an opponent draws a card, Nekusar, the Mindrazer deals 1 damage to that player.",
+                                                 cost: "{2}{U}{B}{R}", colors: ["U", "B", "R"]))
+        #expect(!nekusar.roles.contains(.draw), "\(nekusar.roles)")
+        let ancestral = try Self.reading(Self.card("Ancestral Recall", type: "Instant", text: "Target player draws three cards.", cost: "{U}", colors: ["U"]))
+        #expect(ancestral.roles.contains(.draw), "a target player drawing is still a draw spell")
+
+        let counterspell = try Self.reading(Self.card("Counterspell", type: "Instant", text: "Counter target spell.", cost: "{U}{U}", colors: ["U"]))
+        #expect(counterspell.isCounterspell && !counterspell.roles.contains(.removal), "\(counterspell.roles)")
+        let tagged = try Self.card("Mana Leak", type: "Instant", text: "Counter target spell unless its controller pays {3}.", cost: "{1}{U}", colors: ["U"])
+        #expect(!CardReading(tagged, identity: [.blue], tags: ["removal": [tagged.oracleID!]]).roles.contains(.removal),
+                "a tag list that calls a counterspell removal doesn't count it twice")
+        let charm = try Self.reading(Self.card("Charm", type: "Instant", text: "Choose one —\n• Counter target spell.\n• Destroy target creature.", cost: "{U}{B}", colors: ["U", "B"]))
+        #expect(charm.isCounterspell && charm.roles.contains(.removal), "a card that also kills is removal")
+
+        // A deck of counterspells: interaction counts each once.
+        let rows = try [Self.row(Self.card("Cmdr", type: "Legendary Creature — Wizard", cost: "{U}{U}", colors: ["U"]), board: .commander),
+                        Self.row(Self.card("Counterspell", type: "Instant", text: "Counter target spell.", cost: "{U}{U}", colors: ["U"]), qty: 1)]
+        let a = DeckAnalysis.compute(played: rows, format: .commander, identity: [.blue], problems: [], signals: .none,
+                                     readings: DeckAnalysis.readings(for: rows, identity: [.blue], tags: [:]))
+        #expect(a.composition.first { $0.role == .removal }?.count == 0 && a.counterspells == 1)
+        #expect(a.power.parts.first { $0.key == "interaction" }?.value == 0.35, "0.1 for one card plus 0.25 for running counters: \(a.power.parts)")
+    }
+
+    /// Mechanics read the text once and the type line only for what the
+    /// text missed: the union is what text + type gave before.
+    @Test func mechanicsFromTextAndTypeLine() throws {
+        let relic = try Self.reading(Self.card("Relic", type: "Artifact — Equipment", text: "Whenever equipped creature dies, draw a card."))
+        #expect(relic.textMechanics == ["dies", "card draw", "equipment and auras"], "\(relic.textMechanics)")
+        #expect(relic.mechanics == relic.textMechanics.union(["artifacts"]), "the type line adds artifacts: \(relic.mechanics)")
+        let bare = try Self.reading(Self.card("Walker", type: "Legendary Planeswalker — Jace"))
+        #expect(bare.textMechanics.isEmpty && bare.mechanics == ["planeswalkers"])
+    }
+
     @Test func tagListsOverrideTheText() throws {
         let odd = try Self.card("Odd Ramp", type: "Creature — Elf", text: "Flying.", cost: "{G}", colors: ["G"])
         let tagged = CardReading(odd, identity: [.green], tags: ["ramp": [odd.oracleID!]])

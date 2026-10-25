@@ -21,6 +21,15 @@ import SwiftUI
 /// Images warmed past the tile that appeared; see `CardGridView.warmImages`.
 private let gridImageLookahead = 30
 
+/// The screen's width, the grid's width before it has measured itself.
+/// Looked up once: a `@State` initial value is evaluated on every init of
+/// the view, and this one walked the connected scenes each time. (A
+/// global, since a generic type can't hold a static stored property.)
+@MainActor private let gridScreenWidth: CGFloat = {
+    let scene = UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first
+    return scene?.screen.bounds.width ?? 0
+}()
+
 struct CardGridView<Header: View, Accessory: View>: View {
     /// Stamped, not compared card by card — see CardItemList.
     let items: CardItemList
@@ -43,8 +52,11 @@ struct CardGridView<Header: View, Accessory: View>: View {
 
     @Namespace private var zoom
     @Environment(\.displayScale) private var displayScale
-    @State private var warmTask: Task<Void, Never>?
-    @State private var warmedFrom = -100
+    /// Where the warm last started and its task. A reference held in
+    /// state, not state itself: they are written as tiles appear, and a
+    /// `@State` write re-ran the grid's body — a ForEach over thousands
+    /// of ids — per tile appearing.
+    @State private var warm = WarmState()
     /// The card the viewer was opened on; drives the presentation.
     @State private var viewing: CardItem?
     /// The card the viewer is showing right now — it pages, this follows.
@@ -57,7 +69,10 @@ struct CardGridView<Header: View, Accessory: View>: View {
     /// The grid's width, for landscape and iPad: the setting says how many
     /// across a phone held upright; a wider grid keeps the tiles that size
     /// and fits more of them, rather than blowing three up to fill it.
-    @State private var width: CGFloat = 0
+    /// Seeded from the screen rather than 0: the first body runs before
+    /// `onGeometryChange`, and a size of 0 would decode the first screen of
+    /// tiles at the fixed guess and then again at the measured size.
+    @State private var width: CGFloat = gridScreenWidth
     private var columnCount: Int {
         let upright: CGFloat = 440
         guard width > upright else { return density.rawValue }
@@ -67,8 +82,15 @@ struct CardGridView<Header: View, Accessory: View>: View {
     private var columns: [GridItem] {
         Array(repeating: GridItem(.flexible(), spacing: spacing), count: columnCount)
     }
+    /// The decode size for a tile as this grid lays it out (see
+    /// `CardTile.targetWidth(gridWidth:…)`); the warm uses the same one.
+    private var tileTargetWidth: CGFloat {
+        CardTile.targetWidth(gridWidth: width, columns: columnCount, spacing: spacing,
+                             showsCaption: density.showsCaption)
+    }
 
     var body: some View {
+        let targetWidth = tileTargetWidth
         ScrollViewReader { proxy in
             ScrollView {
                 header()
@@ -82,7 +104,7 @@ struct CardGridView<Header: View, Accessory: View>: View {
                         if let item = items.item(for: id) {
                             // The tile marks its image, not its caption, as
                             // the zoom's source.
-                            CardTile(item: item, zoom: zoom, targetWidth: CardTile.targetWidth(for: density),
+                            CardTile(item: item, zoom: zoom, targetWidth: targetWidth,
                                      showsCaption: density.showsCaption)
                                 .equatable()
                                 // Outside the equatable tile, so selecting
@@ -119,7 +141,8 @@ struct CardGridView<Header: View, Accessory: View>: View {
                 }
                 .padding(spacing)
             }
-            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width = $0 }
+            .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { if width != $0 { width = $0 } }
+            .onChange(of: targetWidth, initial: true) { _, size in CardTile.lastTargetWidth = size }
             // Search results sit under the keyboard while typing; a scroll
             // should put it away. No-op elsewhere.
             .scrollDismissesKeyboard(.immediately)
@@ -155,21 +178,43 @@ struct CardGridView<Header: View, Accessory: View>: View {
         viewing = item
     }
 
-    /// Fetch and decode the next window of images at tile size. Restarted
-    /// only when the appearing tile has moved a row or so, and cancelled
-    /// by the next restart, so a fast scroll doesn't queue windows the
-    /// user has already left behind.
+    /// Fetch and decode the next window of images at tile size, in the
+    /// direction the user is going: the tiles below when scrolling down,
+    /// the tiles above when scrolling back up (their images may have been
+    /// evicted, and used to decode on demand as each tile appeared — a
+    /// grey card a frame or two before every image). Restarted only when
+    /// the appearing tile has moved a row or so, and cancelled by the next
+    /// restart, so a fast scroll doesn't queue windows the user has
+    /// already left behind.
     private func warmImages(from index: Int) {
-        guard abs(index - warmedFrom) >= 3 else { return }
-        warmedFrom = index
-        let upper = min(index + gridImageLookahead, items.count)
-        guard index < upper else { return }
-        let urls = items.items[index..<upper].compactMap(\.displayImageURL)
+        guard abs(index - warm.from) >= 3 else { return }
+        // Which way the user is going, from where the last warm started:
+        // up means the images above are the ones about to show.
+        let upward = index < warm.from
+        warm.from = index
+        let window: [CardItem]
+        if upward {
+            let lower = max(index - gridImageLookahead, 0)
+            guard lower < index else { return }
+            window = items.items[lower..<index].reversed()
+        } else {
+            let upper = min(index + gridImageLookahead, items.count)
+            guard index < upper else { return }
+            window = Array(items.items[index..<upper])
+        }
+        let urls = window.compactMap(\.displayImageURL)
         guard !urls.isEmpty else { return }
-        let px = CardTile.targetWidth(for: density) * displayScale
-        warmTask?.cancel()
-        warmTask = Task(priority: .utility) { await ImageLoader.shared.warm(urls, maxPixel: px) }
+        let px = tileTargetWidth * displayScale
+        warm.task?.cancel()
+        warm.task = Task(priority: .utility) { await ImageLoader.shared.warm(urls, maxPixel: px) }
     }
+}
+
+/// The grid's warm-ahead bookkeeping (see `CardGridView.warm`).
+@MainActor
+private final class WarmState {
+    var from = -100
+    var task: Task<Void, Never>?
 }
 
 extension CardGridView where Header == EmptyView, Accessory == EmptyView {

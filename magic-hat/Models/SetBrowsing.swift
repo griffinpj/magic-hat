@@ -67,13 +67,21 @@ nonisolated enum SetBrowsing {
         }
     }
 
-    /// "Sep 26, 2026" from Scryfall's "2026-09-26".
-    static func releaseDate(_ raw: String?) -> String? {
-        guard let raw else { return nil }
+    /// One parser for every row: a `DateFormatter` is expensive to make, and
+    /// a set row's body made one each time in a thousand-row list.
+    /// `DateFormatter` is thread-safe for parsing; it is never mutated
+    /// after this.
+    private static let releaseParser: DateFormatter = {
         let parser = DateFormatter()
         parser.locale = Locale(identifier: "en_US_POSIX")
         parser.dateFormat = "yyyy-MM-dd"
-        guard let date = parser.date(from: raw) else { return raw }
+        return parser
+    }()
+
+    /// "Sep 26, 2026" from Scryfall's "2026-09-26".
+    static func releaseDate(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        guard let date = releaseParser.date(from: raw) else { return raw }
         return date.formatted(date: .abbreviated, time: .omitted)
     }
 }

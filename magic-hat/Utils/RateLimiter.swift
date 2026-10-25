@@ -21,8 +21,16 @@
 //  - A 429 from any Scryfall host pauses *all* Scryfall traffic for
 //    `Retry-After`, or 60 seconds (`backOff`). Nothing retries into it.
 //
-//  Other hosts (Spellbook, Recommander, EDHREC, deck sites) publish no
-//  limit and get 2/sec each, unchanged.
+//  Other hosts (Spellbook, Recommander, EDHREC, MTGJSON, deck sites)
+//  publish no limit and get 2/sec each, unchanged. MTGJSON used to ride
+//  `.other` — counted in Scryfall's shared bucket and frozen by a Scryfall
+//  429, so browsing precons spent the hydration and search budget.
+//
+//  A cancelled caller leaves without its slot: `wait` returns at once when
+//  the task is already cancelled (nothing reserved), and a caller cancelled
+//  while it sleeps hands its reservation back, so those booked after it can
+//  be spaced from what really ran. HTTPClient checks for cancellation after
+//  it, so a tile scrolled past never spends a request.
 //
 
 import Foundation
@@ -34,12 +42,13 @@ nonisolated enum RateLimitCategory: Hashable, Sendable {
     case cardsRandom    // /cards/random
     case cardsCollection // /cards/collection
     case cardsManifest  // /bulk-data
-    case other          // every other api.scryfall.com endpoint (and MTGJSON)
+    case other          // every other api.scryfall.com endpoint
     case images         // cards.scryfall.io
     case spellbook      // commanderspellbook.com — unpublished; be polite
     case recommander    // recommander.cards — unpublished; be polite
     case edhrec         // json.edhrec.com — unpublished; be polite
     case deckSite       // a deck site's list, fetched for an import
+    case mtgjson        // mtgjson.com — static files; its own lane, not Scryfall's
 
     /// Minimum interval between consecutive requests in this family.
     var minInterval: TimeInterval {
@@ -50,7 +59,7 @@ nonisolated enum RateLimitCategory: Hashable, Sendable {
             return 12.0     // 10/min allowed; 5/min
         case .other, .images:
             return 0.2      // 10/sec allowed; 5/sec
-        case .spellbook, .recommander, .edhrec, .deckSite:
+        case .spellbook, .recommander, .edhrec, .deckSite, .mtgjson:
             return 0.5
         }
     }
@@ -59,7 +68,7 @@ nonisolated enum RateLimitCategory: Hashable, Sendable {
     var isScryfallAPI: Bool {
         switch self {
         case .cardsSearch, .cardsNamed, .cardsRandom, .cardsCollection, .cardsManifest, .other: return true
-        case .images, .spellbook, .recommander, .edhrec, .deckSite: return false
+        case .images, .spellbook, .recommander, .edhrec, .deckSite, .mtgjson: return false
         }
     }
 
@@ -77,8 +86,19 @@ actor RateLimiter {
     /// What a 429 without a Retry-After costs.
     static let defaultBackOff: TimeInterval = 60
 
-    private var lastStart: [RateLimitCategory: Date] = [:]
-    private var lastScryfallAPIStart: Date?
+    /// A start reserved for one caller.
+    private struct Slot {
+        let id: UInt64
+        let start: Date
+    }
+
+    /// Starts reserved per family, oldest first: every one still to come,
+    /// and the latest that has passed, which is what the next is spaced
+    /// from once the future ones are gone.
+    private var lanes: [RateLimitCategory: [Slot]] = [:]
+    /// The same for Scryfall's one API bucket, across families.
+    private var scryfallAPI: [Slot] = []
+    private var nextSlotID: UInt64 = 0
     /// Until when Scryfall traffic waits, after a 429.
     private(set) var scryfallPausedUntil: Date?
 
@@ -96,23 +116,51 @@ actor RateLimiter {
     /// spaced by the family's interval, and Scryfall API families by the
     /// shared interval as well; a back-off holds everything Scryfall.
     func wait(for category: RateLimitCategory) async {
+        // Cancelled before its turn: leave without reserving a slot, so the
+        // callers behind it don't space themselves around a request that
+        // never happens.
+        guard !Task.isCancelled else { return }
         let interval = category.minInterval
         var earliest = now()
-        if let last = lastStart[category] {
-            earliest = max(earliest, last.addingTimeInterval(interval))
+        if let last = lanes[category]?.last {
+            earliest = max(earliest, last.start.addingTimeInterval(interval))
         }
-        if category.isScryfallAPI, let last = lastScryfallAPIStart {
-            earliest = max(earliest, last.addingTimeInterval(Self.scryfallAPIInterval))
+        if category.isScryfallAPI, let last = scryfallAPI.last {
+            earliest = max(earliest, last.start.addingTimeInterval(Self.scryfallAPIInterval))
         }
         if category.isScryfall, let paused = scryfallPausedUntil {
             if paused > earliest { earliest = paused }
             else if paused <= now() { scryfallPausedUntil = nil }
         }
-        // Reserve the slot up front so queued callers space correctly.
-        lastStart[category] = earliest
-        if category.isScryfallAPI { lastScryfallAPIStart = earliest }
+        // Reserve the slot up front so queued callers space correctly
+        // (first come, first served).
+        let slot = Slot(id: nextSlotID, start: earliest)
+        nextSlotID &+= 1
+        lanes[category] = Self.booking(slot, in: lanes[category] ?? [], at: now())
+        if category.isScryfallAPI { scryfallAPI = Self.booking(slot, in: scryfallAPI, at: now()) }
         let delay = earliest.timeIntervalSince(now())
-        if delay > 0 { await sleep(delay) }
+        if delay > 0 {
+            await sleep(delay)
+            // `Task.sleep` wakes early on cancellation. Hand the slot back:
+            // a reservation left behind spaced everyone after it around a
+            // request that never happened — a flick past sixty cold tiles
+            // booked twelve seconds of the image lane, and the tiles where
+            // it stopped queued behind all of it; fast typing did the same
+            // to the search lane, a second per superseded search.
+            if Task.isCancelled { release(slot, category) }
+        }
+    }
+
+    /// `slots` with `slot` added, dropping starts already passed except the
+    /// latest of them (the anchor while nothing is booked ahead).
+    private static func booking(_ slot: Slot, in slots: [Slot], at now: Date) -> [Slot] {
+        let anchor = slots.last(where: { $0.start <= now })
+        return (anchor.map { [$0] } ?? []) + slots.filter { $0.start > now } + [slot]
+    }
+
+    private func release(_ slot: Slot, _ category: RateLimitCategory) {
+        lanes[category]?.removeAll { $0.id == slot.id }
+        if category.isScryfallAPI { scryfallAPI.removeAll { $0.id == slot.id } }
     }
 
     /// A 429 from Scryfall: hold every Scryfall request for `seconds`

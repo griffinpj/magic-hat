@@ -172,10 +172,15 @@ nonisolated enum CardTextReader {
         return s.replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: .whitespaces)
     }
 
+    /// Compiled once: this runs on every candidate line of every camera
+    /// frame. `NSRegularExpression` is immutable and safe to share.
+    private static let collectorNumberRegex = try! NSRegularExpression(
+        pattern: #"(?<![A-Za-z0-9])0*(\d{1,4}[a-z]?)(?:\s*/\s*\d{1,4})?(?:\s+[CURMSLTP])?(?![A-Za-z0-9])"#
+    )
+
     /// "0123/0280 R" → "123"; "045 U" → "45"; "123a" stays "123a".
     static func collectorNumber(in text: String) -> String? {
-        let pattern = #"(?<![A-Za-z0-9])0*(\d{1,4}[a-z]?)(?:\s*/\s*\d{1,4})?(?:\s+[CURMSLTP])?(?![A-Za-z0-9])"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let regex = collectorNumberRegex
         let range = NSRange(text.startIndex..., in: text)
         guard let match = regex.firstMatch(in: text, range: range),
               let r = Range(match.range(at: 1), in: text) else { return nil }

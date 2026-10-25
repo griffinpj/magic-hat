@@ -22,30 +22,25 @@ import Foundation
 import os
 
 nonisolated struct CardItemList: Equatable, Sendable {
-    private final class Box: @unchecked Sendable {
+    /// Built once, with the list: every caller that makes a big list makes
+    /// it off the main thread, and the ids and the index used to be built
+    /// lazily on the first lookup — inside the grid's ForEach, on the main
+    /// thread, per assignment.
+    private final class Box: Sendable {
         let items: [CardItem]
-        private let lock = OSAllocatedUnfairLock<(ids: [String]?, index: [String: Int]?)>(initialState: (nil, nil))
+        let ids: [String]
+        private let index: [String: Int]
 
-        init(_ items: [CardItem]) { self.items = items }
-
-        var ids: [String] {
-            lock.withLock { state in
-                if state.ids == nil { state.ids = items.map(\.id) }
-                return state.ids!
-            }
+        init(_ items: [CardItem]) {
+            self.items = items
+            ids = items.map(\.id)
+            var built: [String: Int] = [:]
+            built.reserveCapacity(items.count)
+            for (i, item) in items.enumerated() where built[item.id] == nil { built[item.id] = i }
+            index = built
         }
 
-        func index(of id: String) -> Int? {
-            lock.withLock { state in
-                if state.index == nil {
-                    var built: [String: Int] = [:]
-                    built.reserveCapacity(items.count)
-                    for (i, item) in items.enumerated() where built[item.id] == nil { built[item.id] = i }
-                    state.index = built
-                }
-                return state.index?[id]
-            }
-        }
+        func index(of id: String) -> Int? { index[id] }
     }
 
     private static let counter = OSAllocatedUnfairLock(initialState: UInt64(0))

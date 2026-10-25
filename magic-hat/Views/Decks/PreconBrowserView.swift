@@ -128,6 +128,9 @@ private struct PreconTile: View {
 
     @State private var controller = PreconController.shared
     @State private var cover: PreconCover?
+    /// Grows with Dynamic Type: a fixed 150 cut a two-line name off at the
+    /// larger sizes.
+    @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 150
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -165,7 +168,7 @@ private struct PreconTile: View {
             .foregroundStyle(.white)
             .padding(10)
         }
-        .frame(height: 150)
+        .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .task(id: deck.fileName) {

@@ -13,6 +13,12 @@ import SwiftUI
 
 struct CatalogSyncBar: View {
     var controller = CatalogSyncController.shared
+    @State private var askingCellular = false
+
+    private var isWaitingForWiFi: Bool {
+        if case .waitingForWiFi = controller.phase { return true }
+        return false
+    }
 
     /// Shorter than the setup screen's line: the gauge carries the
     /// percentage here, and a pill has one line.
@@ -31,9 +37,25 @@ struct CatalogSyncBar: View {
         // evaluated in MainTabView's body — the bar's content closure runs
         // there — so every progress report re-rendered the tab root.
         VStack(spacing: 0) {
-            if controller.phase.showsProgressBar { pill }
+            if controller.phase.showsProgressBar {
+                if isWaitingForWiFi {
+                    // Waiting is a choice the user can overrule, as on the
+                    // setup screen: the pill is the way to.
+                    Button { askingCellular = true } label: { pill }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Offers to download over cellular")
+                } else {
+                    pill
+                }
+            }
         }
         .animation(.easeInOut(duration: 0.25), value: controller.phase.showsProgressBar)
+        .alert("Download over Cellular?", isPresented: $askingCellular) {
+            Button("Use Cellular (80 MB)") { controller.allowCellular = true }
+            Button("Wait for Wi-Fi", role: .cancel) {}
+        } message: {
+            Text("The card catalog is about 80 MB. It starts by itself on Wi-Fi; Settings › Card Data can change this later.")
+        }
     }
 
     private var pill: some View {

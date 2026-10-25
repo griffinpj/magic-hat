@@ -38,7 +38,13 @@ actor DeckBuilder: ModelActor {
 
     enum BuildError: Error, LocalizedError {
         case deckNotFound
-        var errorDescription: String? { "The deck no longer exists." }
+        case destinationIsList
+        var errorDescription: String? {
+            switch self {
+            case .deckNotFound: return "The deck no longer exists."
+            case .destinationIsList: return "Cards can't be moved into a list. Choose a collection."
+            }
+        }
     }
 
     // MARK: Plan
@@ -223,9 +229,15 @@ actor DeckBuilder: ModelActor {
 
     // MARK: Disassemble
 
-    /// Returns every built copy to the collection it came from (or the
-    /// first collection, if that one is gone), merging by mergeKey.
-    func disassemble(deckID: UUID) throws -> DisassembleResult {
+    /// Takes the deck apart. By default every built copy returns to the
+    /// collection it came from (or the first collection, if that one is
+    /// gone), merging by mergeKey; `.collection` sends them all to one
+    /// collection instead, and `.discard` removes them — for a deck whose
+    /// cards are already back in a collection by another road (the
+    /// collection deleted and imported again), where returning them would
+    /// count every copy twice. A discard is a removal in History ("Removed
+    /// n Cards" from the deck), undone like any other.
+    func disassemble(deckID: UUID, destination: DisassembleDestination = .sources) throws -> DisassembleResult {
         guard let deck = try fetchDeck(deckID) else { throw BuildError.deckNotFound }
         let actionID = UUID()
         let now = Date()
@@ -233,12 +245,39 @@ actor DeckBuilder: ModelActor {
         let deckEntries = try modelContext.fetch(FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == deckKey }))
         guard !deckEntries.isEmpty else { return DisassembleResult(actionID: actionID, returnedCopies: 0) }
 
+        if case .discard = destination {
+            var removed = 0
+            for entry in deckEntries {
+                modelContext.insert(AuditRecord(
+                    actionID: actionID, action: .manualRemove, timestamp: now,
+                    scryfallID: entry.scryfallID, cardName: entry.name, collectionName: deckKey,
+                    finish: entry.finish, condition: entry.condition, quantityDelta: -entry.quantity,
+                    collectionEntryID: entry.id, snapshot: EntrySnapshot(entry)
+                ))
+                removed += entry.quantity
+                modelContext.delete(entry)
+            }
+            deck.updatedDate = now
+            try modelContext.save()
+            return DisassembleResult(actionID: actionID, returnedCopies: 0, removedCopies: removed)
+        }
+
         // Cards go home to a collection, never to a list.
         let collections = try modelContext.fetch(FetchDescriptor<MTGCollection>(sortBy: [SortDescriptor(\.name)]))
             .filter { $0.kind == .collection }
         var collectionNames = Set(collections.map(\.name))
-        let fallback = collections.first?.name ?? "My Collection"
-        if collections.isEmpty {
+        var fallback = collections.first?.name ?? "My Collection"
+        if case .collection(let name) = destination {
+            // One place for everything; made if it doesn't exist (a list's
+            // name is refused: a list is not somewhere cards live).
+            if let existing = try modelContext.fetch(FetchDescriptor<MTGCollection>(predicate: #Predicate { $0.name == name })).first {
+                guard existing.kind == .collection else { throw BuildError.destinationIsList }
+            } else {
+                modelContext.insert(MTGCollection(name: name))
+            }
+            collectionNames.insert(name)
+            fallback = name
+        } else if collections.isEmpty {
             modelContext.insert(MTGCollection(name: fallback))
             collectionNames.insert(fallback)
         }
@@ -252,6 +291,7 @@ actor DeckBuilder: ModelActor {
         var returned = 0
         for entry in deckEntries {
             var home = entry.sourceCollectionName ?? fallback
+            if case .collection = destination { home = fallback }
             if !collectionNames.contains(home) { home = fallback }
             let key = CollectionEntry.mergeKey(scryfallID: entry.scryfallID, collectionName: home,
                                                finish: entry.finishRaw, condition: entry.condition)

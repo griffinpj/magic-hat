@@ -41,6 +41,10 @@ struct CollectionCardsView: View {
     /// the real collection (see CardItemList).
     @State private var items = CardItemList()
     @State private var hasLoaded = false
+    /// The store's read threw: shown with Try Again instead of "No Cards".
+    @State private var loadError: String?
+    /// Try Again re-runs the load task.
+    @State private var reloadToken = 0
     @State private var refreshTask: Task<Void, Never>?
     @State private var sortTask: Task<Void, Never>?
     @State private var scrollToTop = 0
@@ -79,6 +83,18 @@ struct CollectionCardsView: View {
             if !hasLoaded {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let loadError, items.isEmpty {
+                // A read that threw is not an empty collection: it used to
+                // say "No Cards" and offer an import into a full one.
+                ContentUnavailableView {
+                    Label("Couldn't Load Cards", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(loadError)
+                } actions: {
+                    Button("Try Again") { reloadToken &+= 1 }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("collection-load-retry")
+                }
             } else if items.isEmpty {
                 ContentUnavailableView {
                     Label(isList ? "Empty List" : "No Cards", systemImage: isList ? CollectionKind.list.systemImage : "tray")
@@ -139,13 +155,13 @@ struct CollectionCardsView: View {
         .toolbar {
             if !selection.isActive { browsingToolbar }
         }
-        .cardSelectionBar(selection, items: visible.items, actions: selectionActions)
+        .cardSelectionBar(selection, items: visible, actions: selectionActions)
         .onChange(of: visible) { _, list in
             // A card that left the grid (removed, moved) leaves the selection.
             selection.keep(only: list.ids)
         }
-        .confirmationDialog(removeTitle, isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
-                            titleVisibility: .visible, presenting: pendingRemove) { cards in
+        .alert(removeTitle, isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+               presenting: pendingRemove) { cards in
             let ids = Self.removable(cards)
             Button("Remove \(ids.count == 1 ? "Card" : "\(ids.count) Cards")", role: .destructive) {
                 run(done: "Removed") { try await CollectionEditController.remove(entryIDs: ids, context: modelContext) }
@@ -169,7 +185,7 @@ struct CollectionCardsView: View {
         .onChange(of: query) { _, _ in applyFilter() }
         // Initial load, and again after any write (import/delete).
         // Deck list edits too: each tile wears how many decks name its card.
-        .task(id: "\(collectionName)|\(tracker.revision)|\(DeckChangeTracker.shared.revision)") {
+        .task(id: "\(collectionName)|\(tracker.revision)|\(DeckChangeTracker.shared.revision)|\(reloadToken)") {
             await load(thenSync: true)
         }
         .onChange(of: order) { _, _ in applySort() }
@@ -198,7 +214,7 @@ struct CollectionCardsView: View {
                     Button("Select Cards", systemImage: "checkmark.circle") { selection.begin() }
                     .disabled(visible.isEmpty)
                     .accessibilityIdentifier("collection-select")
-                    BuyMenu(title: query.isEmpty ? "Buy All" : "Buy These", lines: buyLines(visible.items))
+                    buyMenu
                     if !CollectionScope.isAll(collectionName) {
                         Divider()
                         Button(isList ? "Import into List…" : "Import Cards…", systemImage: "square.and.arrow.down") { importing = true }
@@ -248,8 +264,31 @@ struct CollectionCardsView: View {
         return count == 1 ? "Remove 1 Card?" : "Remove \(count) Cards?"
     }
 
-    private func buyLines(_ items: [CardItem]) -> [BuyLine] {
-        CardStore.lines(items.map { ($0.name, max($0.quantity, 1)) })
+    /// Buy All / Buy These. Not `BuyMenu`, which takes its lines built:
+    /// in this toolbar menu that was every visible card (3,900) mapped
+    /// into store lines on each render of the screen. The lines are made
+    /// on the tap here, off the main actor — as the selection bar does.
+    private var buyMenu: some View {
+        Menu {
+            ForEach(CardStore.allCases) { store in
+                Button(store.label, systemImage: "safari") { buy(at: store) }
+                    .accessibilityIdentifier("buy-\(store.rawValue)")
+            }
+        } label: {
+            Label(query.isEmpty ? "Buy All" : "Buy These", systemImage: "cart")
+                .labelStyle(.titleAndIcon)
+        }
+        .disabled(visible.isEmpty)
+    }
+
+    private func buy(at store: CardStore) {
+        let list = visible
+        Task {
+            let lines = await Task.detached(priority: .userInitiated) {
+                CardStore.lines(list.items.map { ($0.name, max($0.quantity, 1)) })
+            }.value
+            if let url = store.url(for: lines) { openURL(url) }
+        }
     }
 
     private func move(_ ids: [UUID], to destination: String) {
@@ -285,11 +324,27 @@ struct CollectionCardsView: View {
     /// for anything stale — both from ids the store already computed, so no
     /// extra store round-trips on the main thread.
     private func load(thenSync: Bool) async {
-        let snapshot = (try? await store.snapshot(collectionName: collectionName, sort: order.sort, direction: order.direction, stamp: .current)) ?? .empty
+        let snapshot: CollectionSnapshot
+        do {
+            snapshot = try await store.snapshot(collectionName: collectionName, sort: order.sort, direction: order.direction, stamp: .current)
+        } catch {
+            guard !Task.isCancelled else { return }
+            // Cards already on screen stay; an empty grid says it failed.
+            loadError = error.localizedDescription
+            hasLoaded = true
+            return
+        }
         guard !Task.isCancelled else { return }
+        loadError = nil
         items = CardItemList(snapshot.items)
         applyFilter()
         hasLoaded = true
+        if snapshot.pendingIDs.isEmpty {
+            hydrator.markHydrated(snapshot.items.lazy.map(\.scryfallID))
+        } else {
+            let pending = Set(snapshot.pendingIDs)
+            hydrator.markHydrated(snapshot.items.lazy.map(\.scryfallID).filter { !pending.contains($0) })
+        }
         prefetch(around: 0)
 
         guard thenSync, !snapshot.items.isEmpty else { return }
@@ -343,18 +398,19 @@ struct CollectionCardsView: View {
     /// The merge (a dictionary of every card, then a pass over the order)
     /// runs off the main actor; only the assignment lands there.
     private func refreshInPlace() async {
-        guard let fresh = try? await store.snapshot(collectionName: collectionName, sort: order.sort, direction: order.direction, stamp: .current),
+        // Unsorted: the order is the one on screen, kept below.
+        guard let fresh = try? await store.currentItems(collectionName: collectionName, stamp: .current),
               !Task.isCancelled else { return }
         let current = items.items
         let next = await Task.detached(priority: .userInitiated) { () -> CardItemList in
-            let byID = Dictionary(fresh.items.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let byID = Dictionary(fresh.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             var seen = Set<String>()
             var next: [CardItem] = []
-            next.reserveCapacity(fresh.items.count)
+            next.reserveCapacity(fresh.count)
             for item in current {
                 if let updated = byID[item.id] { next.append(updated); seen.insert(item.id) }
             }
-            for item in fresh.items where !seen.contains(item.id) { next.append(item) }
+            for item in fresh where !seen.contains(item.id) { next.append(item) }
             return CardItemList(next)
         }.value
         guard !Task.isCancelled else { return }

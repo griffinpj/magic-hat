@@ -165,6 +165,27 @@ struct SearchControllerTests {
         #expect(fetched.first?.sortOrder == 3)
         _ = container
     }
+
+    /// The field's completions come from the results, folded once: prefix
+    /// matches first, then contains, accents and case ignored, each name
+    /// once, the exact text left out.
+    @Test func completionsFoldOncePrefixFirst() async throws {
+        let client = FakeSearchClient()
+        client.pages = [ScryfallSearchPage(cards: try [
+            Self.card("1", name: "Hydra Broodmaster"), Self.card("2", name: "Dragon Whelp"),
+            Self.card("3", name: "Dragon Whelp"), Self.card("4", name: "Dragonlord Atarka"),
+            Self.card("5", name: "Lim-Dûl's Vault"), Self.card("6", name: "Shivan Dragon"),
+        ], totalCards: 6, nextPage: nil)]
+        let c = SearchController(client: client)
+        c.query.text = "dra"
+        c.run()
+        await Self.settle(c)
+        #expect(c.completions(for: "DRA") == ["Dragon Whelp", "Dragonlord Atarka", "Hydra Broodmaster", "Shivan Dragon"])
+        #expect(c.completions(for: "lim-dul") == ["Lim-Dûl's Vault"], "diacritics folded")
+        #expect(c.completions(for: "dragon whelp") == [], "the exact name isn't offered")
+        #expect(c.completions(for: "d").isEmpty && c.completions(for: "t:dragon").isEmpty)
+        #expect(c.completions(for: "dra", limit: 2) == ["Dragon Whelp", "Dragonlord Atarka"])
+    }
 }
 
 @MainActor

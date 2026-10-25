@@ -8,7 +8,9 @@
 //  locked (×n, no stepper, no swaps or Try Cards, nothing that adds a
 //  card, since the deck isn't the user's yet). Every row says whether
 //  the collection holds the card. One prominent action, Import, in a
-//  bottom bar: a new deck with this list, which opens in its place.
+//  bottom bar: it asks where the deck goes (the folder sheet a move
+//  uses), then makes a new deck with this list there, which opens in the
+//  precon's place.
 //
 //  Details is its own page: a printed deck has a type, a set, a release
 //  date and a source instead of notes, versions and a lock.
@@ -33,6 +35,10 @@ struct PreconDeckView: View {
     @State private var searchSessionActive = false
     @State private var viewer: CardViewerSession?
     @State private var importing = false
+    @State private var choosingFolder = false
+    /// The folder chosen in the sheet (`.some(nil)`: the top level); the
+    /// import runs once the sheet has gone, and the deck opens after it.
+    @State private var importFolder: UUID??
     @Namespace private var zoom
 
     private var collectionTracker: CollectionChangeTracker { .shared }
@@ -50,6 +56,17 @@ struct PreconDeckView: View {
             .searchable(text: $filterText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search this deck")
             .searchPresentationToolbarBehavior(.avoidHidingContent)
             .navigationBarBackButtonHidden(searchSessionActive)
+            // On the screen, not the bar's button: where the deck goes.
+            .sheet(isPresented: $choosingFolder, onDismiss: {
+                if let folder = importFolder {
+                    importFolder = nil
+                    Task { await importDeck(into: folder) }
+                }
+            }) {
+                DeckFolderPicker(title: "Import To", subtitle: deck?.name ?? summary?.name, createLabel: "Create and Import") { folder in
+                    importFolder = .some(folder)
+                }
+            }
             .onChange(of: searchSessionActive) { _, active in if active { tab = .cards } }
             .onChange(of: filterText) { _, text in if !text.isEmpty { tab = .cards } }
             .toolbar {
@@ -132,7 +149,7 @@ struct PreconDeckView: View {
     /// The one thing to do with a precon that isn't yours yet.
     private var importBar: some View {
         Button {
-            importDeck()
+            choosingFolder = true
         } label: {
             Label(importing ? "Importing…" : "Import as a Deck", systemImage: "square.and.arrow.down")
                 .font(.body.weight(.semibold))
@@ -164,15 +181,17 @@ struct PreconDeckView: View {
         }
     }
 
-    private func importDeck() {
+    /// Makes the deck in `folder`, then opens it; the bar says
+    /// "Importing…" while the rows go in (it used to be set and cleared
+    /// inside one synchronous call, so it never drew).
+    private func importDeck(into folder: UUID?) async {
         guard let deck, !importing else { return }
         importing = true
+        defer { importing = false }
         do {
-            let id = try controller.importDeck(deck, context: modelContext)
-            importing = false
+            let id = try await controller.importDeck(deck, into: folder, context: modelContext)
             onImported(id)
         } catch {
-            importing = false
             self.error = error.localizedDescription
         }
     }

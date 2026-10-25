@@ -271,14 +271,32 @@ nonisolated struct DeckStats: Hashable, Sendable {
         let basics: [(String, ManaColor)] = [("Plains", .white), ("Island", .blue), ("Swamp", .black), ("Mountain", .red), ("Forest", .green)]
         for (type, color) in basics where types.contains(type) { colors.insert(color) }
         guard let text = oracleText, text.contains("Add") else { return (colors, colorless) }
-        for symbol in ManaSymbol.parse(text) {
-            // Only symbols that follow "Add" produce; {T} costs don't.
-            for color in symbol.colors { colors.insert(color) }
-            if symbol.raw == "C" { colorless = true }
+        // Only symbols in an "Add …" clause produce. Once the text said
+        // "Add" anywhere every symbol in it counted, so an activation
+        // cost ("{B}, {T}: Add {C}") made a black source.
+        for clause in addClauses(in: text) {
+            for symbol in ManaSymbol.parse(String(clause)) {
+                for color in symbol.colors { colors.insert(color) }
+                if symbol.raw == "C" { colorless = true }
+            }
         }
         if text.contains("mana of any color") || text.contains("mana of any one color") {
             colors.formUnion(ManaColor.allCases)
         }
         return (colors, colorless)
+    }
+
+    /// Each "Add …" up to the end of its sentence (a period or a line
+    /// break): "{B}, {T}: Add {R} or {G}." gives "Add {R} or {G}".
+    static func addClauses(in text: String) -> [Substring] {
+        var out: [Substring] = []
+        var rest = text[...]
+        while let start = [rest.range(of: "Add "), rest.range(of: "add ")].compactMap({ $0 }).min(by: { $0.lowerBound < $1.lowerBound }) {
+            let tail = rest[start.lowerBound...]
+            let end = tail.firstIndex { $0 == "." || $0 == "\n" } ?? tail.endIndex
+            out.append(tail[..<end])
+            rest = tail[end...]
+        }
+        return out
     }
 }

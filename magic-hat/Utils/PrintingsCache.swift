@@ -17,7 +17,12 @@ final class PrintingsCache {
 
     /// New printings only appear when a set releases; a week is comfortably
     /// fresh and removes essentially all repeat traffic.
-    static let ttl: TimeInterval = 7 * 24 * 3600
+    nonisolated static let ttl: TimeInterval = 7 * 24 * 3600
+
+    /// Cards kept in memory. Every card the viewer rests on is warmed here,
+    /// and a basic land is hundreds of printings: unbounded, a long session
+    /// of swiping kept every one of them. The rest are a disk read away.
+    nonisolated static let defaultCapacity = 50
 
     nonisolated private struct Entry: Codable, Sendable {
         let cards: [ScryfallCard]
@@ -25,15 +30,24 @@ final class PrintingsCache {
     }
 
     private var memory: [String: Entry] = [:]
-    private var inFlight: [String: Task<[ScryfallCard], Error>] = [:]
+    /// Oracle ids in memory, least recently used first.
+    private var recency: [String] = []
+    private let capacity: Int
+    private var inFlight: [String: Task<Entry, Error>] = [:]
 
     private let directory: URL
     private let fm = FileManager.default
+    /// The search for a card's printings: Scryfall in the app, a stand-in
+    /// in tests.
+    private let fetch: @Sendable (String) async throws -> [ScryfallCard]
 
-    init() {
-        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        directory = caches.appendingPathComponent("Printings", isDirectory: true)
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+    init(directory: URL? = nil, capacity: Int = PrintingsCache.defaultCapacity,
+         fetch: (@Sendable (String) async throws -> [ScryfallCard])? = nil) {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        self.directory = directory ?? caches.appendingPathComponent("Printings", isDirectory: true)
+        try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+        self.capacity = max(1, capacity)
+        self.fetch = fetch ?? { oracleID in try await ScryfallClient.shared.printings(oracleID: oracleID) }
     }
 
     /// Printings already in memory, or nil. Never touches disk or the
@@ -42,28 +56,38 @@ final class PrintingsCache {
     /// every printing of the card, hundreds for a basic land, once per
     /// card the pager rested on — the stalls while swiping the viewer.)
     func cached(oracleID: String) -> [ScryfallCard]? {
-        if let entry = memory[oracleID], isFresh(entry) { return entry.cards }
+        if let entry = memory[oracleID], isFresh(entry) {
+            touch(oracleID)
+            return entry.cards
+        }
         return nil
     }
 
+    /// Oracle ids held in memory, least recently used first (tests).
+    var memoryKeys: [String] { recency }
+
     func printings(oracleID: String) async throws -> [ScryfallCard] {
         if let cards = cached(oracleID: oracleID) { return cards }
-        if let existing = inFlight[oracleID] { return try await existing.value }
+        if let existing = inFlight[oracleID] { return try await existing.value.cards }
 
-        let task = Task { () throws -> [ScryfallCard] in
-            if let entry = await Self.readDisk(self.fileURL(oracleID)), self.isFresh(entry) {
-                return entry.cards
+        let file = fileURL(oracleID)
+        let fetch = self.fetch
+        let task = Task { () throws -> Entry in
+            if let entry = await Self.readDisk(file), Self.isFresh(entry) {
+                return entry
             }
-            let cards = try await ScryfallClient.shared.printings(oracleID: oracleID)
-            await Self.writeDisk(Entry(cards: cards, fetchedAt: Date()), to: self.fileURL(oracleID))
-            return cards
+            let entry = Entry(cards: try await fetch(oracleID), fetchedAt: Date())
+            await Self.writeDisk(entry, to: file)
+            return entry
         }
         inFlight[oracleID] = task
         defer { inFlight[oracleID] = nil }
 
-        let cards = try await task.value
-        memory[oracleID] = Entry(cards: cards, fetchedAt: Date())
-        return cards
+        // Kept with the date it was fetched, so one read from disk doesn't
+        // restart its week.
+        let entry = try await task.value
+        remember(entry, for: oracleID)
+        return entry.cards
     }
 
     /// Warms the cache without caring about the result (used while browsing
@@ -72,10 +96,27 @@ final class PrintingsCache {
         _ = try? await printings(oracleID: oracleID)
     }
 
+    // MARK: Memory
+
+    private func remember(_ entry: Entry, for oracleID: String) {
+        memory[oracleID] = entry
+        touch(oracleID)
+        while recency.count > capacity {
+            memory[recency.removeFirst()] = nil
+        }
+    }
+
+    private func touch(_ oracleID: String) {
+        if let i = recency.firstIndex(of: oracleID) { recency.remove(at: i) }
+        recency.append(oracleID)
+    }
+
     // MARK: Disk
 
-    private func isFresh(_ entry: Entry) -> Bool {
-        Date().timeIntervalSince(entry.fetchedAt) < Self.ttl
+    private func isFresh(_ entry: Entry) -> Bool { Self.isFresh(entry) }
+
+    nonisolated private static func isFresh(_ entry: Entry) -> Bool {
+        Date().timeIntervalSince(entry.fetchedAt) < ttl
     }
 
     private func fileURL(_ oracleID: String) -> URL {

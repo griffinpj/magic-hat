@@ -161,7 +161,7 @@ struct DeckVersionsView: View {
             Text(branch.ahead == 0 ? "Its versions are all on other branches; nothing else is removed."
                  : "Its \(branch.ahead == 1 ? "version" : "\(branch.ahead) versions") that no other branch has will be removed with it.")
         }
-        .confirmationDialog("Discard unsaved changes?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+        .alert("Discard Unsaved Changes?", isPresented: $confirmDiscard) {
             Button(snapshot?.isBuilt == true ? "Discard and Rebuild" : "Discard Changes", role: .destructive) {
                 change("Changes discarded") { try DeckVersionController.discardChanges(deckID: deckID, context: modelContext) }
             }
@@ -170,8 +170,8 @@ struct DeckVersionsView: View {
             Text("The list goes back to “\(snapshot?.versions.first?.title ?? "the last version")”. This can't be undone."
                  + (snapshot.map { DeckRebuildText.note(builtCopies: $0.builtCopies) } ?? ""))
         }
-        .confirmationDialog("Switch to “\(switching?.name ?? "")”?", isPresented: Binding(get: { switching != nil }, set: { if !$0 { switching = nil } }),
-                            titleVisibility: .visible, presenting: switching) { branch in
+        .alert("Switch to “\(switching?.name ?? "")”?", isPresented: Binding(get: { switching != nil }, set: { if !$0 { switching = nil } }),
+               presenting: switching) { branch in
             Button("Switch and Rebuild") { switchTo(branch) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
@@ -382,9 +382,11 @@ struct DeckVersionsView: View {
             .glassEffect(.regular, in: Capsule())
             .padding(.top, 8)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .task {
+            // Keyed on the message: a second toast within two seconds
+            // restarts the clock instead of being cleared by the first's.
+            .task(id: toast) {
                 try? await Task.sleep(for: .seconds(2))
-                self.toast = nil
+                if !Task.isCancelled { self.toast = nil }
             }
             .accessibilityIdentifier("versions-toast")
         }
@@ -603,6 +605,10 @@ struct DeckVersionCompareView: View {
     @State private var error: String?
     @State private var pushed: DeckVersionRoute?
     @State private var isRebuilding = false
+    /// A changed card in the viewer, zooming from its row, as on the
+    /// deck's own list.
+    @State private var viewer: CardViewerSession?
+    @Namespace private var zoom
 
     private var deckTracker: DeckChangeTracker { .shared }
     private var version: DeckVersionInfo? { versionID.flatMap { id in info?.versions.first { $0.id == id } } }
@@ -649,6 +655,10 @@ struct DeckVersionCompareView: View {
             }
         }
         .navigationDestination(item: $pushed) { $0.destination(deckID: deckID) }
+        .fullScreenCover(item: $viewer) { v in
+            CardViewerView(items: v.items, currentID: Bindable(v).currentID)
+                .navigationTransition(.zoom(sourceID: v.currentID ?? "", in: zoom))
+        }
         .safeAreaBar(edge: .bottom) { restoreBar }
         .task(id: deckTracker.revision) { await load() }
         .sensoryFeedback(.success, trigger: done)
@@ -670,7 +680,7 @@ struct DeckVersionCompareView: View {
             Text("Starts a branch at this version and switches the deck's list to it. Anything unsaved is saved on \(info?.current?.name ?? "the current branch") first."
                  + DeckRebuildText.note(builtCopies: info?.builtCopies ?? 0))
         }
-        .confirmationDialog("Restore this version?", isPresented: $confirmRestore, titleVisibility: .visible) {
+        .alert("Restore This Version?", isPresented: $confirmRestore) {
             Button(info?.isBuilt == true ? "Restore and Rebuild" : "Restore") {
                 change { try DeckVersionController.restore(versionID: versionID!, context: modelContext) }
             }
@@ -729,7 +739,13 @@ struct DeckVersionCompareView: View {
             ForEach(comparison.groups) { group in
                 Section {
                     ForEach(group.items) { item in
-                        ChangeRow(item: item)
+                        Button {
+                            let cards = comparison.groups.flatMap(\.items).map(\.card)
+                            viewer = CardViewerSession(items: cards, currentID: item.card.id)
+                        } label: {
+                            ChangeRow(item: item, zoom: zoom)
+                        }
+                        .buttonStyle(.plain)
                     }
                 } header: {
                     Text("\(groupTitle(group.kind)) · \(group.copies)")
@@ -820,10 +836,11 @@ struct DeckVersionCompareView: View {
 /// A card and what happened to it between the two lists.
 private struct ChangeRow: View {
     let item: DeckComparison.Item
+    var zoom: Namespace.ID? = nil
 
     var body: some View {
         HStack(spacing: 8) {
-            CardRowLead(item: item.card) {
+            CardRowLead(item: item.card, zoom: zoom) {
                 Text(item.card.typeLine ?? item.change.row.deckBoard.label)
             }
             Spacer(minLength: 8)
@@ -832,6 +849,7 @@ private struct ChangeRow: View {
                 .monospacedDigit()
                 .fixedSize()
         }
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("version-change-\(item.card.name)")
     }

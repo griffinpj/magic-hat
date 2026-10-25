@@ -29,6 +29,10 @@ struct SetBrowserView<Header: View>: View {
     @State private var owned: [String: Int] = [:]
     @State private var failed = false
     @State private var loaded = false
+    /// Bumped on every load that returns a list: what the grouping is keyed
+    /// on. Keyed on `sets.count`, a refresh that changed a set without
+    /// changing how many there are (a release date, a name) never regrouped.
+    @State private var loadGeneration = 0
 
     private var kind: SetKind { SetKind(rawValue: kindRaw) ?? .main }
     private var tracker: CollectionChangeTracker { .shared }
@@ -46,7 +50,7 @@ struct SetBrowserView<Header: View>: View {
         }
         .task { await load(force: false) }
         .task(id: tracker.revision) { await loadOwned() }
-        .task(id: "\(filter)|\(kindRaw)|\(includeDigital)|\(sets.count)") { await regroup() }
+        .task(id: "\(filter)|\(kindRaw)|\(includeDigital)|\(loadGeneration)") { await regroup() }
     }
 
     @ViewBuilder private var placeholder: some View {
@@ -118,6 +122,7 @@ struct SetBrowserView<Header: View>: View {
     private func load(force: Bool) async {
         do {
             sets = try await ScryfallCatalogCache.shared.sets(forceRefresh: force)
+            loadGeneration += 1
             failed = false
         } catch {
             failed = true
@@ -267,7 +272,7 @@ struct SetCardsView: View {
         .sheet(isPresented: $showFilters, onDismiss: { pinSet(); controller.runIfChanged() }) {
             SearchFiltersView(query: $controller.query, context: .set)
         }
-        .cardSelectionBar(selection, items: controller.results)
+        .cardSelectionBar(selection, items: controller.resultList)
         .task {
             guard controller.phase == .idle else { return }
             var q = CardSearchQuery()

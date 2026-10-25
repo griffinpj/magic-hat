@@ -35,8 +35,15 @@ final class SearchController {
 
     private(set) var phase: Phase = .idle
     private(set) var results: [CardItem] = [] {
-        didSet { resultList = CardItemList(results) }
+        didSet {
+            resultList = CardItemList(results)
+            foldedNames = nil
+        }
     }
+    /// The distinct names of the first results, each with its folded form
+    /// (case and diacritics), made once per results rather than a
+    /// locale-aware `range(of:options:)` per name per render.
+    @ObservationIgnored private var foldedNames: [(name: String, folded: String)]?
     /// `results` for the grid: stamped, so the grid's input compare is one
     /// integer rather than every card (see CardItemList).
     private(set) var resultList = CardItemList()
@@ -71,6 +78,36 @@ final class SearchController {
     }
 
     var hasResults: Bool { !results.isEmpty }
+
+    /// Distinct card names in the results that contain `text`, prefix
+    /// matches first, at most `limit` — the field's completions, which obey
+    /// the filters because they come from the results. The first 200
+    /// results are folded once; each keystroke is plain `hasPrefix` /
+    /// `contains` on them.
+    func completions(for text: String, limit: Int = 8) -> [String] {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.count >= 2, !t.contains(":") else { return [] }
+        let needle = Self.fold(t)
+        if foldedNames == nil {
+            var seen = Set<String>()
+            foldedNames = results.prefix(200).compactMap { item in
+                seen.insert(item.name).inserted ? (item.name, Self.fold(item.name)) : nil
+            }
+        }
+        var prefix: [String] = [], contains: [String] = []
+        for (name, folded) in foldedNames ?? [] where folded != needle {
+            if folded.hasPrefix(needle) {
+                prefix.append(name)
+            } else if folded.contains(needle) {
+                contains.append(name)
+            }
+        }
+        return Array((prefix + contains).prefix(limit))
+    }
+
+    private nonisolated static func fold(_ s: String) -> String {
+        s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+    }
 
     // MARK: Running
 

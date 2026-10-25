@@ -7,11 +7,15 @@
 //  the honest thing on a first run — the app is far more useful once the
 //  catalog is in — but escapable: "Continue in background" hands off to the
 //  small status bar above the tabs. Later refreshes never show this screen.
+//  A failed first run (offline) offers Try Again: the only other retry was
+//  leaving the app and coming back.
 //
 
 import SwiftUI
+import SwiftData
 
 struct CatalogSetupView: View {
+    @Environment(\.modelContext) private var modelContext
     var controller = CatalogSyncController.shared
     let onContinue: () -> Void
 
@@ -59,6 +63,17 @@ struct CatalogSetupView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                }
+                if failure != nil {
+                    Button {
+                        let container = modelContext.container
+                        Task { await controller.syncIfNeeded(container: container) }
+                    } label: {
+                        Text("Try Again")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("catalog-setup-retry")
                 }
                 Button(action: onContinue) {
                     Text(failure == nil ? "Continue in background" : "Continue")

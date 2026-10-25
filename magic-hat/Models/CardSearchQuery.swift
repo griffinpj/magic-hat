@@ -17,6 +17,7 @@
 //
 
 import Foundation
+import Synchronization
 
 // MARK: - Enumerations
 
@@ -539,98 +540,33 @@ nonisolated extension CardSearchQuery {
     /// Mirrors `scryfallQuery` clause for clause; options that only mean
     /// something to Scryfall (grouping, extras) are ignored. Every word of
     /// the text must appear in the name, type line, rules text or set name.
+    ///
+    /// Evaluated by a `CardSearchMatcher`, which folds the query's words
+    /// once; the last one built is reused while the query is the same, so
+    /// `items.filter { q.matches($0) }` folds the query once per filter, not
+    /// once per card. A caller filtering many cards can hold `matcher()`.
     func matches(_ item: CardItem) -> Bool {
-        let text = trimmedText
-        if !text.isEmpty {
-            let fields = [item.name, item.typeLine ?? "", item.oracleText ?? "", item.setName]
-            for word in text.split(whereSeparator: \.isWhitespace) {
-                let w = String(word)
-                if !fields.contains(where: { Self.contains($0, w) }) { return false }
-            }
+        if let cached = Self.lastMatcher.withLock({ $0?.query == self ? $0 : nil }) {
+            return cached.matches(item)
         }
-        if let language, language != "any", item.language.lowercased() != language { return false }
-        for format in formats where item.legalities?[format.rawValue] != "legal" { return false }
-
-        let cardColors = Set(useColorIdentity ? item.colorIdentity : item.colors)
-        if !colors.isEmpty {
-            switch colorMode {
-            case .exactly: if cardColors != colors { return false }
-            case .including: if !cardColors.isSuperset(of: colors) { return false }
-            case .atMost: if !cardColors.isSubset(of: colors) { return false }
-            }
-        } else if colorless, !cardColors.isEmpty {
-            return false
-        }
-        if let minColors, cardColors.count < minColors { return false }
-        if let maxColors, cardColors.count > maxColors { return false }
-
-        if !Self.matches(item.typeLine ?? "", typeLine, match: typeLineMatch) { return false }
-        if !Self.matches(item.oracleText ?? "", oracle, match: oracleMatch) { return false }
-
-        let cost = Self.normalizedManaCost(manaCost)
-        if !cost.isEmpty {
-            let wanted = ManaSymbol.parse(cost)
-            let have = ManaSymbol.parse(item.manaCost ?? "")
-            switch manaCostMatch {
-            case .exactly: if wanted != have { return false }
-            case .contains: if !Self.isSubMultiset(wanted, of: have) { return false }
-            }
-        }
-
-        if !sets.isEmpty {
-            let code = item.setCode.lowercased()
-            if !sets.contains(where: { $0.lowercased() == code }) { return false }
-        }
-        if !rarities.isEmpty, !rarities.contains(where: { $0.rawValue == item.rarity.lowercased() }) { return false }
-
-        if price.isSet {
-            guard let p = item.marketPrice else { return false }
-            if let min = price.min, p < min { return false }
-            if let max = price.max, p > max { return false }
-        }
-
-        for c in stats {
-            let value: Int?
-            switch c.stat {
-            case .manaValue: value = ManaSymbol.manaValue(of: item.manaCost ?? "")
-            case .power: value = Int(item.power ?? "")
-            case .toughness: value = Int(item.toughness ?? "")
-            case .loyalty: value = Int(item.loyalty ?? "")
-            }
-            guard let value, c.op.evaluate(value, c.value) else { return false }
-        }
-
-        if !finishes.isEmpty {
-            let finish: CardFinishFilter
-            switch item.finish {
-            case .normal: finish = .nonfoil
-            case .foil: finish = .foil
-            case .etched: finish = .etched
-            }
-            if !finishes.contains(finish) { return false }
-        }
-
-        let a = artist.trimmingCharacters(in: .whitespaces)
-        if !a.isEmpty, !Self.contains(item.artist ?? "", a) { return false }
-        return true
+        let made = matcher()
+        Self.lastMatcher.withLock { $0 = made }
+        return made.matches(item)
     }
+
+    /// The query prepared for evaluating many cards.
+    func matcher() -> CardSearchMatcher { CardSearchMatcher(self) }
+
+    private static let lastMatcher = Mutex<CardSearchMatcher?>(nil)
 
     /// Every included term (or any, with `.any`) in `text`, no excluded one.
     static func matches(_ text: String, _ terms: [TextTerm], match: TermMatch) -> Bool {
-        let included = terms.included
-        if !included.isEmpty {
-            let hit: Bool
-            switch match {
-            case .all: hit = included.allSatisfy { contains(text, $0.text) }
-            case .any: hit = included.contains { contains(text, $0.text) }
-            }
-            if !hit { return false }
-        }
-        return !terms.excluded.contains { contains(text, $0.text) }
+        CardSearchMatcher.Terms(terms, match: match).matches(CardSearchFolding.fold(text))
     }
 
+    /// Case- and diacritic-insensitive containment, as Scryfall matches.
     static func contains(_ haystack: String, _ needle: String) -> Bool {
-        haystack.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        CardSearchFolding.contains(CardSearchFolding.fold(haystack), CardSearchFolding.fold(needle))
     }
 
     /// Every symbol in `part` occurs at least as often in `whole`.

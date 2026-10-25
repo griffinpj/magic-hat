@@ -37,6 +37,9 @@ struct DeckDetailView: View {
 
     @State private var snapshot: DeckSnapshot?
     @State private var hasLoaded = false
+    /// Bumped when hydration writes while this deck has cards pending.
+    @State private var hydrationReloads = 0
+    @State private var hydrationAsked: Set<String> = []
     @State private var tab: Tab = .cards
     @State private var showBuild = false
     /// The card viewer, presented from the screen rather than from the
@@ -69,6 +72,10 @@ struct DeckDetailView: View {
     @State private var filterText = ""
     @State private var searchSessionActive = false
     @State private var confirmDisassemble = false
+    /// "Move All to One Collection…": the picker, and the name it chose
+    /// (acted on once the sheet has gone, so the pill shows over the deck).
+    @State private var pickingDestination = false
+    @State private var destination = ""
     @State private var confirmDelete = false
     @State private var showRename = false
     @State private var newName = ""
@@ -129,20 +136,49 @@ struct DeckDetailView: View {
             if let snapshot { DeckExportView(snapshot: snapshot) }
         }
         .fullScreenCover(isPresented: $showPlaytest) {
-            if let snapshot { DeckPlaytestView(snapshot: snapshot) }
+            // Deals once from the first snapshot, off-main; a reload under
+            // the game (or a nil snapshot mid-reload) leaves it alone.
+            DeckPlaytestView(snapshot: snapshot)
         }
-        .confirmationDialog("Disassemble \(snapshot?.name ?? "deck")?", isPresented: $confirmDisassemble, titleVisibility: .visible) {
-            Button("Move \(snapshot?.builtCopies ?? 0) Cards Back", role: .destructive) { disassemble() }
+        // Where the built cards go is the user's: back where each came
+        // from, all into one collection, or removed — the last for a deck
+        // whose cards are already back in a collection by another road (a
+        // collection deleted and imported again), where returning them
+        // would count every copy twice. Every choice is one History action.
+        .alert("Disassemble \(snapshot?.name ?? "deck")?", isPresented: $confirmDisassemble) {
+            Button("Move \(snapshot?.builtCopies ?? 0) Cards Back") { disassemble(.sources) }
+            Button("Move All to One Collection…") { pickingDestination = true }
+            Button("Remove the Cards", role: .destructive) { disassemble(.discard) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Every card returns to the collection it was built from. The list stays.")
+            Text("Each card can return to the collection it was built from, all of them can go to one collection, or they can be removed. The list stays either way. Recorded in History.")
         }
-        .confirmationDialog("Delete \(snapshot?.name ?? "deck")?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete Deck", role: .destructive) { deleteDeck() }
+        .sheet(isPresented: $pickingDestination, onDismiss: {
+            guard !destination.isEmpty else { return }
+            let name = destination
+            destination = ""
+            disassemble(.collection(name))
+        }) {
+            NavigationStack {
+                CollectionPickerView(selected: $destination, collectionsOnly: true)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel", role: .cancel) { pickingDestination = false }
+                        }
+                    }
+            }
+        }
+        .alert("Delete \(snapshot?.name ?? "deck")?", isPresented: $confirmDelete) {
+            if snapshot?.isBuilt == true {
+                Button("Delete and Move Cards Back", role: .destructive) { deleteDeck(.sources) }
+                Button("Delete and Remove Cards", role: .destructive) { deleteDeck(.discard) }
+            } else {
+                Button("Delete Deck", role: .destructive) { deleteDeck(.sources) }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(snapshot?.isBuilt == true
-                 ? "Its cards go back to their collections first, then the list is deleted."
+                 ? "Its \(snapshot?.builtCopies ?? 0) cards go back to their collections, or are removed; then the list is deleted. Recorded in History."
                  : "The list is deleted. No cards are affected.")
         }
         .alert("Rename Deck", isPresented: $showRename) {
@@ -153,7 +189,7 @@ struct DeckDetailView: View {
         .alert("Something Went Wrong", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(error ?? "") }
-        .task(id: "\(deckID)|\(deckTracker.revision)|\(collectionTracker.revision)") { await load() }
+        .task(id: "\(deckID)|\(deckTracker.revision)|\(collectionTracker.revision)|\(hydrationReloads)") { await load() }
     }
 
     /// The pages, the bars and the selection; `body` adds the sheets.
@@ -162,6 +198,14 @@ struct DeckDetailView: View {
         .background {
             SearchDismisser(isEmpty: filterText.isEmpty)
             SearchSessionReporter(isActive: $searchSessionActive)
+            // Re-read once the deck's own pending cards land — only then:
+            // during a collection sync the revision moves per batch, and
+            // the deck has nothing to gain from those.
+            HydrationObserver {
+                if let pending = snapshot?.pendingMetaIDs, pending.contains(where: hydrationAsked.contains) {
+                    hydrationReloads &+= 1
+                }
+            }
         }
         .navigationTitle(snapshot?.name ?? "Deck")
         .navigationSubtitle(snapshot?.subtitle ?? "")
@@ -183,12 +227,12 @@ struct DeckDetailView: View {
                 }
             }
         }
-        .cardSelectionBar(selection, items: snapshot?.allItems.map(\.card) ?? [], actions: selectionActions, managesBack: false)
+        .cardSelectionBar(selection, ids: snapshot?.allItems.map(\.card.id) ?? [], items: { snapshot?.allItems.map(\.card) ?? [] }, actions: selectionActions, managesBack: false)
         .onChange(of: selection.isActive) { _, active in if active { tab = .cards } }
         .onChange(of: snapshot?.allItems.map(\.card.id)) { _, ids in selection.keep(only: ids ?? []) }
-        .confirmationDialog("Remove \(pendingRemove?.count == 1 ? "1 Card" : "\(pendingRemove?.count ?? 0) Cards") from the Deck?",
-                            isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
-                            titleVisibility: .visible, presenting: pendingRemove) { cards in
+        .alert("Remove \(pendingRemove?.count == 1 ? "1 Card" : "\(pendingRemove?.count ?? 0) Cards") from the Deck?",
+               isPresented: Binding(get: { pendingRemove != nil }, set: { if !$0 { pendingRemove = nil } }),
+               presenting: pendingRemove) { cards in
             Button("Remove", role: .destructive) { removeRows(cards) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
@@ -337,6 +381,15 @@ struct DeckDetailView: View {
             snapshot = fetched
             if session == nil { session = DeckAddSession(deckID: deckID, board: .main, context: modelContext) }
             session?.update(from: fetched)
+            // Cards only the deck names (added from a Scryfall search the
+            // catalog lacks) — no collection sync will ever fetch them.
+            // Each id once per visit: a card Scryfall can't find stays
+            // pending, and asking again per re-read would be a request each.
+            let ask = fetched.pendingMetaIDs.filter { !hydrationAsked.contains($0) }
+            if !ask.isEmpty {
+                hydrationAsked.formUnion(ask)
+                CardHydrationController.shared.hydrate(scryfallIDs: ask, context: modelContext)
+            }
             analysis.refresh(snapshot: fetched, container: modelContext.container)
         } else if !Task.isCancelled {
             snapshot = nil
@@ -355,11 +408,11 @@ struct DeckDetailView: View {
         catch { self.error = error.localizedDescription }
     }
 
-    private func disassemble() {
+    private func disassemble(_ destination: DisassembleDestination) {
         let container = modelContext.container
         Task {
             do {
-                _ = try await DeckBuilder.shared(for: container).disassemble(deckID: deckID)
+                _ = try await DeckBuilder.shared(for: container).disassemble(deckID: deckID, destination: destination)
                 CollectionChangeTracker.shared.bump()
                 DeckChangeTracker.shared.bump()
             } catch {
@@ -368,15 +421,16 @@ struct DeckDetailView: View {
         }
     }
 
-    private func deleteDeck() {
+    /// Always through the builder first, whatever the snapshot says about
+    /// built copies: it returns at once when there is nothing to move, and
+    /// a stale count used to leave rows behind under a deleted deck's key.
+    private func deleteDeck(_ destination: DisassembleDestination) {
         let container = modelContext.container
         let context = modelContext
         Task {
             do {
-                if snapshot?.isBuilt == true {
-                    _ = try await DeckBuilder.shared(for: container).disassemble(deckID: deckID)
-                    CollectionChangeTracker.shared.bump()
-                }
+                let apart = try await DeckBuilder.shared(for: container).disassemble(deckID: deckID, destination: destination)
+                if apart.returnedCopies + apart.removedCopies > 0 { CollectionChangeTracker.shared.bump() }
                 try DeckEditController.delete(deckID: deckID, context: context)
                 dismiss()
             } catch {

@@ -66,6 +66,64 @@ struct RateLimiterTests {
         #expect(await limiter.scryfallPauseRemaining == 30)
     }
 
+    /// MTGJSON is not Scryfall: its own lane, outside the shared bucket,
+    /// and a Scryfall 429 doesn't hold it.
+    @Test func mtgjsonHasItsOwnLaneOutsideScryfall() async {
+        #expect(!RateLimitCategory.mtgjson.isScryfallAPI && !RateLimitCategory.mtgjson.isScryfall)
+        let (limiter, clock) = make()
+        await limiter.wait(for: .other)
+        await limiter.wait(for: .mtgjson)
+        #expect(clock.slept.isEmpty, "a precon file doesn't queue behind the API bucket")
+        await limiter.wait(for: .cardsCollection)
+        #expect(approx(clock.slept, [0.2]), "and doesn't spend it: only the API's own spacing, \(clock.slept)")
+        await limiter.backOff(seconds: 60)
+        let before = clock.slept.count
+        await limiter.wait(for: .mtgjson)
+        #expect(clock.slept.dropFirst(before).allSatisfy { $0 < 1 }, "a Scryfall pause doesn't hold MTGJSON: \(clock.slept)")
+    }
+
+    /// A cancelled caller (a tile scrolled past) leaves at once and takes
+    /// no slot, so the next request isn't spaced around it.
+    @Test func aCancelledWaiterTakesNoSlot() async {
+        let (limiter, clock) = make()
+        await limiter.wait(for: .images)
+        await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await limiter.wait(for: .images)
+        }.value
+        #expect(clock.slept.isEmpty, "the cancelled wait didn't sleep: \(clock.slept)")
+        await limiter.wait(for: .images)
+        #expect(approx(clock.slept, [0.2]), "one spacing after the first, not two: \(clock.slept)")
+    }
+
+    /// Cancelled *while sleeping* (the flick, the superseded search): the
+    /// reservation goes back, so the next caller is spaced from the last
+    /// request that ran, not from one that never happened.
+    @Test func aWaiterCancelledWhileSleepingGivesItsSlotBack() async {
+        final class CancelNextSleep: @unchecked Sendable {
+            private var armed = false
+            private let lock = NSLock()
+            func arm() { lock.lock(); armed = true; lock.unlock() }
+            func take() -> Bool { lock.lock(); defer { armed = false; lock.unlock() }; return armed }
+        }
+        let clock = Clock()
+        let cancel = CancelNextSleep()
+        // `Task.sleep` wakes at once on cancellation: the clock doesn't move.
+        let limiter = RateLimiter(now: { clock.time() }, sleep: { seconds in
+            if cancel.take() { withUnsafeCurrentTask { $0?.cancel() }; return }
+            clock.sleep(seconds)
+        })
+        for category in [RateLimitCategory.images, .cardsSearch] {
+            clock.slept = []
+            await limiter.wait(for: category)   // first in its lane: no wait
+            cancel.arm()
+            await Task { await limiter.wait(for: category) }.value
+            await limiter.wait(for: category)
+            #expect(approx(clock.slept, [category.minInterval]),
+                    "\(category): one spacing after the request that ran, not two: \(clock.slept)")
+        }
+    }
+
     @Test func retryAfterParsing() {
         #expect(RateLimiter.retryAfter("60") == 60)
         #expect(RateLimiter.retryAfter(" 7 ") == 7)

@@ -42,27 +42,57 @@ final class CardHydrationController {
     /// used to await the whole run, so backing out of the grid — or any
     /// write bumping the tracker — cancelled a half-done price refresh.
     private(set) var syncTask: Task<Void, Never>?
+    /// Which queued run `syncTask` stands for: only the last one clears it.
+    private var syncGeneration = 0
     var syncFraction: Double {
         syncTotal > 0 ? Double(syncedCount) / Double(syncTotal) : 0
     }
 
-    /// Hydrates metadata for EVERY id in the collection, in batches of 75.
+    /// Runs `work` after whatever is already queued, as the one owned task.
+    /// Every full run comes through here — a screen's `sync`, the import
+    /// wizard's `hydrateAll`, Settings' forced price refresh — so
+    /// `syncTask` always ends with the last of them. The wizard's run and
+    /// the forced refresh used to run beside it: a grid opened mid-import
+    /// awaited a nil task and never re-sorted once prices and rarities
+    /// landed. Queued, not dropped: what the later run still needs it
+    /// works out when its turn comes (most of it is `hydrated` by then).
+    private func enqueue<T: Sendable>(_ work: @escaping @MainActor () async -> T) -> Task<T, Never> {
+        let previous = syncTask
+        syncGeneration &+= 1
+        let generation = syncGeneration
+        let task = Task { @MainActor in
+            await previous?.value
+            return await work()
+        }
+        syncTask = Task { @MainActor [weak self] in
+            _ = await task.value
+            if self?.syncGeneration == generation { self?.syncTask = nil }
+        }
+        return task
+    }
+
+    /// Hydrates metadata for EVERY id in the collection, in batches of 75,
+    /// in the order given (the wizard passes the file's).
     ///
     /// Viewport-only hydration left most cards without a price or rarity, so
     /// sorting by those keys operated on mostly-empty data. Fetching the whole
     /// collection once (then cached in SwiftData forever) makes every sort
     /// correct and makes collection value computable. Applies per chunk so the
-    /// grid fills in progressively.
+    /// grid fills in progressively. Queued behind a sync already running and
+    /// awaited to its end; the caller can tell by `syncTask` being set first.
     func hydrateAll(scryfallIDs: [String], context: ModelContext) async {
-        guard !isSyncing else { return }
-        let all = Set(scryfallIDs).subtracting(hydrated)
-        guard !all.isEmpty else { return }
+        await enqueue { await self.hydrateAllNow(scryfallIDs: scryfallIDs, context: context) }.value
+    }
 
-        let needed = await writer(context).neededIDs(from: all)
-        hydrated.formUnion(all.subtracting(needed))
-        guard !needed.isEmpty else { return }
-
-        await run(needed: needed, context: context)
+    private func hydrateAllNow(scryfallIDs: [String], context: ModelContext) async {
+        var seen = Set<String>()
+        let ordered = scryfallIDs.filter { !hydrated.contains($0) && seen.insert($0).inserted }
+        guard !ordered.isEmpty else { return }
+        let needed = await writer(context).neededIDs(from: seen)
+        hydrated.formUnion(seen.subtracting(needed))
+        let queue = ordered.filter(needed.contains)
+        guard !queue.isEmpty else { return }
+        await run(queue, context: context)
     }
 
     private func writer(_ context: ModelContext) -> CardMetaWriter {
@@ -72,46 +102,43 @@ final class CardHydrationController {
     /// Metadata for `pending`, then prices for `stale`, as one run the
     /// controller owns. A screen calls it and carries on; it can await
     /// `syncTask?.value` for the end without its own cancellation
-    /// reaching the run. A run already going is left alone.
+    /// reaching the run. A run already going (or queued) is left alone:
+    /// the grid and the app-level refresh both ask on every open.
+    /// `pending` is fetched in the order given — the grid passes its
+    /// snapshot's, so the first screen fills first.
     func sync(pending: [String], stale: [String], context: ModelContext) {
         guard syncTask == nil, !isSyncing else { return }
         guard !pending.isEmpty || !stale.isEmpty else { return }
-        syncTask = Task { [weak self] in
-            guard let self else { return }
-            defer { syncTask = nil }
-            await hydrate(pending: pending, context: context)
-            await refreshPrices(stale: stale, context: context)
+        _ = enqueue {
+            await self.hydrate(pending: pending, context: context)
+            _ = await self.runPrices(stale: stale, context: context, force: false)
         }
     }
 
     /// Same as `hydrateAll`, but the caller already knows which ids are
     /// pending (CollectionStore works it out while building the snapshot), so
     /// no store round-trip is made here at all.
-    func hydrate(pending ids: [String], context: ModelContext) async {
-        guard !isSyncing else { return }
-        let needed = Set(ids).subtracting(hydrated)
-        guard !needed.isEmpty else { return }
-        await run(needed: needed, context: context)
+    private func hydrate(pending ids: [String], context: ModelContext) async {
+        var seen = Set<String>()
+        let queue = ids.filter { !hydrated.contains($0) && seen.insert($0).inserted }
+        guard !queue.isEmpty else { return }
+        await run(queue, context: context)
     }
 
-    private func run(needed: Set<String>, context: ModelContext) async {
+    private func run(_ ids: [String], context: ModelContext) async {
         isSyncing = true
         syncLabel = "Syncing"
-        syncTotal = needed.count
+        syncTotal = ids.count
         syncedCount = 0
         let activity = DataActivity.shared
-        activity.begin(.cardData, total: needed.count)
+        activity.begin(.cardData, total: ids.count)
         var failed = 0
-        // Register with the viewport prefetcher so tiles appearing mid-sync
-        // don't request the same ids a second time.
-        inFlight.formUnion(needed)
 
         // Keep going for a short while if the user backgrounds the app; the
         // work is idempotent, so whatever doesn't finish resumes on next open.
         let assertion = UIApplication.shared.beginBackgroundTask(withName: "card-sync")
         defer {
             isSyncing = false
-            inFlight.subtract(needed)
             if assertion != .invalid { UIApplication.shared.endBackgroundTask(assertion) }
             let done = syncedCount
             activity.end(.cardData, count: done - failed,
@@ -121,27 +148,56 @@ final class CardHydrationController {
                          failed: failed > 0 && failed == done)
         }
 
-        for chunk in Array(needed).chunked(into: ScryfallClient.collectionBatchSize) {
+        // Each batch is claimed in `inFlight` only as it goes out, and is
+        // the next ids no one has fetched or claimed: the tiles on screen
+        // ask through `hydrate(scryfallIDs:)`, and their window goes out
+        // ahead of the rest of this run instead of waiting its turn. The
+        // whole run used to be claimed up front, so the viewport top-up
+        // was a no-op and, after an import, the tiles on screen filled at
+        // a random point of a fifty-batch run (the ids came from a Set).
+        var cursor = 0
+        while cursor < ids.count {
             if Task.isCancelled { return }
-            do {
-                let response = try await client.collection(ids: chunk)
-                await apply(cards: response.data, context: context)
-                hydrated.formUnion(chunk)
-            } catch {
-                try? await writer(context).markFailed(Set(chunk))
-                failed += chunk.count
+            var chunk: [String] = []
+            while cursor < ids.count, chunk.count < ScryfallClient.collectionBatchSize {
+                let id = ids[cursor]
+                cursor += 1
+                if !hydrated.contains(id), !inFlight.contains(id) { chunk.append(id) }
             }
-            syncedCount += chunk.count
+            if !chunk.isEmpty {
+                inFlight.formUnion(chunk)
+                do {
+                    let response = try await client.collection(ids: chunk)
+                    await apply(cards: response.data, context: context)
+                    // Ids Scryfall doesn't know: marked so they rest a day
+                    // rather than going out again on every launch.
+                    let missing = Set(response.notFound?.compactMap(\.id) ?? [])
+                    if !missing.isEmpty {
+                        try? await writer(context).markFailed(missing, notFound: true)
+                        failed += missing.count
+                    }
+                    hydrated.formUnion(chunk)
+                } catch {
+                    try? await writer(context).markFailed(Set(chunk))
+                    failed += chunk.count
+                }
+                inFlight.subtract(chunk)
+            }
+            syncedCount = cursor
             activity.progress(.cardData, done: syncedCount)
         }
     }
 
     /// Re-fetches prices for ids the caller already knows are stale (the store
     /// computes them alongside the snapshot). Card metadata is effectively
-    /// immutable, so this exists separately: only the money moves.
+    /// immutable, so this exists separately: only the money moves. Queued
+    /// as the owned run (see `enqueue`); returns how many cards came back.
     @discardableResult
     func refreshPrices(stale ids: [String], context: ModelContext, force: Bool = false) async -> Int {
-        guard !isSyncing else { return 0 }
+        await enqueue { await self.runPrices(stale: ids, context: context, force: force) }.value
+    }
+
+    private func runPrices(stale ids: [String], context: ModelContext, force: Bool) async -> Int {
         let stale = Array(Set(ids))
         guard !stale.isEmpty else { return 0 }
         // Settings can keep the price refresh off cellular; a manual
@@ -181,6 +237,14 @@ final class CardHydrationController {
     }
 
     /// Hydrates any of `scryfallIDs` whose CardMeta is still pending/failed.
+    /// What a snapshot already has metadata for: a grid hands this in on
+    /// load so its viewport top-ups skip the writer. Without it every row
+    /// of tiles on a fully hydrated collection started a Task and an `IN`
+    /// fetch of CardMeta on the writer, to learn nothing was needed.
+    func markHydrated<S: Sequence>(_ scryfallIDs: S) where S.Element == String {
+        hydrated.formUnion(scryfallIDs)
+    }
+
     /// Safe to call on every tile's onAppear; already-known and in-flight IDs
     /// are skipped with pure set math (no DB query).
     func hydrate(scryfallIDs: [String], context: ModelContext) {
@@ -206,6 +270,8 @@ final class CardHydrationController {
             do {
                 let cards = try await client.cards(ids: Array(needed))
                 await apply(cards: cards, context: context)
+                let missing = needed.subtracting(cards.map(\.id))
+                if !missing.isEmpty { try? await writer(context).markFailed(missing, notFound: true) }
                 hydrated.formUnion(needed)
             } catch {
                 try? await writer(context).markFailed(needed)

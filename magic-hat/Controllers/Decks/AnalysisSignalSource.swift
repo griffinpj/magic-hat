@@ -32,6 +32,13 @@ actor AnalysisSignalSource {
     private let cache = DiskJSONCache(folder: "AnalysisSignals")
     private var gameChangersTask: Task<[String: String]?, Never>?
     private var tagTask: Task<Void, Never>?
+    /// `tagLists()` as last built. Seven lists of thousands of ids were read
+    /// and turned into Sets on every analysis run (every list change); they
+    /// only change when `refreshOneTag` stores a finished list.
+    private var builtTagLists: [String: Set<String>]?
+    /// Bumped per stored list, so a build that a store overtook (the actor
+    /// is re-entered at each disk read) isn't kept.
+    private var tagListsVersion = 0
     private let client: ScryfallClient
 
     static let gameChangersTTL: TimeInterval = 24 * 3600
@@ -73,12 +80,15 @@ actor AnalysisSignalSource {
     /// Every complete tag list on disk, fresh or not (a week-old list of
     /// what counts as ramp is still right). Does not fetch.
     func tagLists() async -> [String: Set<String>] {
+        if let builtTagLists { return builtTagLists }
+        let version = tagListsVersion
         var out: [String: Set<String>] = [:]
         for tag in DeckAnalysisSignals.allTags {
             if let list = await cache.stale(TagList.self, key: "otag-\(tag)")?.value, !list.ids.isEmpty {
                 out[tag] = Set(list.ids)
             }
         }
+        if version == tagListsVersion { builtTagLists = out }
         return out
     }
 
@@ -120,6 +130,8 @@ actor AnalysisSignalSource {
             await cache.store(TagList(ids: existing?.ids ?? [], next: next.absoluteString, pending: pending), key: key)
         } else if !pending.isEmpty {
             await cache.store(TagList(ids: Array(Set(pending)), next: nil, pending: []), key: key)
+            builtTagLists = nil
+            tagListsVersion += 1
         }
     }
 }

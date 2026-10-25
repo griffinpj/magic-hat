@@ -103,4 +103,20 @@ struct DeckStatsTests {
         #expect(DeckStats.primaryType(of: "Instant // Sorcery") == "Instant")
         #expect(DeckStats.primaryType(of: nil) == "Other")
     }
+
+    /// Only an "Add …" clause produces: an activation cost's symbols are
+    /// not sources.
+    @Test func productionReadsOnlyTheAddClause() {
+        let cost = DeckStats.producedColors(typeLine: "Land", oracleText: "{B}, {T}: Add {C}{C}.")
+        #expect(cost.colors.isEmpty)
+        #expect(cost.colorless)
+        let pair = DeckStats.producedColors(typeLine: "Land", oracleText: "{T}: Add {C}.\n{1}{W}, {T}: Add {R} or {G}.")
+        #expect(pair.colors == [.red, .green])
+        let filter = DeckStats.producedColors(typeLine: "Artifact",
+                                              oracleText: "{U}, {T}: Draw a card.\n{T}: Add {B}. Spend this mana only to cast {W} spells.")
+        #expect(filter.colors == [.black])
+        let basic = DeckStats.producedColors(typeLine: "Basic Land — Forest", oracleText: "({T}: Add {G}.)")
+        #expect(basic.colors == [.green])
+        #expect(DeckStats.addClauses(in: "Sacrifice it: add one mana. {T}: Add {R}.").count == 2)
+    }
 }

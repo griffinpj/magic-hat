@@ -4,8 +4,10 @@
 //
 //  Small, user-initiated edits to a deck's *list* on the main context:
 //  create, rename, lock, notes, commander, add/remove/count a card, import
-//  resolved lines. These touch no physical cards, so they write no
+//  resolved lines. These touch no physical cards, so list edits write no
 //  AuditRecords — the ledger tracks copies owned, and a list is a wish.
+//  Creating and deleting a deck are the exceptions: each is a History
+//  action (no copies moved) carrying the deck, so either can be undone.
 //  Building and disassembling (which do move copies) live in DeckBuilder.
 //
 
@@ -16,7 +18,13 @@ import SwiftData
 enum DeckEditController {
     enum EditError: Error, LocalizedError {
         case emptyName
-        var errorDescription: String? { "Give the deck a name." }
+        case stillBuilt
+        var errorDescription: String? {
+            switch self {
+            case .emptyName: return "Give the deck a name."
+            case .stillBuilt: return "The deck still holds cards. Disassemble it first."
+            }
+        }
     }
 
     @discardableResult
@@ -32,8 +40,16 @@ enum DeckEditController {
             context.insert(card)
             deck.coverArtURL = commander.artCropURL
         }
+        // A History action, as deleting is: Undo takes the deck away again.
+        let record = AuditRecord(actionID: UUID(), action: .deckCreate, scryfallID: "", cardName: deck.name,
+                                 collectionName: deck.collectionKey, finish: .normal, condition: "", quantityDelta: 0,
+                                 collectionEntryID: nil)
+        record.payload = try DeletedDeck(deck, in: context).encoded()
+        context.insert(record)
         try context.save()
         DeckChangeTracker.shared.bump()
+        // History lists it.
+        CollectionChangeTracker.shared.bump()
         return deck
     }
 
@@ -119,6 +135,15 @@ enum DeckEditController {
     /// brings it back, and with it the builds History holds against it.
     static func delete(deckID: UUID, context: ModelContext) throws {
         guard let deck = try fetch(deckID, context: context) else { return }
+        // A built deck is taken apart first (DeckBuilder.disassemble, from
+        // every screen that deletes). Refused rather than orphaning rows
+        // under a key no deck answers to: a screen that read a stale
+        // "built: 0" used to delete the deck and leave its cards showing
+        // as "deck:<uuid>" wherever a row's collection is named.
+        let key = deck.collectionKey
+        var built = FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == key })
+        built.fetchLimit = 1
+        guard try context.fetchCount(built) == 0 else { throw EditError.stillBuilt }
         let record = AuditRecord(actionID: UUID(), action: .deckDelete, scryfallID: "", cardName: deck.name,
                                  collectionName: deck.collectionKey, finish: .normal, condition: "", quantityDelta: 0,
                                  collectionEntryID: nil)
@@ -144,6 +169,9 @@ enum DeckEditController {
         guard !trimmed.isEmpty, let deck = try fetch(deckID, context: context) else { return }
         deck.name = trimmed
         try touch(deck, context: context)
+        // The name is on every owned row built from the deck ("Deck: Name")
+        // and on History's rows; both read on this tracker.
+        CollectionChangeTracker.shared.bump()
     }
 
     static func setLocked(deckID: UUID, _ locked: Bool, context: ModelContext) throws {
@@ -180,6 +208,34 @@ enum DeckEditController {
         } else if replace {
             deck.coverArtURL = nil
         }
+        try touch(deck, context: context)
+    }
+
+    /// Set as Commander on a row of the list: one copy of it becomes the
+    /// commander and the commander it replaces goes to the mainboard
+    /// (merging with a copy already there) — a swap, as in a deck builder.
+    /// It used to delete the old commander, so promoting a partner by
+    /// mistake lost the card from the list. One save.
+    static func makeCommander(deckCardID: UUID, artCropURL: String? = nil, context: ModelContext) throws {
+        guard let card = try fetchCard(deckCardID, context: context), let deck = card.deck, card.board != .commander else { return }
+        for old in deck.cards where old.board == .commander {
+            if let main = deck.cards.first(where: { $0.id != old.id && $0.board == .main && $0.matchKey == old.matchKey }) {
+                main.quantity += old.quantity
+                context.delete(old)
+            } else {
+                old.board = .main
+            }
+        }
+        if card.quantity > 1 {
+            card.quantity -= 1
+            let commander = DeckCard(scryfallID: card.scryfallID, oracleID: card.oracleID,
+                                     name: card.name, board: .commander, quantity: 1)
+            commander.deck = deck
+            context.insert(commander)
+        } else {
+            card.board = .commander
+        }
+        if let artCropURL { deck.coverArtURL = artCropURL }
         try touch(deck, context: context)
     }
 
@@ -269,7 +325,16 @@ enum DeckEditController {
     /// sheet lists them). Returns how many copies were added.
     @discardableResult
     static func importLines(_ lines: [ResolvedDeckLine], into deckID: UUID, context: ModelContext) throws -> Int {
-        guard let deck = try fetch(deckID, context: context) else { return 0 }
+        let added = try importLines(lines, into: deckID, in: context)
+        DeckChangeTracker.shared.bump()
+        return added
+    }
+
+    /// `importLines` on a context of the caller's (a background one for a
+    /// precon's hundred rows); saves, bumps nothing.
+    @discardableResult
+    nonisolated static func importLines(_ lines: [ResolvedDeckLine], into deckID: UUID, in context: ModelContext) throws -> Int {
+        guard let deck = try context.fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == deckID })).first else { return 0 }
         var added = 0
         for resolved in lines {
             guard let scryfallID = resolved.scryfallID else { continue }
@@ -285,7 +350,8 @@ enum DeckEditController {
             }
             added += line.quantity
         }
-        try touch(deck, context: context)
+        deck.updatedDate = Date()
+        try context.save()
         return added
     }
 

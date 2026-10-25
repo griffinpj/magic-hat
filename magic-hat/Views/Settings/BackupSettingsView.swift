@@ -145,8 +145,8 @@ struct BackupSettingsView: View {
             case .failure(let e): error = e.localizedDescription
             }
         }
-        .confirmationDialog("Delete This Backup?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                            titleVisibility: .visible, presenting: pendingDelete) { url in
+        .alert("Delete This Backup?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+               presenting: pendingDelete) { url in
             Button("Delete Backup", role: .destructive) {
                 try? FileManager.default.removeItem(at: url)
                 refreshLocal()
@@ -155,8 +155,8 @@ struct BackupSettingsView: View {
         } message: { url in
             Text("“\(url.deletingPathExtension().lastPathComponent)” is deleted from this iPhone. It can't be restored afterwards.")
         }
-        .confirmationDialog("Replace Everything?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
-                            titleVisibility: .visible, presenting: pending) { item in
+        .alert("Replace Everything?", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+               presenting: pending) { item in
             Button("Restore Backup", role: .destructive) { restore(item.backup) }
             Button("Cancel", role: .cancel) {}
         } message: { item in

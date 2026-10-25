@@ -68,7 +68,7 @@ struct BackupTests {
     @Test func aBackupRestoresEverythingIntoAnEmptyApp() async throws {
         let source = try world()
         let backup = try BackupController.snapshot(in: ModelContext(source), settings: ["settings.currency": "eur"], appVersion: "test")
-        #expect(backup.manifest.copies == 3 && backup.manifest.decks == 1 && backup.manifest.historyRecords == 2)
+        #expect(backup.manifest.copies == 3 && backup.manifest.decks == 1 && backup.manifest.historyRecords == 3, "two adds and the deck's creation")
         let zip = try backup.zipped()
         let read = try AppBackup.read(zip)
         #expect(read.entries == backup.entries)
@@ -92,13 +92,57 @@ struct BackupTests {
         #expect(try fresh.fetch(FetchDescriptor<DeckFolder>()).first?.name == "Commander")
         #expect(try fresh.fetch(FetchDescriptor<SavedSearch>()).first?.query.text == "dragon")
 
-        // The ledger came across whole, so History still undoes.
+        // The ledger came across whole, so History still undoes: the deck's
+        // creation (taking it away), then the add before it.
         let undo = UndoController(container: target)
         await undo.refresh()
+        #expect(undo.undoTitle == "Undo Created Atraxa")
+        await undo.undo()
+        #expect(undo.error == nil)
+        #expect(try ModelContext(target).fetch(FetchDescriptor<Deck>()).isEmpty)
         #expect(undo.undoTitle == "Undo Added Mox Opal")
         await undo.undo()
         #expect(undo.error == nil)
         #expect(try ModelContext(target).fetch(FetchDescriptor<CollectionEntry>()).count == 1)
+    }
+
+    /// Every sort's direction, the add sheet's sorts, the scanner's
+    /// preferences (its locked sets a list) and the backup schedule go
+    /// through a backup and come back as they were; the camera and the
+    /// backup folder, which name things on this phone, stay behind.
+    @Test func settingsTravelWithABackup() throws {
+        let d = UserDefaults.standard
+        let keys = BackupController.settingsKeys
+        let before = keys.map { d.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, before) {
+                if let value { d.set(value, forKey: key) } else { d.removeObject(forKey: key) }
+            }
+        }
+        #expect(!keys.contains("scan.camera") && !keys.contains("backup.folderBookmark"))
+        let strings = [
+            "collection.sort": "price", "collection.sort.direction": "ascending",
+            "deck.sort.direction": "descending", "deck.add.sort.all": "name",
+            "deck.add.sort.all.direction": "ascending", "deck.add.sort.recommended": "price",
+            "deck.add.sort.recommended.direction": "descending", BackupScheduler.frequencyKey: "weekly",
+        ]
+        for (key, value) in strings { d.set(value, forKey: key) }
+        d.set(true, forKey: "scan.showFrame")
+        d.set(false, forKey: "scan.playSounds")
+        d.set(true, forKey: "scan.preferFoil")
+        d.set(["dsk", "blb"], forKey: ScanSettings.lockedSetsKey)
+
+        let backup = try BackupController.snapshot(in: ModelContext(try world()), settings: BackupController.currentSettings(),
+                                                   appVersion: "test")
+        let read = try AppBackup.read(try backup.zipped())
+        for key in keys { d.removeObject(forKey: key) }
+        BackupController.apply(settings: read.settings)
+
+        for (key, value) in strings { #expect(d.string(forKey: key) == value, "\(key)") }
+        #expect(d.object(forKey: "scan.showFrame") as? Bool == true)
+        #expect(d.object(forKey: "scan.playSounds") as? Bool == false)
+        #expect(d.object(forKey: "scan.preferFoil") as? Bool == true)
+        #expect(d.stringArray(forKey: ScanSettings.lockedSetsKey) == ["dsk", "blb"])
     }
 
     @Test func aNewerFormatIsRefused() throws {

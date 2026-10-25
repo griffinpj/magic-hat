@@ -26,8 +26,19 @@ final class FilterVocabulary {
     private(set) var keywords: [String] = []
     private(set) var artists: [String] = []
     private(set) var sets: [ScryfallSet] = []
+    /// Every list is in.
     private(set) var isLoaded = false
     private var loadTask: Task<Void, Never>?
+    /// What each catalog returned, kept across attempts so a retry asks
+    /// only for the lists that failed.
+    private var loadedCatalogs: [ScryfallCatalog: [String]] = [:]
+    private var loadedSets: [ScryfallSet]?
+    /// When the last attempt that left something missing ran. Offline, the
+    /// form appearing used to refire all eleven requests each time.
+    private var lastFailedAttempt: Date?
+    /// How long after a partial load before the form's next appearance
+    /// tries the missing lists again.
+    static let retryInterval: TimeInterval = 30
 
     /// Each list's names folded once (case and diacritics), in the list's
     /// order, so a keystroke's match is a plain prefix/contains over
@@ -38,11 +49,20 @@ final class FilterVocabulary {
     private var artistKeys: [String] = []
     private var setKeys: [String] = []
 
-    /// Loads everything once; failures leave that list empty (free text
-    /// still works) and a later call retries.
+    private static let keywordCatalogs: [ScryfallCatalog] = [.keywordAbilities, .keywordActions, .abilityWords]
+    private static let allCatalogs: [ScryfallCatalog] = ScryfallCatalog.typeLine + keywordCatalogs + [.artistNames]
+
+    /// Loads everything once; a list that fails stays empty (free text
+    /// still works) and a later call retries just the lists still missing
+    /// — not while offline, and not within `retryInterval` of the last
+    /// try.
     func load() async {
         if isLoaded { return }
         if let loadTask { await loadTask.value; return }
+        if let lastFailedAttempt {
+            guard NetworkMonitor.shared.isConnected,
+                  Date().timeIntervalSince(lastFailedAttempt) >= Self.retryInterval else { return }
+        }
         let task = Task { await fetch() }
         loadTask = task
         await task.value
@@ -53,31 +73,33 @@ final class FilterVocabulary {
         let cache = ScryfallCatalogCache.shared
         let activity = DataActivity.shared
         activity.begin(.vocabularies)
-        var typeEntries: [TypeEntry] = []
-        for catalog in ScryfallCatalog.typeLine {
-            if let names = try? await cache.catalog(catalog) {
-                typeEntries.append(contentsOf: names.map { TypeEntry(name: $0, catalog: catalog) })
-            }
+        for catalog in Self.allCatalogs where loadedCatalogs[catalog] == nil {
+            if let names = try? await cache.catalog(catalog) { loadedCatalogs[catalog] = names }
         }
-        var words: [String] = []
-        for catalog in [ScryfallCatalog.keywordAbilities, .keywordActions, .abilityWords] {
-            if let names = try? await cache.catalog(catalog) { words.append(contentsOf: names) }
+        if loadedSets == nil, let list = try? await cache.sets() {
+            loadedSets = list.filter { !Self.hiddenSetTypes.contains($0.setType ?? "") }
         }
-        let artistNames = (try? await cache.catalog(.artistNames)) ?? []
-        let setList = ((try? await cache.sets()) ?? []).filter { !Self.hiddenSetTypes.contains($0.setType ?? "") }
+        let typeEntries = ScryfallCatalog.typeLine.flatMap { catalog in
+            (loadedCatalogs[catalog] ?? []).map { TypeEntry(name: $0, catalog: catalog) }
+        }
+        let words = Self.keywordCatalogs.flatMap { loadedCatalogs[$0] ?? [] }
+        let artistNames = loadedCatalogs[.artistNames] ?? []
+        let setList = loadedSets ?? []
         // Folding ~12k names is a few tens of milliseconds: off the main actor.
         let keys = await Task.detached(priority: .userInitiated) {
             (typeEntries.map { Self.fold($0.name) }, words.map(Self.fold), artistNames.map(Self.fold), setList.map { Self.fold($0.displayName) })
         }.value
         let total = typeEntries.count + words.count + artistNames.count
+        let complete = loadedSets != nil && Self.allCatalogs.allSatisfy { loadedCatalogs[$0] != nil }
         activity.end(.vocabularies, count: total,
                      note: total == 0 ? "Nothing loaded" : "\(typeEntries.count.formatted()) types, \(words.count.formatted()) keywords, \(artistNames.count.formatted()) artists",
-                     failed: total == 0)
+                     failed: !complete)
         types = typeEntries; typeKeys = keys.0
         keywords = words; keywordKeys = keys.1
         artists = artistNames; artistKeys = keys.2
         sets = setList; setKeys = keys.3
-        isLoaded = !types.isEmpty || !sets.isEmpty
+        isLoaded = complete
+        lastFailedAttempt = complete ? nil : Date()
     }
 
     nonisolated static func fold(_ s: String) -> String {

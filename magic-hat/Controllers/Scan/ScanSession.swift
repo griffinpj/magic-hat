@@ -88,13 +88,24 @@ final class ScanSession {
     }
 
     private(set) var phase: Phase = .looking
+
+    /// Every write of `phase` goes through here: frames arrive about four
+    /// times a second and most of them set the phase it already has, and
+    /// each plain assignment notified observers — the whole ScanView body
+    /// re-ran twice a frame.
+    private func setPhase(_ new: Phase) {
+        if phase != new { phase = new }
+    }
     private(set) var tray: [ScanTrayItem] = []
     /// Bumped on every card into the tray (haptic, sound).
     private(set) var addedCount = 0
     /// The overlay is being edited: no new scans until it closes.
     var isEditing = false
+    /// A sheet covers the picture (the tray, the settings): no reading
+    /// frames nobody can see — Vision ran four times a second behind it.
+    var isCovered = false
     var isPaused: Bool {
-        if isEditing { return true }
+        if isEditing || isCovered { return true }
         switch phase {
         case .confirm, .manual: return true
         default: return false
@@ -177,7 +188,7 @@ final class ScanSession {
             if let since = emptySince, Date().timeIntervalSince(since) > 1.2 {
                 recent.removeAll()
                 rejected.removeAll()
-                if matchingKey == nil { phase = .looking }
+                if matchingKey == nil { setPhase(.looking) }
             }
             return
         }
@@ -185,21 +196,21 @@ final class ScanSession {
         // The card the user said "Not This" about, still in view: not
         // looked up and not asked again — typing its name is on offer.
         if Self.isRejected(reading, rejected: rejected) {
-            if matchingKey == nil { phase = .unmatched(reading.name ?? "") }
+            if matchingKey == nil { setPhase(.unmatched(reading.name ?? "")) }
             return
         }
         // The card just taken, still in the guide (or back in it): nothing
         // to do — another copy is the +1.
         if Self.isSameAsLast(reading, last: lastTaken) {
             if case .added = phase {} else if case .again = phase {} else if let current {
-                phase = .again(current.card)
+                setPhase(.again(current.card))
             }
             return
         }
 
         // Looked up a moment ago and not found: say so rather than read on.
         if let failed, failed.key == reading.key, Date().timeIntervalSince(failed.at) < 4 {
-            if matchingKey == nil { phase = .unmatched(reading.name ?? "") }
+            if matchingKey == nil { setPhase(.unmatched(reading.name ?? "")) }
             return
         }
 
@@ -207,12 +218,12 @@ final class ScanSession {
         if recent.count > 3 { recent.removeFirst() }
         let agreeing = recent.filter { $0 == reading.key }.count
         guard agreeing >= 2 else {
-            if matchingKey == nil, let name = reading.name { phase = .reading(name) }
+            if matchingKey == nil, let name = reading.name { setPhase(.reading(name)) }
             return
         }
         guard matchingKey != reading.key else { return }
         matchingKey = reading.key
-        phase = .matching(reading.name ?? "")
+        setPhase(.matching(reading.name ?? ""))
         matchTask?.cancel()
         let options = settings.matchOptions
         matchTask = Task {
@@ -228,16 +239,16 @@ final class ScanSession {
         switch outcome {
         case .nothing:
             failed = (reading.key, Date())
-            phase = .unmatched(reading.name ?? "")
+            setPhase(.unmatched(reading.name ?? ""))
         case .outsideLockedSets(let name):
             failed = (reading.key, Date())
-            phase = .skipped(name)
+            setPhase(.skipped(name))
         case .match(let match):
             switch match.confidence {
             case .sure: accept(match.card, exactPrinting: match.exactPrinting, reading: reading)
             case .unsure:
                 pendingReading = reading
-                phase = .confirm(match)
+                setPhase(.confirm(match))
             }
         }
     }
@@ -247,16 +258,27 @@ final class ScanSession {
         accept(card, exactPrinting: exactPrinting, reading: nil)
     }
 
+    /// The alternative being looked up from the question, while it is: the
+    /// sheet stays up with a spinner on it. Moving to `.matching` closed the
+    /// sheet, and a name Scryfall couldn't place opened it again a moment
+    /// later — a flash.
+    private(set) var resolvingName: String?
+
     /// Another name picked from the question's alternatives; if Scryfall
-    /// can't place it either, the name field opens on it.
+    /// can't place it either, the name field opens on it, in the same sheet.
     func confirm(name: String) {
-        if case .confirm(let match) = phase { remember(rejected: match) }
-        phase = .matching(name)
+        guard resolvingName == nil, case .confirm(let match) = phase else { return }
+        remember(rejected: match)
+        resolvingName = name
         Task {
-            if let card = try? await ScryfallClient.shared.named(fuzzy: name) {
+            let card = try? await ScryfallClient.shared.named(fuzzy: name)
+            // The sheet was closed meanwhile: the answer is no longer wanted.
+            guard resolvingName == name else { return }
+            resolvingName = nil
+            if let card {
                 accept(card, exactPrinting: false, reading: nil)
             } else {
-                phase = .manual(name)
+                setPhase(.manual(name))
             }
         }
     }
@@ -266,23 +288,24 @@ final class ScanSession {
     func reject() {
         guard case .confirm(let match) = phase else { return }
         remember(rejected: match)
-        phase = .manual(pendingReading?.name ?? "")
+        setPhase(.manual(pendingReading?.name ?? ""))
     }
 
     /// The name field, opened by hand (the keyboard button, or the
     /// "couldn't place it" pill).
     func beginManual() {
-        if case .unmatched(let name) = phase { phase = .manual(name) } else { phase = .manual("") }
+        if case .unmatched(let name) = phase { setPhase(.manual(name)) } else { setPhase(.manual("")) }
     }
 
     /// The sheet closed without an answer: scanning carries on, and the
     /// card just asked about is not asked about again while it stays.
     func dismissPrompt() {
+        resolvingName = nil
         if case .confirm(let match) = phase {
             remember(rejected: match)
-            phase = .unmatched(pendingReading?.name ?? match.card.name)
+            setPhase(.unmatched(pendingReading?.name ?? match.card.name))
         } else {
-            phase = .looking
+            setPhase(.looking)
         }
         pendingReading = nil
     }
@@ -296,8 +319,8 @@ final class ScanSession {
     /// A still photo: read once, no voting — it can't be blurry twice.
     func scan(photo frame: RecognizedFrame) async {
         let reading = CardTextReader.read(frame.lines, knownSets: knownSets, layout: frame.layout)
-        guard let name = reading.name else { phase = .unmatched(""); return }
-        phase = .matching(name)
+        guard let name = reading.name else { setPhase(.unmatched("")); return }
+        setPhase(.matching(name))
         handle(await ScanMatcher.match(reading, options: settings.matchOptions), reading: reading)
     }
 
@@ -318,13 +341,13 @@ final class ScanSession {
         pendingReading = nil
 
         if let head = tray.first, head.printing.scryfallID == printing.scryfallID {
-            phase = .again(head.card)
+            setPhase(.again(head.card))
             return
         }
         tray.insert(ScanTrayItem(card: item, printing: printing, finish: finish, language: language, quantity: 1,
                                  exactPrinting: exactPrinting, finishes: finishes), at: 0)
         addedCount += 1
-        phase = .added(item)
+        setPhase(.added(item))
         if !exactPrinting, !settings.quickMode { wantsPrintingPicker = true }
     }
 
@@ -348,7 +371,7 @@ final class ScanSession {
         } else {
             tray.removeFirst()
             lastTaken = nil
-            phase = .looking
+            setPhase(.looking)
         }
     }
 
@@ -388,7 +411,7 @@ final class ScanSession {
     func clear() {
         tray.removeAll()
         lastTaken = nil
-        phase = .looking
+        setPhase(.looking)
     }
 
     /// Everything in the tray into `collection`, as one action.

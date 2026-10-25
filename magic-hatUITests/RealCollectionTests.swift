@@ -63,6 +63,11 @@ final class RealCollectionTests: XCTestCase {
         // `TEST_RUNNER_UITEST_HANG_THRESHOLD` lowers the bar for an audit
         // (0.05 is three dropped frames); 100ms is the pass/fail line.
         app.launchEnvironment["UITEST_HANG_THRESHOLD"] = ProcessInfo.processInfo.environment["UITEST_HANG_THRESHOLD"] ?? "0.1"
+        // Grid draws to leave out for this run (see GridDiagnostics), so the
+        // hitch metric can say what each one costs.
+        if let off = ProcessInfo.processInfo.environment["UITEST_GRID_OFF"], !off.isEmpty {
+            app.launchEnvironment["UITEST_GRID_OFF"] = off
+        }
         if reset { app.launchEnvironment["UITEST_RESET"] = "1" }
         app.launch()
         return app
@@ -158,13 +163,23 @@ final class RealCollectionTests: XCTestCase {
         assertNoHangs(since: mark, "scrolling with real images after sync")
     }
 
-    /// Frame pacing, not stalls: Apple's hitch metric over a fast scroll of
-    /// the real collection with its images decoded — the number that says
-    /// whether the grid is smooth. The store is kept from an earlier run
-    /// (`UITEST_RESET` unset) so the images are on disk; the first swipes
-    /// warm them, the measured ones scroll through what is in memory and
-    /// what streams in. Reported as hitch time ratio (ms of hitch per
-    /// second of scrolling); under 5 is smooth, over 10 is felt.
+    /// Frame pacing, not stalls: Apple's hitch metrics over a hard scroll
+    /// of the real collection with its images — the number that says
+    /// whether the grid is smooth. A **fling** is a press, a drag across
+    /// three quarters of the grid at 8,000pt/s and a release: a thumb's
+    /// flick, several screens of deceleration each, eight deep into the
+    /// collection (past anything warmed, into tiles decoding from disk and
+    /// streaming from the network), eight back, then up/down reversals,
+    /// where the warm changes direction and LazyVGrid builds rows at both
+    /// ends. Both the deceleration and the finger-down drag are measured.
+    /// XCUITest waits for the app to idle between gestures, so one fling
+    /// cannot land on the last one's deceleration; what it can do is make
+    /// each one long and fast. The store is kept from an earlier run
+    /// (`UITEST_RESET` unset) so the near images are on disk. Reported as
+    /// hitch time ratio (ms of hitch per second of scrolling); under 5 is
+    /// smooth, over 10 is felt; frame rate says whether the display ran
+    /// at 120. `TEST_RUNNER_UITEST_GRID_OFF=glow,sheen,caption,images`
+    /// leaves draws out, so a run per flag says what each costs.
     @MainActor
     func testGridScrollHitchesWithRealImages() {
         let app = launch()
@@ -175,18 +190,44 @@ final class RealCollectionTests: XCTestCase {
         XCTAssertTrue(grid.waitForExistence(timeout: 10))
         // Let hydration and the first images land before measuring.
         settle(8)
-        for _ in 0..<4 { grid.swipeUp(velocity: .fast) }
+        for _ in 0..<3 { fling(grid, up: true) }
         settle(2)
-        for _ in 0..<4 { grid.swipeDown(velocity: .fast) }
+        for _ in 0..<3 { fling(grid, up: false) }
         settle(2)
-        measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric]) {
-            for _ in 0..<4 { grid.swipeUp(velocity: .fast) }
-            for _ in 0..<4 { grid.swipeDown(velocity: .fast) }
+        let mark = hangs().count
+        measure(metrics: [XCTOSSignpostMetric.scrollDecelerationMetric, XCTOSSignpostMetric.scrollDraggingMetric]) {
+            for _ in 0..<8 { fling(grid, up: true) }
+            for _ in 0..<8 { fling(grid, up: false) }
+            for _ in 0..<6 {
+                fling(grid, up: true)
+                fling(grid, up: false)
+            }
+            settle(1)
+        }
+        // Main-thread stalls during the scroll are reported, not failed:
+        // with XCUITest attached its accessibility reads stall the app on
+        // their own (every record so far had no app frame). The sampled
+        // stacks are in the log for reading.
+        let stalls = hangs().dropFirst(mark)
+        if !stalls.isEmpty {
+            let report = stalls.map { String(format: "%.2fs ", $0.duration) + $0.frames.prefix(6).joined(separator: " < ") }
+            print("GRID SCROLL: \(stalls.count) main-thread stall(s) over the threshold\n" + report.joined(separator: "\n"))
         }
         if let dir = ProcessInfo.processInfo.environment["UITEST_SHOT_DIR"], !dir.isEmpty {
             settle(2)
             try? XCUIScreen.main.screenshot().pngRepresentation.write(to: URL(fileURLWithPath: dir).appendingPathComponent("real-grid.png"))
         }
+    }
+
+    /// A flick as a thumb makes one: press, drag three quarters of the
+    /// grid in a few hundredths of a second, let go. `swipeUp` is a
+    /// shorter, slower gesture and the test waits for it to end; this one
+    /// returns as the finger lifts, so the next fling interrupts the
+    /// deceleration the way a user does.
+    private func fling(_ grid: XCUIElement, up: Bool) {
+        let from = grid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.88 : 0.12))
+        let to = grid.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: up ? 0.12 : 0.88))
+        from.press(forDuration: 0.01, thenDragTo: to, withVelocity: XCUIGestureVelocity(rawValue: 8000), thenHoldForDuration: 0)
     }
 
     /// Precons: the list from MTGJSON, a Commander deck opened read-only
@@ -217,6 +258,11 @@ final class RealCollectionTests: XCTestCase {
         app.segmentedControls["precon-tabs"].buttons["Stats"].tap()
         shot(app, "precon-stats")
         app.buttons["precon-import"].tap()
+        // It asks where the deck goes, as a move does.
+        let topLevel = app.buttons["move-to-Decks"]
+        XCTAssertTrue(topLevel.waitForExistence(timeout: 5), "the folder sheet asks where")
+        shot(app, "precon-import-where")
+        topLevel.tap()
         XCTAssertTrue(app.buttons["deck-add-cards"].waitForExistence(timeout: 15), "the imported deck opens, editable")
         XCTAssertTrue(app.segmentedControls["deck-tabs"].exists)
         shot(app, "precon-imported")

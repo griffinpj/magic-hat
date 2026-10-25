@@ -65,6 +65,11 @@ struct DeckProposeView: View {
                 .searchable(text: $searchText, isPresented: $searchPresented,
                             placement: .navigationBarDrawer(displayMode: .always), prompt: "Search for a card to try")
                 .onChange(of: searchText) { _, text in
+                    // Nothing typed is no search: a commander deck's
+                    // identity alone kept the query non-empty, so every
+                    // pick (which clears the field) ran one more Scryfall
+                    // search in the 1/sec lane.
+                    guard !text.trimmingCharacters(in: .whitespaces).isEmpty else { search.clear(); return }
                     search.query = query(text)
                     search.scheduleRun()
                 }
@@ -139,18 +144,26 @@ struct DeckProposeView: View {
     // MARK: Results
 
     @ViewBuilder private var results: some View {
+        let list = search.resultList
+        let shown = list.ids.prefix(60)
         List {
             switch search.phase {
-            case .searching where search.results.isEmpty:
+            // Before the first page (the debounce, then the request) the
+            // search is under way, not empty: "No cards match." used to
+            // show while nothing had been asked yet.
+            case .idle:
+                HStack { ProgressView(); Text("Searching…").foregroundStyle(.secondary) }
+            case .searching where list.isEmpty:
                 HStack { ProgressView(); Text("Searching…").foregroundStyle(.secondary) }
             case .failed(let message):
                 Text(message).foregroundStyle(.secondary)
             default:
-                if search.results.isEmpty {
+                if list.isEmpty {
                     Text("No cards match.").foregroundStyle(.secondary)
                 }
-                ForEach(search.results.prefix(60)) { card in
-                    resultRow(card)
+                // Over the ids, each card fetched by id (see CardItemList).
+                ForEach(shown, id: \.self) { id in
+                    if let card = list.item(for: id) { resultRow(card, shown: shown, in: list) }
                 }
             }
         }
@@ -158,10 +171,10 @@ struct DeckProposeView: View {
         .scrollDismissesKeyboard(.interactively)
     }
 
-    private func resultRow(_ card: CardItem) -> some View {
+    private func resultRow(_ card: CardItem, shown: ArraySlice<String>, in list: CardItemList) -> some View {
         let picked = picks.contains { $0.id == card.id }
         return HStack(spacing: 8) {
-            Button { open(card, in: Array(search.results.prefix(60))) } label: {
+            Button { open(card, in: shown.compactMap { list.item(for: $0) }) } label: {
                 CardRowLead(item: card, zoom: zoom) {
                     Text(card.typeLine ?? card.setName)
                 }

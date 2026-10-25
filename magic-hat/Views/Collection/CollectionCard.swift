@@ -56,7 +56,7 @@ struct CollectionCard: View {
                             .monospacedDigit()
                             .redacted(reason: summary == nil ? .placeholder : [])
                         Text(isList ? "TO BUY" : "MARKET")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.caption2.weight(.bold))
                             .foregroundStyle(.secondary)
                     }
                 }

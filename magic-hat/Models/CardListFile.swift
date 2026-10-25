@@ -307,9 +307,15 @@ nonisolated enum CardListReader {
 
     // MARK: Values
 
+    // Compiled once, not per call (`range(of:options: .regularExpression)`
+    // compiles its pattern every time — twice per table row).
+    private static let countPattern = try! NSRegularExpression(pattern: #"^\d+\s*[xX]?$"#)
+    private static let setCodePattern = try! NSRegularExpression(pattern: #"^[A-Za-z0-9]{2,5}$"#)
+    private static let numberCharacters = CharacterSet(charactersIn: "0123456789.,-")
+
     /// "4" or "4x", nothing else.
     private static func isCount(_ s: String) -> Bool {
-        s.range(of: #"^\d+\s*[xX]?$"#, options: .regularExpression) != nil
+        countPattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
 
     static func leadingInt(_ s: String) -> Int? {
@@ -319,7 +325,7 @@ nonisolated enum CardListReader {
 
     /// "1,234.50", "$3.20", "3,20 €" → a number.
     static func number(in s: String) -> Double? {
-        var t = String(s.unicodeScalars.filter { CharacterSet(charactersIn: "0123456789.,-").contains($0) })
+        var t = String(s.unicodeScalars.filter { numberCharacters.contains($0) })
         guard !t.isEmpty else { return nil }
         if t.contains(","), t.contains(".") {
             // The later of the two is the decimal mark.
@@ -336,7 +342,7 @@ nonisolated enum CardListReader {
 
     /// Three to five letters and digits, written as a code ("M11", "plst").
     static func looksLikeSetCode(_ s: String) -> Bool {
-        s.range(of: #"^[A-Za-z0-9]{2,5}$"#, options: .regularExpression) != nil
+        setCodePattern.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
 
     /// TCGplayer hangs the treatment on the name: "Sol Ring (Borderless)".

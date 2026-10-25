@@ -88,7 +88,19 @@ are cross-cutting, not owned by one feature.
     written under one actionID. Disassembling returns every row to its
     `sourceCollectionName` (or the first collection if that one is gone),
     merging by `mergeKey`. Copies are conserved; `DeckBuilderTests` asserts
-    it. Deleting a built deck disassembles first.
+    it. `DisassembleDestination` is the user's choice in the Disassemble
+    and Delete alerts: `.sources` (the above), `.collection(name)` (every
+    row into one collection, made if new, a list refused) or `.discard`
+    (the rows removed, recorded as a `.manualRemove` from the deck so Undo
+    puts them back in it) — for a deck whose cards are already back in a
+    collection by another road (the collection deleted and imported
+    again), where returning them would count every copy twice. Deleting a
+    deck always goes through `disassemble` first, whatever the screen's
+    built count says (the Decks tab's first frame is the last overview,
+    and a delete on its stale "built: 0" left rows under a key no deck
+    answered to — "deck:<uuid>" in the Add sheet's owned list);
+    `DeckEditController.delete` refuses while rows remain, and the store
+    labels any such rows "Deleted Deck".
   - `AuditRecord` — append-only ledger. Records sharing an `actionID` come
     from one user action; each has a signed `quantityDelta` and a
     snapshot of the row it touched (`EntrySnapshot`). Backs the History
@@ -113,7 +125,10 @@ are cross-cutting, not owned by one feature.
     counts and salt; every field optional, an unknown slug is a 403, and a
     page that fails to decode is "no EDHREC data", never an error shown.
     `slug(for:)` is EDHREC's name form. All three pace through
-    `RateLimiter` (2/sec) and cache through `DiskJSONCache`.
+    `RateLimiter` (2/sec) and cache through `DiskJSONCache` (memory an
+    LRU of 64 entries / 8MB — EDHREC pages are megabytes each — a larger
+    value stays on disk only). A card view with no `name` takes its
+    `sanitized` slug, title-cased, rather than failing the page.
   - `MTGJSONClient` — second provider, bulk-only (no per-card endpoint):
     `<SET>.json` per set and `AllPricesToday.json`. Its value is the full
     retail picture (low/mid/market/buylist across TCGplayer, Cardmarket,
@@ -137,6 +152,8 @@ are cross-cutting, not owned by one feature.
     disk with a 7-day TTL (printings only change when a set releases), so
     cold launches don't re-run searches. The card viewer warms it for the
     card on screen, debounced, so opening the detail screen is instant.
+    Memory holds the 50 most recently used cards (a basic land is hundreds
+    of printings); an entry read from disk keeps the disk entry's date.
   - `SetSymbolLoader` — see Set symbols below.
   - `ImageLoader` — card image cache: original bytes on disk (Caches/),
     decoded+downsampled UIImages in memory keyed by URL+size. Disk reads,
@@ -150,6 +167,21 @@ are cross-cutting, not owned by one feature.
     grew out of a grey card. Only a card shown large (the viewer) gets a
     spinner: a `ProgressView` is a UIKit activity indicator sized through
     Auto Layout, one per unloaded tile while scrolling.
+    **Loads are shared and cancellable.** Two tables of in-flight loads
+    (`ImageFlight`, each with a waiter count): downloads keyed by URL
+    alone (the grid and the viewer opening a card still downloading used
+    to fetch its bytes twice) and decodes keyed URL+size. A waiter waits
+    under `withTaskCancellationHandler`; when the last one leaves, the load
+    is cancelled after a 250ms `rejoinGrace` (without it each restart of
+    the warm pass cancelled and re-queued the overlapping downloads at the
+    back of the 5/sec lane). Before, a tile's `.task` cancelled only its
+    own await: a flick through a cold region queued a request per tile
+    passed, and the tiles on screen waited behind them. `RateLimiter.wait`
+    returns without a slot for a cancelled task and `requestData` checks
+    cancellation after it. A tile whose load is *waiting* — a metered path
+    with images off, a 429, offline — keeps its plain placeholder, not the
+    failure glyph, and keys its task on `NetworkMonitor` so it retries when
+    the path changes.
   `cached(oracleID:)` is memory only; disk is read, decoded and written
   `@concurrent` inside `printings` — it used to decode every printing of
   the card on the main actor each time the pager rested on a card, which
@@ -177,7 +209,12 @@ without one): `HTTPClient` calls `RateLimiter.backOff`, throws
 `HTTPError.rateLimited`, and Data Activity shows the countdown; a loader
 that hits it marks its chunk failed and its next chunk waits at the limiter,
 so nothing retries into the block. Other hosts (Spellbook, Recommander,
-EDHREC, deck sites) stay at 2/sec each. `RateLimiterTests` runs the actor
+EDHREC, deck sites) stay at 2/sec each, and MTGJSON's CDN has its own
+lane (`.mtgjson`) outside Scryfall's bucket — it used to share it, so
+browsing precons ate hydration's budget and a Scryfall 429 froze them. A
+429 from any host throws `.rateLimited(retryAfter:)`; only a Scryfall
+one holds the bucket (`CommanderFinder` sleeps the Retry-After and
+carries on). `RateLimiterTests` runs the actor
 on a fake clock. All requests send an accurate `User-Agent` (`MagicHat/1.0`)
 and an `Accept` header.
 
@@ -206,7 +243,11 @@ screen. Instead:
   fetch queued behind the first. Until the totals land the tab shows a
   loading card and redacted counts, not empty cards. A caller whose stamp
   moved on gets a fresh fetch; a call without a stamp (tests) is always
-  fresh. Measured on the real export with the 100ms watchdog
+  fresh. Only the current stamp's snapshots are kept (`remember`): keyed
+  per collection × sort × direction, the old ones — All Collection's
+  3,900 items per order — outlived every stamp, a deleted collection's
+  too. The grid's in-place hydration merge reads `currentItems`, unsorted,
+  since it keeps its own order. Measured on the real export with the 100ms watchdog
   (`RealCollectionTests`): launch and the first push into the collection
   record no app-side stall; the two records are XCUITest's own
   (accessibility bundle load, its os_log).
@@ -246,7 +287,12 @@ screen. Instead:
   DeckStore's queue (Time Profiler, real export, debug: Decks tab 530ms →
   36ms, opening a deck 550ms → 15ms, the analysis's candidates 600ms →
   16ms). The overview carries `entryCollectionNames`, which the tab
-  backfills MTGCollection rows from.
+  backfills MTGCollection rows from. **A deck-only stamp change keeps
+  the rows**: `StoreStamp` carries the deck revision because rows carry
+  `deckCount` and "Deck: Name", but when only that part moved (a stepper
+  tap, a rename, a folder) `allRows` rewrites those two fields over the
+  cached items from the small DeckCard and Deck fetches, instead of
+  fetching every entry and faulting every CardMeta again per tap.
 - The tab shows the **last overview** (`LastOverview`: a few KB in
   UserDefaults, per store, never for seeded UI-test stores) in its first
   frame — read synchronously as the view's initial state, not through an
@@ -309,7 +355,13 @@ screen. Instead:
   `CollectionStore.history()`. A `@Query` re-runs on the main thread after
   *every* save on any context — with `CardMetaWriter` saving a batch every
   half second during a sync, a ledger query meant a main-thread refetch of
-  thousands of rows per batch.
+  thousands of rows per batch. History refreshes on
+  `CollectionChangeTracker` alone: deck list edits write no records, and
+  keyed on the deck tracker too it re-read the ledger per stepper tap
+  once the tab had been opened; creating, deleting and renaming a deck
+  bump the collection tracker. The selection bar's Add menu holds the
+  `MTGCollection`/`Deck` queries in its own view, so they exist only
+  while a selection is up, not on every grid screen.
 
 For this to compile, the `@Model` classes, `CardItem` (and its extensions),
 and the enums they use are all `nonisolated` — opted out of the project's
@@ -342,7 +394,9 @@ hydration batch, per sort and per push into the collection (HangDetector:
 
 - `CardItemList` is the view-facing shape of a card list: Equatable by a
   stamp taken at construction (one integer compare), with `ids` (a plain
-  `[String]`, cheap to compare) and `item(for:)` / `index(of:)` lookups.
+  `[String]`, cheap to compare) and `item(for:)` / `index(of:)` lookups,
+  both built in `init` — where the list is built, off the main thread —
+  not lazily on the first lookup inside the grid's `ForEach`.
   `CardGridView`, `CardViewerView`, `CardViewerSession` and
   `SearchController.resultList` take it; the grid, the pager and the
   deck add sheet's Lists iterate `ForEach(list.ids, id: \.self)` and
@@ -373,7 +427,19 @@ hydration batch, per sort and per push into the collection (HangDetector:
   None has an app frame in its stack.
 - `CardHydrationController.hydrate(scryfallIDs:)` tests membership over
   the window rather than `subtract`ing the whole hydrated set (0.12s per
-  tile appearing with 3,900 ids hydrated).
+  tile appearing with 3,900 ids hydrated). The grid `markHydrated`s the
+  snapshot's non-pending ids on load, so a hydrated collection's
+  viewport top-ups never reach the writer (each row of tiles used to
+  start a Task and an `IN` fetch to learn nothing was needed).
+- The selection bar takes the screen's `CardItemList` (a deck passes ids
+  and a closure); it was a `[CardItem]` ViewModifier input, the whole
+  collection compared on every update of the screen.
+- `CardSearchQuery.matches` goes through `CardSearchMatcher`: the query's
+  words and terms folded once, each card's text folded once and cached on
+  the item (`CardItem.searchCache`, a box ignored by `==`), compared as
+  UTF-8 bytes. It was a locale-aware `range(of:)` per word × field × card
+  per keystroke. Sorts work each card's key out once and sort indices
+  (mana value used to parse both costs per comparison).
 
 ## Keep work off the main thread
 
@@ -441,24 +507,30 @@ detail screen and actions as an owned card:
   button, or the zoom transition's own drag/pinch.
   The grid keeps its `ScrollViewReader` scrolled to the card the viewer is
   on (via the `currentID` binding), so the zoom-out lands on the right tile
-  and the grid is where the user left off. **The pager is not
-  `.viewAligned`**: that behaviour runs the scroll view at its fast
-  deceleration rate, so a flick stopped on the next card almost at once
-  — the snap. `CardPagingBehavior` (a `ScrollTargetBehavior`) picks the
-  same target at the normal rate, so the card glides in: a flick
-  (release velocity over 0.25 pt/ms — the context's velocity is points
-  per millisecond) moves one card from where the drag started
-  (`dragStart`, recorded on `.interacting`; the context has no current
-  offset), never two; a drag that stopped settles on the card under the
-  anchor (`visibleID`). The context's `originalTarget` is in a space
-  where card i sits at `i * step` with the content margin already taken
-  off — card 0 reads 0 at rest — so the target is `to * step`, not
-  `- inset`. **The card under the anchor becomes current as soon as the
-  finger lifts**, not while it is down (a slow drag back and forth would
-  thrash the title, panel and neighbour decodes) and not only at idle
-  (the panel then lagged a whole settle behind the card). Pages carry a
-  `scrollTransition` (scale 0.94, opacity 0.82 at the edges) and
-  programmatic moves animate `.smooth`.
+  and the grid is where the user left off. **The pager is `CardPager`, a
+  UIKit `UIScrollView` with `isPagingEnabled`** — what Photos pages with —
+  behind a `UIViewRepresentable`, not a SwiftUI `ScrollView`. Two SwiftUI
+  forms were tried and dropped: `.viewAligned` runs at the fast rate and
+  stopped on the next card almost at once (the snap); a custom
+  `ScrollTargetBehavior` at the normal rate glided but reached its target
+  with a visible correction at the end (the snag), since the normal-rate
+  curve is projected for a different distance than the one it is bent to.
+  UIKit's paging animation is its own curve, continuous from the finger's
+  speed into the settle. The scroll view is one page wide (card + 14pt)
+  and centred, `clipsToBounds = false` so the neighbours peek, with
+  `point(inside:)` widened to the host so a drag or a tap on a peeking
+  neighbour still reaches it. Pages are hosted SwiftUI
+  (`UIHostingConfiguration.makeContentView`, the environment passed
+  through `.environment(\.self, …)`) for the current index ±2, recycled;
+  the neighbour scale/opacity is a transform and an alpha per page set in
+  `scrollViewDidScroll`. **The card the finger let go towards becomes
+  current as it lets go** (`scrollViewWillEndDragging`'s target offset is
+  the page), so the title and panel follow the card as it glides in — and
+  never while the finger is down. Programmatic moves (a tapped neighbour,
+  the step after a removal) come in through `currentID`; a size change
+  (the zoom transition still growing the pager, a rotation) re-pins to
+  the current card without animation. It takes the stamped
+  `CardItemList`, one integer compare per update.
   `testOpeningTheViewerRightAfterLaunchAndPagingFast` asserts the title
   changes per swipe.
   It is not a ZStack overlay, and shouldn't become one: an overlay drawn
@@ -480,7 +552,9 @@ detail screen and actions as an owned card:
   `frame_effects` / `border_color` / `full_art` / `promo_types`), the
   prices of the finishes it comes in, "Viewing" on the one opened, and
   when owned the copies and how many are foil (`ownedItems` by the ids on
-  screen). An Owned chip filters to owned printings; the field filters
+  screen). A tapped printing opens the viewer over the printings *in the
+  order the page shows them* (the list is the groups flattened, built in
+  the same detached pass); over Scryfall's order the swipe ran backwards. An Owned chip filters to owned printings; the field filters
   sets; a line says "4 printings in 2 sets · from $0.06". Mapping the
   printings to cards and filtering/grouping them (per keystroke) run on a
   detached task — a basic land has hundreds.
@@ -507,7 +581,11 @@ detail screen and actions as an owned card:
   (`CardTile(zoom:)`). The glass cell passed `testGridScrollDoesNotHitch`.
   No dimming, so results look like the
   collection. Edit/Remove need an entry; a hit's rows are edited from the
-  Add sheet's owned list.
+  Add sheet's owned list. To VoiceOver a tile is one button labelled
+  with the card's name, its set, number, price and copies as the value
+  (it used to read set codes and prices and never which card); an
+  image-less tile (the seed's) stays static text, which is how the UI
+  tests find tiles by name.
 
 Pricing: Scryfall provides only a single market price per finish
 (`prices.usd` / `usd_foil`) — that is what we show (no LOW/MID tiers).
@@ -579,7 +657,11 @@ screen's Rulings tab work offline):
 3. `GzipLineReader` pulls the file a line at a time. It is hand-rolled because
    Foundation only gunzips when the server sends `Content-Encoding: gzip`
    (these are files whose content is gzip), and Compression speaks raw DEFLATE,
-   so the gzip header is parsed and skipped by hand.
+   so the gzip header is parsed and skipped by hand. Lines are read with a
+   cursor (`memchr`) and the buffer compacted once per inflate: removing
+   each line from the front of a `Data` memmoved the whole tail per line
+   (the 2.2MB slice 110ms → 12ms, rulings 67ms → 3ms, `-O`). A file that
+   ends before the stream does throws `.truncated` rather than looping.
 4. Parsing runs on a detached task; each decoded batch is awaited onto the main
    actor to be written. SwiftData models are main-actor-bound here, so this
    keeps JSON off the main thread while writes stay where they must be — and
@@ -686,8 +768,10 @@ Two different surfaces for the same sync, because they're different moments:
 Network: the catalog refuses metered paths unless the user opts in. That is
 made *visible* — `.waitingForWiFi` phase, "Use cellular data (80 MB)" button
 — because `waitsForConnectivity` alone left the bar at 0% forever with no
-explanation. Rulings (~5MB) are allowed anywhere. `NetworkMonitor` wraps
-`NWPathMonitor`.
+explanation. After "Continue in background" the bar's "Waiting for Wi-Fi"
+pill is the same offer (a tap asks "Use Cellular (80 MB)"), and a first
+launch that failed offers Try Again. Rulings (~5MB) are allowed anywhere.
+`NetworkMonitor` wraps `NWPathMonitor`.
 
 Refresh policy (`DataPolicy`): a newer bulk build is taken only if our copy
 is older than 7 days (catalog and rulings alike). Scryfall rebuilds both
@@ -767,7 +851,8 @@ Two states of one screen:
   and a floating button rides up over the keyboard). Edits go straight to
   the live query.
 - **Results:** the shared `CardGridView`; filters move behind the toolbar
-  icon, as a sheet over a *draft* (Reset / Done); an X clears the search
+  icon, as a sheet over a *draft* (Cancel / Done, Reset in its bottom
+  bar; it can't be swiped away while the draft differs); an X clears the search
   and returns to the form with filters kept. Emptying the search field
   keeps the results when filters are active — they are still a search —
   and returns to the form only when nothing else is active.
@@ -817,7 +902,10 @@ Vocabularies come from `FilterVocabulary`, loaded once through
 matched in memory, prefix first, against names folded once (case and
 diacritics, off the main actor at load) with plain `hasPrefix`/`contains`
 — a locale-aware `range(of:options:)` over ~10k artists ran on the main
-thread per keystroke.
+thread per keystroke. A token field suggests only while focused (the
+artist scan used to run on every re-render of the Form while the field
+held text). Each list is kept as it lands; a failed one is retried
+alone, not while offline and not within 30 seconds of the last try.
 
 **Suggestions and the keyboard:** a token field's suggestions are rows
 under it, so focusing one of the four (types, rules text, sets, artist)
@@ -905,7 +993,8 @@ shared store asks `CollectionStore.ownedIndex(stamp:)` with the current
 stamp (one hop to the main actor for it), so it is a lookup over rows
 already built; a DeckStore made on its own (tests) counts for itself.
 Writes: `DeckEditController` (main context; list edits write no audit,
-a list is a wish), `DeckBuilder` (background; moves copies, audits them).
+a list is a wish — creating and deleting a deck are History actions),
+`DeckBuilder` (background; moves copies, audits them).
 `DeckChangeTracker` is bumped by list edits, both trackers by builds.
 A list's rows also carry `CardItem.inCollection` — some printing of the
 card is owned, in a collection or a built deck (the store marks them from
@@ -937,7 +1026,15 @@ Relevance, remembered as `deck.sort`). It is a
 *plain* list so the type headers pin while scrolling — mid-scroll the
 header says which group this is (Contacts, Music's Songs); inset-grouped
 never pins. Rows have no swipe actions: the stepper removes, and a
-trailing swipe fought the page swipe. When the deck breaks a rule of its
+trailing swipe fought the page swipe. The stepper's − and + draw small
+but take a 44pt square each (`HitArea`); a row stepped to zero hides at
+once. The filtered, sorted sections are one `Layout` worked out off the
+main actor per filter, sort and snapshot (`Layout.make`), never in the
+body — it used to run the query and re-sort every section per keystroke
+and per stepper tap. "Set as Commander" on a mainboard card is a swap:
+the old commander goes to the mainboard (`DeckEditController
+.makeCommander`). The Decks tab draws the last overview in its first
+frame (`LastDeckOverview`, like `LastOverview`; never for seeded runs). When the deck breaks a rule of its
 format (`DeckStats.violations`: over the size, outside the commander's
 identity, over a copy limit, not legal — not "still short", which every
 deck under construction is) the list leads with a banner row that opens
@@ -1046,7 +1143,10 @@ art crop by its documented path (`cards.scryfall.io/art_crop/front/
 <c0>/<c1>/<id>.jpg`, no catalog lookup) and the colours, derived from
 the deck file when the tile appears (`PreconController.cover`, cached a
 year per deck; nothing fetched on a metered path with images off — the
-tile keeps its set symbol). The tab's field filters by name, code or
+tile keeps its set symbol). A cover read holds a token per waiting tile
+and is cancelled when the last tile leaves; three deck files download at
+once at most — a fast scroll through Everything used to queue a ~570KB
+file per tile passed, on to the end. The tab's field filters by name, code or
 type. A row pushes `DeckRoute.precon(fileName)` → `PreconDeckView`: the
 deck screen's shape (Cards / Stats / Details, the search field filtering
 the list, the viewer from a row) over a snapshot built in memory by
@@ -1057,10 +1157,14 @@ nothing offers to add a card (no "+", swaps, Try Cards or Recommended).
 `DeckStore.assemble` is the identity/sections/stats step both a stored
 deck and a precon share. Details is its own page (product, set, date,
 value, "In your collection n of m", missing, the source link). One
-action, **Import as a Deck**, in a bottom `safeAreaBar`: a new Deck with
-the list's rows through `DeckEditController.importLines` (Commander
-products → `.commander`, else casual), which replaces the precon on the
-stack so Back lands on the Precons list.
+action, **Import as a Deck**, in a bottom `safeAreaBar`: it first asks
+where the deck goes — `DeckFolderPicker`, the same sheet Move uses (the
+top level or any folder, New Folder in its bar) — then makes a new Deck
+there with the list's rows through `DeckEditController.importLines`
+(Commander products → `.commander`, else casual; the hundred rows are
+written on a background context, "Importing…" showing meanwhile), which
+replaces the precon on the stack once the sheet has gone, so Back lands
+on the Precons list. The sheet is on the screen, not the bar's button.
 `RealCollectionTests.testPreconsOpenReadOnlyAndImport` (network),
 `FeatureFlowTests.testPreconsNeedAConnectionOffline`.
 
@@ -1133,29 +1237,157 @@ Versions travel in backups (`deck-versions.json`,
 
 ## Playtest and tokens
 
-**Playtest** (`Models/Playtest.swift`, `Views/Decks/DeckPlaytestView`):
-goldfishing, from the deck's "…" menu and its Details page, as a full
-screen. `PlaytestState` is a plain value — library, hand, battlefield,
-graveyard, exile, command zone; `newGame` (shuffle, draw seven),
-`draw`, a London `mulligan` (seven again, then `pendingBottom` cards to
-`bottom(_:)`), `nextTurn` (untap all, draw one), `toggleTap`,
-`move(_:to:libraryEnd:)`, `play` — built from a `DeckSnapshot` (every
-mainboard copy a `PlaytestCard`, commanders in the command zone). It
-shuffles with any `RandomNumberGenerator`, so `PlaytestTests` seed one
-(`SeededGenerator`, SplitMix64) and assert copies are conserved through
-every move. No rules engine: it is a table that keeps count, and it
-writes nothing. The screen: the battlefield on top, laid out as a table
-is — anchored to the bottom and growing upwards from the hand, lands
-nearest the player, artifacts and enchantments above them, creatures
-(and every other permanent) on top (`PlaytestCard.tableRow`,
-`PlaytestRow`); tap to tap, hold for the other zones and View Card;
-cards 72pt on the table, 96pt in hand so they can be hit — a status line
-(turn, library, untapped lands as "Mana", graveyard and exile buttons
-opening a `ZoneSheet`), the hand along the bottom with the command zone
-beside it (tap to play/cast; during a mulligan, tap to bottom, with a
-banner counting down), and a labelled glass action bar — Draw,
-Mulligan (turn one only), Next Turn — not a toolbar's icons, which read
-as nothing at a table. `PlaytestFlowTests` plays a seeded game.
+**Playtest** (`Models/Playtest.swift`, `Models/PlaytestCard.swift`,
+`Views/Decks/DeckPlaytestView`, `PlaytestTableViews`, `PlaytestSheets`):
+goldfishing by Magic's own turn structure and zone rules, from the deck's
+"…" menu and its Details page, as a full screen. It writes nothing.
+
+- **The card is read once** (`PlaytestCardInfo`, shared by reference in
+  `PlaytestCardBase` so a state and every undo step copy a pointer per
+  card): each face's types, cost, keywords (only from lines with no
+  period or colon — "creatures you control have haste" grants nothing,
+  and "Flying, haste, backup 1" keeps its haste although backup isn't
+  in the list, which used to drop the whole line), what it
+  taps for (`{T}: Add` with nothing else in the cost, plus basic land
+  types — a Signet's `{1}, {T}` and a Treasure's sacrifice are the
+  player's) and whether *it* enters tapped. The layout is inferred from
+  the stored fields, matching what Scryfall sends (checked against the
+  bulk slice): " // " in the type line with a back image is double-faced
+  — transforming if the text says transform/daybound/convert/craft with/
+  disturb/meld/incubate or the front is a Battle, else modal (a disturb
+  back is cast from the graveyard only, at its disturb cost);
+  without one, "— Adventure" / "— Omen" on the second half, else split
+  (Rooms included). A DFC's top level has no cost for its back and no
+  power, so those are nil ("Power unknown"), never guessed.
+- **Where a card goes is the rules'**: a land is *played* (one a turn;
+  another asks), a permanent spell resolves onto the battlefield, an
+  instant or sorcery into the graveyard — exile if cast from the
+  graveyard, exile "on an adventure" (castable from there as the
+  creature only), the library shuffled for an omen, the command zone for
+  an Oathbreaker's signature spell. `move(_:to:)` refuses to put a
+  non-permanent onto the battlefield (a modal card enters front up, so a
+  sorcery//land can't) and a non-commander into the command zone; a
+  token that leaves the battlefield ceases to exist. Rows: lands nearest
+  the player, other noncreature permanents, creatures in front
+  (`PlaytestCard.tableRow`); identical cards in one state share a pile
+  (`stacks(in:)`), a tap acting on the pile's last card so it keeps its
+  identity.
+- **The turn**: `newGame` deals seven into `.opening`; `mulligan` is
+  London (seven again, `cardsToBottom` on `keep`, the first free in
+  Commander, Oathbreaker and Brawl — 103.5c); `begin` skips the first
+  draw only on the play in a two-player format (103.8); each turn untaps,
+  draws and resets the land drop; `endTurn` goes through `.cleanup(n)`
+  (discard to seven unless something on the battlefield says no maximum).
+- **Paying**: `play(_:as:autoPay:force:)` taps for the cost
+  (`PlaytestPayer`: pips matched to units exactly, the narrowest sources
+  first; generic from leftovers of tapped sources, then colourless-only
+  rocks; phyrexian falls back to life, twobrid to two generic; X is 0;
+  summoning-sick creatures don't pay). Commander tax is two per cast from
+  the command zone (`commanderCasts`). `issue(playing:)` says what needs
+  the player's say-so (`.landAlreadyPlayed`, `.cannotPay`) — the screen
+  asks in an alert and plays with `force`. A cost the card doesn't state
+  is paid as tax only. Auto-Tap Mana is a menu toggle
+  (`DeckPlaytestView.autoPayKey`, cleared by the seed).
+- **The battlefield**: summoning sickness (`enteredTurn`, haste aside)
+  holds back attacks and {T} mana; `attack(with:)` taps (vigilance
+  aside), deals power (double strike twice, lifelink back) and counts
+  commander damage (21 defeats, Commander only); `addCounters` cancels
+  +1/+1 against −1/−1 and kills at 0 toughness or 0 loyalty; tokens come
+  from the deck's own (`DeckToken` now carries power, toughness, text and
+  colours from the token's catalog printing), the common artifact tokens
+  or a described creature; `transform`, `createTokenCopy`.
+- **The library**: `draw`, `mill`, `arrangeTop(_:as:)` for scry /
+  surveil / look at the top N (each look allows only its destinations;
+  the top ones stay in the order listed), `search(take:to:)` (shuffles,
+  then places — on top after the shuffle, as a tutor does).
+- **Every change is one value**: the screen runs mutations through
+  `act`, which records the state before in `PlaytestHistory` (undo/redo,
+  ⌘Z) and toasts the newest *notable* log entry (a spell resolving into
+  the graveyard, a token gone, a search, an attack) with Undo; the log
+  (`PlaytestEvent`) is a sheet. A seeded UI run shuffles on a fixed seed
+  (`TableRandom`). On the Play / On the Draw is not a step: it is
+  written into every saved state (`PlaytestHistory.amend`), so Undo
+  doesn't flip it back. The game is dealt once, off the main actor, from
+  the first snapshot the screen gets; the deck screen's later re-reads
+  (it re-renders while the table is up) never re-deal it.
+
+The screen: the opponent's side on top (life, commander damage, the turn
+they fell) with the **command zone in its own slot at the top right**,
+out of the thumbs' way (a tap opens the inspector, never a cast); the
+bottom-anchored battlefield with Attack / End Turn floating at its foot
+(the rows keep 70pt clear of them; Mulligan / Keep live in the opening
+panel; banners float there while bottoming or discarding); a strip of
+the player's zones (life, a library menu — draw, scry, surveil, look,
+mill, search, shuffle — graveyard, exile, "Mana 3/5" and the land drop;
+small capsules with 44pt hit areas, `PlaytestChipStyle`; the mana total
+leaves out summoning-sick sources); and the hand. Card sizes scale with
+the table (0.85–1.5×). In landscape (compact height) the battlefield sits
+over the hand and a 200pt column beside it holds the opponent, the
+command zone, the zones and mana; the held preview is clamped to the
+room above the hand. Card images decode at shared sizes
+(`PlaytestCardView.decodeEdge`): the table, the hand and the zone lists
+one, the preview and the inspector another. Under Reduce Motion the
+flip, the preview, the toast, the lift and every `act` are fades or
+nothing.
+
+**The hand** (`PlaytestHand`) is a card game's: fanned along the bottom
+edge (the screen's bottom safe area is ignored and system gestures
+deferred there), each card turned a few degrees about its foot and
+dipping toward the edges, bottoms tucked off screen; the spread leaves
+room for the outer cards' corners to swing (`PlaytestFanLayout`). One
+`DragGesture(minimumDistance: 0)` on the fan decides by the finger
+(`PlaytestTouchTiming`): the touched card lifts at once and a 250pt
+preview comes up above the hand after 0.12s — a card game's hover, not
+a long press — and sliding sideways scrubs it along; a release within
+0.22s that never moved is still a tap (the card's sheet opens, or,
+bottoming / discarding, the card is taken), so a quick tap and a
+deliberate look both read; dragging up carries the card, and past
+`playLine` (70pt above the hand) the battlefield lights up with "Release
+to cast X" (and "It resolves into the graveyard" for an instant, or what
+needs asking) — letting go there plays it, anywhere else puts it back.
+A two-faced card plays the first face that needs no say-so
+(`PlaytestState.dragPlay`: a modal land back when the land drop is free),
+only ever a back that stays on the battlefield, and the drop zone names
+it. The finger's position is written only while a card is carried.
+Which card is under the finger comes from the layout (`index(at:)`),
+not from hit-testing rotated, overlapping views; each card is also an
+invisible accessibility element over the strip of it that shows (what
+XCUITest taps and drags), with Play as a named action.
+
+**The inspector** (`PlaytestInspector`) is the table's own sheet for a
+card: a native sheet that slides up and is swiped down (or closed with
+its X), as tall as what it holds — the detent is the content's measured
+height (the sheet adds the home indicator's inset on its own), at most
+92% of the table, so the table stays in view above it — scrolling past
+that, on a thick material so the table's buttons don't read through. The card's size
+comes from the table's size, never the sheet's, or the height would
+chase itself. The detent starts from an estimate for this card
+(`estimatedHeight(options:counters:cardWidth:)`) before the measured
+height replaces it — it used to open at the last card's height and then
+animate. Never the collection's viewer, which offers printings,
+prices and adding to decks. The card large (it carries its own name and
+cost; under it the type line with live P/T, and where it is), the way
+it is played first as the prominent button with a caption saying where
+it goes and what it taps — or, when something needs the player's
+say-so, that, the button being the say-so — then counters as steppers
+for a permanent, then every other move. The offer is data
+(`PlaytestState.options(for:)` → `PlaytestOption` with a
+`PlaytestCommand`, carried out by `apply`), tested with the rules: an
+instant offers "Cast …" that resolves into the graveyard and never "Put
+onto the Battlefield"; a graveyard instant offers Flashback; the opening
+hand offers nothing. Tap/untap and counters keep it open; a move closes
+it; a token that ceases to exist under it closes it. A held battlefield card, the command zone and the graveyard and exile
+sheets open it too (a sheet closes first: `afterSheet`).
+`PlaytestTests` (the rules above against Scryfall's real multi-face
+shapes, the inspector's offer, the fan's finger-to-card mapping, and six
+hundred random moves conserving copies with no instant ever on the
+battlefield), `PlaytestFlowTests` (UI: mulligan and bottom, a library
+search, a land dragged out — and first let go short of the line — a
+held card's preview, an instant cast from the inspector into the
+graveyard, a creature dragged out and summoning sick, the inspector on
+the battlefield, End Turn, an attack, Undo, flashback offered from the
+graveyard, New Game). Its shots include two taken mid-gesture from a
+background queue (`shot(_:after:)`), since a press blocks the test.
 
 **Tokens** — Scryfall's `all_parts` with `component == "token"` is kept
 on the maker's `CardMeta.relatedTokensRaw` (`RelatedToken`, one per
@@ -1176,7 +1408,12 @@ as "What Will Happen", recomputed on the store
 change; a brand-new collection merges nothing. The generic sheet shows
 "Already in this collection: n" by name (`entryNames`). `UITEST_WIZARD_FILE`
 opens the wizard on a file in a seeded run, since a test can't drive the
-document picker. `ImportPreviewTests`, `SettingsImportTour`.
+document picker. `ImportPreviewTests`, `SettingsImportTour`. Replace asks
+first with an alert; the wizard can't be swiped away mid-import; a
+parsed file (`ParsedManaBox`, a class compared by identity) is the
+sheet's item, so its rows go when it closes — they were a `@State`
+array on the Collections tab for the rest of the session. Lists are not
+offered as a destination, and a new name that is a list's is refused.
 
 ## Odds tools: Goldfish, Draw Odds, Mana Base, Find a Commander
 
@@ -1255,7 +1492,14 @@ oracle text, no model) and kept pure so it runs off-main and under test:
   lands / ramp / draw / removal / wipes / tutors by regex, overridden by
   Scryfall's `otag:` lists when they are in; the colours it adds; fast
   mana, free interaction, extra turns, mass land denial by name list and
-  text; the mechanics its text touches, from `DeckMechanic.all`).
+  text; the mechanics its text touches, from `DeckMechanic.all`). Three
+  readings that used to miscount: an anthem ("each creature you control
+  gets +1/+1") is not a wipe — "each/all creatures get" counts only with
+  a minus; another player's draw as a trigger ("whenever an opponent
+  draws") is not draw; and a counterspell is a counter, not removal too
+  (it was counted twice in power and impact). Rules text is read for
+  mechanics once and only the misses are tried on the type line; a
+  commander's engine patterns are compiled once per subtype.
   `DeckAnalysis.compute` turns a snapshot plus `DeckAnalysisSignals`
   (game changers, tag lists, Spellbook combos, Recommander scores — all
   optional) into composition against the floors (34·8·8·8·1·2), colour
@@ -1288,6 +1532,13 @@ oracle text, no model) and kept pure so it runs off-main and under test:
   across sittings, so a list never queues ahead of the user's own search
   in the 2/sec limit). `allowsNetwork` is false under `-uitest-seed`, and
   every screen says "needs a connection" rather than showing nothing.
+  When the list changes under an analysis already shown, the network
+  signals wait a second (`networkDebounce`) — every stepper tap in the add
+  sheet used to fire a Spellbook and a Recommander POST; the local reading
+  still publishes at once. The collection's spare-card candidates are one
+  cache shared by every deck (keyed by collection revision); a deck's
+  readings go when another deck's controller is asked for or on a memory
+  warning, and at most six controllers are kept.
 - `Controllers/Cards/CardSynergyController` — the viewer's Synergies
   action (`CardSynergiesView`, pushed inside the viewer's stack like
   Details): three sections that say what kind of claim they are —
@@ -1411,7 +1662,24 @@ picker, language/condition are menu pickers, quantity is a `Stepper`,
 purchase price is a currency `TextField` that defaults to Scryfall's market
 price for the chosen finish and follows finish/printing changes until the
 user types. New collection = native alert with a text field. Removal always
-confirms (`confirmationDialog`), and owned rows also support swipe actions.
+confirms with a modal alert, and owned rows also support swipe actions.
+An edit that changes a row's identity snapshots the row *before* writing
+the edit: the snapshot is what an undo rebuilds from, and taken after it
+brought back the old finish with the new language and price paid. The
+edit sheet can't be swiped away with changes, and Cancel asks first.
+Every place a row's collection is named uses `displayCollection` ("Deck:
+Name", never `deck:<uuid>`).
+
+**Destructive confirmations are alerts, never `confirmationDialog`.** On
+iOS 26 a confirmation dialog is a popover anchored to its source — from a
+swipe action, a toolbar button or a menu it points at it like a tooltip —
+and a destructive confirmation is modal. Every delete, remove, clear,
+discard, restore, disassemble and switch-and-rebuild asks with `.alert`;
+one presented from a toolbar item's button is attached to the screen,
+since a toolbar item's own presentations aren't reliable. The only
+`confirmationDialog` left is the selection bar's Buy, a choice of
+stores, not a confirmation. Plain swipe-to-delete without asking stays
+for saved searches, as Mail does.
 The sheet stays open after Add so several printings can go in; a success
 haptic marks each. `EditEntryView` reuses `EntryFormSections`.
 
@@ -1511,7 +1779,16 @@ another kind of record can join later:
   exact state it was recorded against. Stray undo/redo records that
   don't target the head (or a child of it) are ignored, not obeyed.
   Ordering is by timestamp with an id tie-break, so it is deterministic
-  whatever order the rows come in.
+  whatever order the rows come in. **So the replay checks the head
+  itself**: `LedgerReplay.replay` rebuilds the timeline on the writer's
+  context and refuses (`ReplayError.timelineMoved`) an undo of anything
+  but the head or a redo of anything but its child. Undo used to replay
+  the id from the screen's cached log; tapped while that log was stale
+  it wrote the deltas, the timeline ignored them as stray, and History
+  still said Applied over copies that were gone. A run of steps (Undo
+  Through Here, Switch) reads the ledger once and moves the head in
+  memory as each lands (`LedgerReplay.Head`, `CardMetaWriter.runReplays`)
+  — a full read per step was ~90ms each on the real export.
 - **`LedgerReplay` (Controllers/History) does the replay** on whatever
   context it is given (CardMetaWriter's, via `runReplay`, so undoing an
   import is off the main thread): each record's delta, negated or not,
@@ -1531,7 +1808,25 @@ existed, which carry the display label "Deck: Name" instead of the deck's
 key (`DeckBuilder` now records `deck:<uuid>`; History labels it). Deck
 *list* edits write no ledger and are not undoable — a list is a wish.
 
-**A long history is shown through a window** (`HistoryLog.window`,
+**A long history reads by day** (`HistoryLog.feed` → `HistoryFeed`, laid
+over the window below): the current line's drawn rows grouped by
+calendar day, newest first, each day its own card under a header —
+"Today", "Yesterday", the weekday within the week, "September 28", then
+with the year (`HistoryDayTitle`) — rows giving the time alone; the
+line's own header (Timeline · n applied, its menu) rides on the newest
+day. The rail runs on across the day cards. **Each branch is drawn right
+after the day holding the action it splits from**, never below the line:
+the line keeps loading as its foot comes into view, and anything under
+an endlessly loading list can't be scrolled to (it used to be every
+branch card). The only thing under the oldest day is the row that loads
+more. **Search** (`.searchable`, a pull-down drawer) asks the ledger —
+`CollectionStore.historyMatches`: records whose card or collection name
+contains the text, and a live deck's key by its name, undo/redo steps
+left out — so an import is found by any of its thousands of cards, not
+only the three its row names; titles and places match too. Results are
+every matching action on any branch, by day.
+
+**The window under it** (`HistoryLog.window`,
 `HistoryWindow`): the newest forty actions of the current line — never
 fewer than reach the head and one applied row under it — with a Show
 Earlier row (how many more, and how many branches split from them), each
@@ -1544,14 +1839,21 @@ current line are drawn**: a branch off another branch is that branch's
 history — its host's card says "· 2 branches" (`Section.nested`) and
 they appear once the host is switched to — and a row's fork tags name
 only branches on screen. `HistoryLog.action`
-is a dictionary lookup (a scan per row made a long list quadratic), and
+is a dictionary lookup (a scan per row made a long list quadratic), as
+are a row's place in the feed (`HistoryFeed.rowIndex`) and its state
+(`HistoryTimeline.appliedSet`); the list animates on
+`UndoController.revision`, not by comparing every action; and a search's
+title/detail matches are worked out in the debounced task, off the main
+actor (`HistorySearchResults`), and
 the List is re-identified when the log's set of lines changes (not the
 window's: Show Earlier bringing a branch into view must not throw the
 list to the top), so a row that changes section (an undone action
 becoming a branch when something new follows it) is drawn fresh rather
 than animated across.
 `UITEST_HISTORY_COUNT` seeds a long ledger with an old and a near branch
-for `ChangesTour`.
+for `ChangesTour`. `HistoryTimelineTests` covers the feed (days, a
+branch after its fork's day, the cut) and the day headers; `UndoRedoTests`
+the ledger search.
 
 **A row says where before it says what.** `HistoryAction.detail` leads
 with the place ("Main · Sol Ring, Counterspell and 1 more"): the line is
@@ -1577,7 +1879,15 @@ whole deck (`DeletedDeck`: the deck row, its list, its versions and
 branches, as the backup's records). Undo puts it back with the same id, so
 every build History holds against it names a deck that exists again and
 can be replayed; redo deletes it again (refused while it is built). A
-built deck is still disassembled first, as its own action. Creating a
+built deck is still disassembled first, as its own action. **Creating a
+deck is one too** (`AuditAction.deckCreate`, recorded by
+`DeckEditController.createDeck`, so every way a deck is made — New Deck,
+a pasted or linked list, a precon — leaves "Created X"): the same zero
+delta and payload. Undo takes the deck away, recording it afresh first
+(the list filled since it was made), so Redo brings that back with the
+same id; undoing it is refused while the deck is built. One replay path
+serves both (`LedgerReplay.removesDeck`: a deletion redone or a creation
+undone takes the deck away; the other two bring it back). Creating a
 collection and deleting an empty one are still not actions.
 `docs/deck-versioning.md` has the reasoning.
 
@@ -1630,7 +1940,20 @@ actions, renaming and clearing.
   `CollectionStore.dueForRefresh(stamp:)` (owned cards pending or past
   the cadence, off the row cache), so prices move on the cadence whether
   or not a collection is opened; skipped under `-uitest-*` so perf runs
-  match. See `docs/data-loading-audit.md` for the inventory.
+  match. See `docs/data-loading-audit.md` for the inventory. `hydrateAll`
+  (the import wizard) and `refreshPrices(force:)` (Settings) chain onto
+  the same task (`enqueue`): a run asked for while another goes waits
+  behind it rather than being dropped, and a grid opened mid-import gets
+  its re-sort. `pendingIDs` come in the grid's order and each batch is
+  claimed only as it goes out, so a viewport top-up goes ahead of the
+  rest of the run (the whole set used to be claimed up front, in a
+  `Set`'s order, so the cards on screen filled at a random point).
+  Ids Scryfall answers `not_found` for are marked failed and dated, and
+  neither `neededIDs` nor the rows' `pending` count them for a day —
+  a stale id in an export used to be asked for on every launch. A deck's
+  printings with no complete CardMeta (a card added from search that the
+  catalog lacks) are `DeckSnapshot.pendingMetaIDs`, which the deck screen
+  hands to `hydrate(scryfallIDs:)` once per visit.
 - **`DataActivity` (Utils) logs every load kind** (`DataTask`: catalog,
   rulings, card data, prices, backup, analysis signals, vocabularies,
   set list): the last run (start, end, count, note, failed) in
@@ -1691,10 +2014,31 @@ actions, renaming and clearing.
   `CardImageView(tint:)` hands the colour up when its image lands; a
   warmed tile reads the cache in its body for its first frame.
 - Images live on disk (Caches/), not in SwiftData, to keep the store small.
-  Two tiers: the bytes on disk, decoded tiles in memory by URL and size.
-  `CardGridView` warms the next 30 tiles' images as tiles appear
-  (`ImageLoader.warm`, sequential, cancelled when the user moves on), so
-  a first scroll meets images already in memory.
+  Two tiers: the bytes on disk, decoded tiles in memory by URL and size
+  (256MB; a 3-wide tile on a 440pt phone is ~0.75MB, so ~300 tiles).
+  `CardGridView` warms the 30 tiles' images **in the direction the user
+  is going** as tiles appear (`ImageLoader.warm`, three at a time,
+  cancelled when the user moves on): below when scrolling down, above
+  when scrolling back up, where evicted images used to decode on demand
+  as each tile appeared. **The decode size is the tile's size as laid
+  out** (`CardTile.targetWidth(gridWidth:columns:spacing:showsCaption:)`,
+  the card's longest edge in points rounded up to 16, from the grid's
+  measured width — seeded from the screen so the first frame decodes at
+  the right size); the fixed 150pt guess decoded 450px for a card the
+  3-wide grid draws at 516px on a 440pt phone, and every tile was
+  upscaled 14%. The viewer's stand-in is `CardTile.lastTargetWidth`. A
+  warmed tile renders once: `CardImageView` seeds its image state from
+  the memory cache and `CardTile` its tint, and `load()` writes nothing
+  it already shows (it used to set the same image and the same tint and
+  render the tile three times). **Every owned card's bytes are
+  prefetched to disk** (`ImagePrefetchController`, from `RootView` after
+  the foreground sync; Data Activity's "Card Images"): the images lane
+  is 5/sec, so a region never scrolled filled grey card by grey card,
+  three seconds a screen, however smooth the frames. Bytes only, no
+  decode; background priority; stands aside while the grid is loading
+  (`ImageLoader.prefetch` waits out a recent interactive load); refuses
+  a metered path unless images are allowed on cellular; skipped under
+  `-uitest-*`.
 - The grid rebuilds its `[CardItem]` on a **debounced** schedule: a full sync
   emits one SwiftData save per 75-card batch, and remapping thousands of items
   on each would thrash the main thread.
@@ -1807,11 +2151,33 @@ Two launch-time records are the environment, not the app: UIKit loading
 its accessibility bundle for XCUITest, and the keyboard prewarm's dlopen.
 
 **Frame pacing, not stalls:** `testGridScrollHitchesWithRealImages`
-runs Apple's hitch metric (`XCTOSSignpostMetric.scrollDecelerationMetric`)
-over a fast scroll of the real collection with its images. The
-simulator reports only the deceleration's duration — hitch telemetry
-(hitch time ratio, ms of hitch per second) exists on a device alone — so
-the test can run on a phone: `TEST_RUNNER_UITEST_CSV=bundle` hands the
+runs Apple's hitch metrics (`scrollDecelerationMetric` and
+`scrollDraggingMetric`) over a hard scroll of the real collection with
+its images: a `fling` is a press, a drag across three quarters of the
+grid at 8,000pt/s and a release — several screens of deceleration each
+— eight deep, eight back, six up/down reversals. Not `swipeUp(.fast)`,
+which is short and slow. XCUITest waits for the app to idle between
+gestures (~2s), so a fling never lands on the last one's deceleration;
+an app-emitted animation signpost over the whole stay on the grid was
+tried for that and `XCTOSSignpostMetric(subsystem:category:name:)` never
+recorded it (the intervals began and ended, per the log), so the test
+stays on UIKit's. `TEST_RUNNER_UITEST_GRID_OFF=glow,sheen,caption,
+images` leaves draws out (`GridDiagnostics` reads it), so a run per flag
+says what each costs. Main-thread stalls during it are printed with
+their stacks, not failed (XCUITest's own reads stall the app). The
+simulator reports only durations — hitch telemetry (hitch time ratio,
+ms of hitch per second) exists on a device alone — so the test can run
+on a phone (by UDID, `00008150-…`, not the coredevice id). **Over
+Wi-Fi debugging the signpost stream is lossy**: iterations come back
+with no metrics ("Received unexpected number of metrics: 0 in
+iteration with index 4", a failure XCTest raises itself) or with frame
+rates of 1fps, and a whole run can record nothing — measured
+2026-10-06 on the 17 Pro Max, three runs out of five affected. Put the
+phone on a cable for numbers that are all there. The iterations that
+did report, Debug build, 28 flings each: 0–2 late frames, hitch ratio
+2–6 ms/s, before and after the decode-size and warm changes alike —
+frame pacing is not what the grid lacks; the bytes on disk and the
+decode size were. `TEST_RUNNER_UITEST_CSV=bundle` hands the
 export checked in under `magic-hatUITests/Fixtures/` to the app
 zlib-compressed in the launch environment (a runner on a device has no
 file the app can read and no pasteboard), and
@@ -1853,9 +2219,11 @@ preference is a UserDefaults key in `AppSettings` (Utils), bound with
   rather than reading defaults per card). `PriceFormat` prefixes the
   symbol; Scryfall's `order=`/`usd>=` become `eur` (`SearchSort.scryfallOrder`).
   A purchase price in another currency shows no gain/loss.
-- **Grid size** (`GridDensity`, 2–5 across): `CardTile` decodes at
-  `targetWidth(for:)`, the grid warms at the same size, the viewer's
-  fallback matches, and the densest drops the caption.
+- **Grid size** (`GridDensity`, 2–5 across): the grid decodes at the
+  tile's laid-out size (`CardTile.targetWidth(gridWidth:…)`; `targetWidth(
+  for:)` is the guess before it is measured), warms at the same size, the
+  viewer's fallback matches (`lastTargetWidth`), and the densest drops
+  the caption.
 - **Card language** — what new cards are added in (Add sheet, quick add,
   scan tray).
 - **Card Data** — the catalog's build date, `CatalogSyncController
@@ -1906,7 +2274,11 @@ sample a day, the day's later refresh replacing the earlier. One
 bytes a day — the day since 2020-01-01 as UInt16, four Float32s, NaN for
 a price Scryfall didn't have; values are quantized to Float32 on record
 so a series equals itself read back), so a year of a card is 6.5KB and a
-3,900-card collection's a few MB. Nothing is backfilled: the record
+3,900-card collection's a few MB. Recording a sample appends 18 bytes
+for a new day and overwrites the last 18 for today (`PriceHistory
+.record`); only a day before the last decodes and repacks — every
+refresh used to decode and repack every owned series. The blob is read
+in place (`loadUnaligned`). Nothing is backfilled: the record
 starts the day the card is first owned, and the sheet says so. It
 travels in backups (`price-history.json`) — Scryfall-derived, but
 nothing can fetch it again. `CollectionStore.priceHistory(scryfallID:)`
@@ -1943,7 +2315,10 @@ anything missing is pending.
 `BackupController` snapshots and restores on `CardMetaWriter` (a restore is
 `delete(model:)` per table, then inserts); JSON and zip work is detached.
 Restore **replaces** (merging two ledgers would break History's account)
-and first writes "Magic Hat Before Restore …". `BackupScheduler` runs
+and first writes "Magic Hat Before Restore …". Preferences travel too
+(`BackupController.settingsKeys`: sorts and their directions, the add
+sheet's sorts, the scanner's setup but not its camera, the backup
+schedule; `BackupTests.settingsTravelWithABackup`). `BackupScheduler` runs
 daily/weekly backups when the app comes to the foreground (8s after), into
 a folder picked with the document picker and kept as a security-scoped
 bookmark — iCloud Drive with no entitlement — else `Documents/Backups`
@@ -2040,7 +2415,12 @@ aspect-fill; `viewRect` is its reverse, for the outline).
 
 The camera session and Vision (`VNRecognizeTextRequest`, accurate, no
 language correction) run on the camera's own queue, ~4 frames a second,
-one at a time. The default camera is the multi-lens virtual device (it
+one at a time — paused (`ScanSession.isCovered`) while the tray or the
+settings sheet covers the picture. The session's `phase` is written only when it changes
+(`setPhase`) and the card outline moves only past a 6pt slop: every
+frame used to set both, and the rectangle detector's jitter kept the
+outline animating and the whole screen re-rendering about twice a
+frame. The default camera is the multi-lens virtual device (it
 switches to macro close up); Scan Settings picks another
 (`CardCamera.select`). `CardTextReader` (pure) reads the title band and the
 bottom-left info block: collector number, a set code that must be a known
@@ -2148,7 +2528,8 @@ slid over a folder's first row); an ⓘ opens `DecksGuideView`; Select Decks
 Delete: folders first (tiles with their
 decks' covers, or list rows), then decks; icons or list and a sort
 (`decks.layout`, `decks.sort`); drag and drop (`DeckDragItem` payload
-strings) or Move (`DeckMoveSheet`); search is flat across folders and says
+strings) or Move (`DeckMoveSheet` over `DeckFolderPicker`, the sheet a
+precon import asks with too); search is flat across folders and says
 where each result lives.
 
 `DeckSiteClient` turns a link into parser text: Archidekt's deck API,

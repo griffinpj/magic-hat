@@ -249,8 +249,9 @@ nonisolated enum Goldfish {
         let games = max(1, config.games)
         let deck = Deck(cards: cards)
         var tally = Tally(turns: turns, hasCommander: !deck.commanders.isEmpty)
+        let scratch = Scratch()
         for _ in 0..<games {
-            var game = Game(deck: deck, config: config)
+            var game = Game(deck: deck, config: config, scratch: scratch)
             game.play(using: &rng, tally: &tally)
         }
         return tally.result(games: games, turns: turns, onThePlay: config.onThePlay)
@@ -263,12 +264,41 @@ nonisolated enum Goldfish {
         let cards: [GoldfishCard]
         let library: [Int]
         let commanders: [Int]
+        /// The cast order's key per card (ramp, draw, then the biggest
+        /// spell), worked out once rather than per spell per cast attempt.
+        let castOrder: [CastKey]
 
         init(cards: [GoldfishCard]) {
             self.cards = cards
             library = cards.indices.filter { !cards[$0].isCommander }
             commanders = cards.indices.filter { cards[$0].isCommander }
+            castOrder = cards.map { c in
+                if c.isRamp { return CastKey(group: 0, rank: c.manaValue) }
+                if c.draws > 0 { return CastKey(group: 1, rank: c.manaValue) }
+                return CastKey(group: 3, rank: -c.manaValue)
+            }
         }
+    }
+
+    /// Ramp (0), draw (1), the commander (2), the rest (3); within a group
+    /// by `rank`. Compared as the (group, rank) tuple was.
+    private struct CastKey: Comparable {
+        let group: Int
+        let rank: Int
+        static func < (a: CastKey, b: CastKey) -> Bool { (a.group, a.rank) < (b.group, b.rank) }
+        static let commander = CastKey(group: 2, rank: 0)
+    }
+
+    /// Buffers one run's games share, so the cast loop and the payment
+    /// matching stop allocating arrays per attempt — 5,000 games × 8 turns
+    /// × several casts each. Taken out with `swap` and put back after, so
+    /// the hot loops work on locals, not class properties.
+    private final class Scratch {
+        var candidates: [(index: Int, fromCommand: Bool, key: CastKey)] = []
+        var unitSource: [Int] = []
+        var unitMask: [UInt8] = []
+        var matchOfUnit: [Int] = []
+        var seen: [Bool] = []
     }
 
     /// A permanent that makes mana.
@@ -291,18 +321,26 @@ nonisolated enum Goldfish {
         var commanderCastTurn: Int?
         var mulligansTaken = 0
         var spellsCast = 0
+        let scratch: Scratch
 
-        init(deck: Deck, config: GoldfishConfig) {
+        init(deck: Deck, config: GoldfishConfig, scratch: Scratch) {
             self.deck = deck
             self.config = config
+            self.scratch = scratch
         }
 
         private func card(_ i: Int) -> GoldfishCard { deck.cards[i] }
 
+        private func landsInHand() -> Int {
+            var n = 0
+            for i in hand where deck.cards[i].isLand { n += 1 }
+            return n
+        }
+
         mutating func play<G: RandomNumberGenerator>(using rng: inout G, tally: inout Tally) {
             openingHand(using: &rng)
             tally.mulligans[min(mulligansTaken, tally.mulligans.count - 1)] += 1
-            let kept = hand.filter { card($0).isLand }.count
+            let kept = landsInHand()
             tally.keptLands[min(kept, 7)] += 1
             commandZone = deck.commanders
 
@@ -347,7 +385,7 @@ nonisolated enum Goldfish {
             hand = []
             draw(7)
             while mulligansTaken < config.maxMulligans {
-                let lands = hand.filter { card($0).isLand }.count
+                let lands = landsInHand()
                 if lands >= config.minLands && lands <= config.maxLands { break }
                 mulligansTaken += 1
                 library.append(contentsOf: hand)
@@ -362,7 +400,7 @@ nonisolated enum Goldfish {
         /// first when there are too many, else the most expensive spells.
         private mutating func bottom(_ n: Int) {
             for _ in 0..<min(n, hand.count) {
-                let lands = hand.filter { card($0).isLand }.count
+                let lands = landsInHand()
                 let choice: Int?
                 if lands > config.maxLands {
                     choice = hand.first { card($0).isLand }
@@ -429,16 +467,16 @@ nonisolated enum Goldfish {
                 guardCount += 1
                 let available = manaAvailable(turn: turn)
                 guard available > 0 else { break }
-                let spells = hand.filter { card($0).isSpell }
-                func order(_ i: Int) -> (Int, Int) {
-                    let c = card(i)
-                    if c.isRamp { return (0, c.manaValue) }
-                    if c.draws > 0 { return (1, c.manaValue) }
-                    return (3, -c.manaValue)
-                }
-                var candidates: [(index: Int, fromCommand: Bool, key: (Int, Int))] = spells.map { ($0, false, order($0)) }
-                for i in commandZone { candidates.append((i, true, (2, 0))) }
+                // The hand's spells in hand order, then the command zone —
+                // the same input to the same sort as before, so a seeded
+                // run casts exactly what it did.
+                var candidates = scratch.candidates
+                scratch.candidates = []
+                candidates.removeAll(keepingCapacity: true)
+                for i in hand where card(i).isSpell { candidates.append((i, false, deck.castOrder[i])) }
+                for i in commandZone { candidates.append((i, true, CastKey.commander)) }
                 candidates.sort { $0.key < $1.key }
+                defer { scratch.candidates = candidates }
                 var cast = false
                 for candidate in candidates {
                     let c = card(candidate.index)
@@ -505,9 +543,21 @@ nonisolated enum Goldfish {
 
         /// The sources to tap for the cost, or nil when it can't be paid.
         private func assignment(_ c: GoldfishCard, turn: Int, tax: Int) -> [Int]? {
-            // Units: one per point of mana a ready source makes.
-            var unitSource: [Int] = []
-            var unitMask: [UInt8] = []
+            // Units: one per point of mana a ready source makes. The
+            // buffers are the run's, reused (see `Scratch`).
+            var unitSource: [Int] = [], unitMask: [UInt8] = [], matchOfUnit: [Int] = [], seen: [Bool] = []
+            swap(&unitSource, &scratch.unitSource)
+            swap(&unitMask, &scratch.unitMask)
+            swap(&matchOfUnit, &scratch.matchOfUnit)
+            swap(&seen, &scratch.seen)
+            defer {
+                swap(&unitSource, &scratch.unitSource)
+                swap(&unitMask, &scratch.unitMask)
+                swap(&matchOfUnit, &scratch.matchOfUnit)
+                swap(&seen, &scratch.seen)
+            }
+            unitSource.removeAll(keepingCapacity: true)
+            unitMask.removeAll(keepingCapacity: true)
             for (s, source) in sources.enumerated() where !source.tapped && source.readyTurn <= turn {
                 let card = card(source.card)
                 for _ in 0..<card.manaAmount { unitSource.append(s); unitMask.append(card.produces) }
@@ -517,7 +567,8 @@ nonisolated enum Goldfish {
             guard !c.pips.isEmpty || generic > 0 else { return [] }
 
             // Kuhn's augmenting paths: pip → unit.
-            var matchOfUnit = [Int](repeating: -1, count: unitMask.count)
+            matchOfUnit.removeAll(keepingCapacity: true)
+            matchOfUnit.append(contentsOf: repeatElement(-1, count: unitMask.count))
             func tryMatch(_ pip: Int, _ seen: inout [Bool]) -> Bool {
                 for u in unitMask.indices where unitMask[u] & c.pips[pip] != 0 && !seen[u] {
                     seen[u] = true
@@ -529,7 +580,8 @@ nonisolated enum Goldfish {
                 return false
             }
             for pip in c.pips.indices {
-                var seen = [Bool](repeating: false, count: unitMask.count)
+                seen.removeAll(keepingCapacity: true)
+                seen.append(contentsOf: repeatElement(false, count: unitMask.count))
                 if !tryMatch(pip, &seen) { return nil }
             }
             // Tap the matched units' sources; a source's other units are

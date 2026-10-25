@@ -12,6 +12,9 @@ import SwiftData
 
 struct CollectionPickerView: View {
     @Binding var selected: String
+    /// Only collections, no lists and no New List: where cards *go*
+    /// (a disassembled deck's) rather than where a wish is kept.
+    var collectionsOnly = false
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -35,7 +38,7 @@ struct CollectionPickerView: View {
     var body: some View {
         List {
             ForEach(filtered.filter { !$0.isList }) { row($0) }
-            let lists = filtered.filter(\.isList)
+            let lists = collectionsOnly ? [] : filtered.filter(\.isList)
             if !lists.isEmpty {
                 Text("Lists")
                     .font(.headline)
@@ -61,8 +64,10 @@ struct CollectionPickerView: View {
                 Menu {
                     Button("New Collection", systemImage: CollectionKind.collection.systemImage) { startCreate(.collection) }
                         .accessibilityIdentifier("new-collection")
-                    Button("New List", systemImage: CollectionKind.list.systemImage) { startCreate(.list) }
-                        .accessibilityIdentifier("new-list")
+                    if !collectionsOnly {
+                        Button("New List", systemImage: CollectionKind.list.systemImage) { startCreate(.list) }
+                            .accessibilityIdentifier("new-list")
+                    }
                 } label: {
                     Label("New", systemImage: "plus")
                 }

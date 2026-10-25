@@ -71,7 +71,6 @@ struct SearchView: View {
         .accessibilityIdentifier("search-mode")
     }
 
-    private var tracker: CollectionChangeTracker { .shared }
     /// Results carry prices in the currency they were fetched in.
     @AppStorage(AppSettings.currencyKey) private var currencyRaw = DisplayCurrency.usd.rawValue
 
@@ -111,7 +110,10 @@ struct SearchView: View {
                 } message: {
                     Text(controller.query.summary)
                 }
-                .task(id: "\(tracker.revision)|\(DeckChangeTracker.shared.revision)") { await refreshOwned() }
+                // The trackers are read by a child, not this body: reading
+                // them here re-rendered the whole tab (form or grid) on
+                // every write anywhere.
+                .background { OwnershipObserver { await refreshOwned() } }
                 .onChange(of: currencyRaw) { _, _ in if controller.hasResults { controller.run() } }
         }
     }
@@ -198,7 +200,7 @@ struct SearchView: View {
                      }, accessory: {
                          if !selection.isActive { sortButton }
                      }, selection: selection)
-        .cardSelectionBar(selection, items: controller.results)
+        .cardSelectionBar(selection, items: controller.resultList)
         // Quiet progress: a small pill while a new first page replaces
         // what's shown, or the next page is on its way.
         .overlay(alignment: .top) {
@@ -226,24 +228,9 @@ struct SearchView: View {
     }
 
     /// Distinct card names in the current results that match the typed
-    /// text, prefix matches first — filter-aware by construction.
-    private var completions: [String] {
-        let t = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard t.count >= 2, !t.contains(":") else { return [] }
-        var seen = Set<String>()
-        var prefix: [String] = [], contains: [String] = []
-        for item in controller.results.prefix(200) {
-            let name = item.name
-            guard !seen.contains(name), name.caseInsensitiveCompare(t) != .orderedSame else { continue }
-            seen.insert(name)
-            if name.range(of: t, options: [.caseInsensitive, .anchored, .diacriticInsensitive]) != nil {
-                prefix.append(name)
-            } else if name.range(of: t, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-                contains.append(name)
-            }
-        }
-        return Array((prefix + contains).prefix(8))
-    }
+    /// text, prefix matches first — filter-aware by construction. Folded
+    /// once per results by the controller.
+    private var completions: [String] { controller.completions(for: searchText) }
 
     private func completionStrip(_ names: [String]) -> some View {
         ScrollView(.horizontal) {
@@ -392,6 +379,17 @@ struct SearchView: View {
         let store = CollectionStore.shared(for: modelContext.container)
         guard let index = try? await store.ownedIndex(stamp: .current), !Task.isCancelled else { return }
         controller.updateOwned(index)
+    }
+}
+
+/// Calls `refresh` whenever the collection or a deck list changes, from
+/// its own body, so the screen it sits behind doesn't observe the trackers.
+private struct OwnershipObserver: View {
+    let refresh: () async -> Void
+
+    var body: some View {
+        Color.clear
+            .task(id: "\(CollectionChangeTracker.shared.revision)|\(DeckChangeTracker.shared.revision)") { await refresh() }
     }
 }
 

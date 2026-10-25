@@ -190,6 +190,18 @@ nonisolated enum ManaBase {
         // pips of that colour on its turn need the most sources.
         var lines: [ManaBaseReport.ColorLine] = []
         let allSpells = spells.map(\.0) + commanders
+        // The deck size and pool are fixed for the report, so the target
+        // depends on (pips, turn) alone: worked out once per pair, not per
+        // spell per colour — each is a search over up to `pool` nested
+        // hypergeometric sums.
+        var needed: [Int: Int] = [:]
+        func neededSources(pips: Int, turn: Int) -> Int {
+            let key = pips << 16 | turn
+            if let known = needed[key] { return known }
+            let value = sourcesNeeded(pips: pips, turn: turn, deckSize: deckSize, pool: poolSize)
+            needed[key] = value
+            return value
+        }
         for color in ManaColor.allCases {
             var pipTotal = 0
             for (spell, copies) in spells { pipTotal += (spell.pips[color] ?? 0) * copies }
@@ -199,7 +211,7 @@ nonisolated enum ManaBase {
             for spell in allSpells {
                 guard let p = spell.pips[color], p > 0 else { continue }
                 let turn = max(spell.manaValue, p, 1)
-                let target = sourcesNeeded(pips: p, turn: turn, deckSize: deckSize, pool: poolSize)
+                let target = neededSources(pips: p, turn: turn)
                 if best == nil || target > best!.target { best = (spell.name, p, turn, target) }
             }
             guard let best else { continue }
@@ -214,12 +226,13 @@ nonisolated enum ManaBase {
         // without one copy. Basics are the split above.
         var sourceLines: [ManaBaseReport.SourceLine] = []
         var seen = Set<String>()
+        let sourcesNow = Dictionary(uniqueKeysWithValues: lines.map { ($0.color, $0.sources) })
         for (reading, copies) in pool where copies > 0 && !reading.isBasic && !seen.contains(reading.name) {
             seen.insert(reading.name)
             let colors = ManaColor.allCases.filter { reading.makes($0, identity: identity) }
             let holds = colors.filter { color in
                 guard let target = targets[color] else { return false }
-                return sources(color, without: reading) < target && sources(color) >= target
+                return (sourcesNow[color] ?? 0) >= target && sources(color, without: reading) < target
             }
             sourceLines.append(ManaBaseReport.SourceLine(
                 id: reading.name, name: reading.name, copies: copies, colors: colors,

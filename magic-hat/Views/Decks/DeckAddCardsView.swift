@@ -93,6 +93,10 @@ struct DeckAddCardsView: View {
     @State private var owned = CardItemList()
     @State private var ownedByKey: [String: Int] = [:]
     @State private var ownedLoaded = false
+    /// The collection scope has matched at least once. Until then it shows
+    /// the spinner: `ownedLoaded` alone flipped before the first match had
+    /// landed, so "Nothing in Your Collection" flashed on every "+" open.
+    @State private var collectionSearched = false
     /// Cards left out of the untyped listing (see `browseLimit`).
     @State private var collectionHidden = 0
     /// The collection scope's rows: the cards (stamped) and copies owned
@@ -374,7 +378,7 @@ struct DeckAddCardsView: View {
 
     /// All Cards with the chip on: what is owned, matched in memory.
     @ViewBuilder private var collectionResults: some View {
-        if !ownedLoaded {
+        if !ownedLoaded || !collectionSearched {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if collectionCards.isEmpty {
             if owned.isEmpty {
@@ -544,8 +548,8 @@ struct DeckAddCardsView: View {
     private func resultRow(_ item: CardItem, ownedCopies: Int?, reason: CardReason? = nil) -> some View {
         let legalKey = snapshot?.format.legalityKey
         let notLegal = legalKey.flatMap { item.legalities?[$0] }.map { $0 != "legal" } ?? false
-        return DeckSearchRow(
-            item: item, ownedCopies: ownedCopies, inDeck: session.quantity(of: item), notLegal: notLegal,
+        return DeckAddRow(
+            item: item, ownedCopies: ownedCopies, session: session, notLegal: notLegal,
             offIdentity: isOffIdentity(item), reason: reason,
             zoom: zoom, onSetQuantity: { setQuantity(item, $0) }, onOpen: { open(item) }
         )
@@ -615,6 +619,7 @@ struct DeckAddCardsView: View {
                     collectionCards = cards
                     collectionOwned = owned
                     collectionHidden = results.count - shown.count
+                    collectionSearched = true
                 }
             }
         }
@@ -743,7 +748,10 @@ struct DeckAddCardsView: View {
             if let index = try? await store.ownedIndex(stamp: .current) { controller.updateOwned(index) }
         }
         ownedLoaded = true
-        runSearch(immediately: true)
+        // Only the collection scope reads `owned`; the Scryfall results
+        // took the new ownership above. A collection write used to re-run
+        // the live Scryfall search too, a request in the 1/sec lane.
+        if ownedOnly { runSearch(immediately: true) }
     }
 
     // MARK: Actions
@@ -791,6 +799,29 @@ struct DeckAddCardsView: View {
         case .recommended: items = synergyShown.items + recommended.items
         }
         viewer = CardViewerSession(items: items, currentID: item.id, deck: session)
+    }
+}
+
+/// A result row reading its count from the session in its own body, so a
+/// tap's new count re-renders the row, not the sheet: read in the sheet's
+/// body, every −/+ made the whole sheet (both scopes' lists) update.
+private struct DeckAddRow: View {
+    let item: CardItem
+    let ownedCopies: Int?
+    let session: DeckAddSession
+    let notLegal: Bool
+    let offIdentity: Bool
+    let reason: CardReason?
+    let zoom: Namespace.ID
+    let onSetQuantity: (Int) -> Void
+    let onOpen: () -> Void
+
+    var body: some View {
+        DeckSearchRow(
+            item: item, ownedCopies: ownedCopies, inDeck: session.quantity(of: item), notLegal: notLegal,
+            offIdentity: offIdentity, reason: reason,
+            zoom: zoom, onSetQuantity: onSetQuantity, onOpen: onOpen
+        )
     }
 }
 

@@ -42,6 +42,45 @@ struct CardSearchQueryMatchingTests {
         #expect(!q.matches(card), "every word must match somewhere")
     }
 
+    /// Case and diacritics fold on both sides, as Scryfall does: the
+    /// matcher folds the query once and the card's fields once.
+    @Test func caseAndDiacriticsFoldBothWays() throws {
+        let jotun = try Self.item(["name": "Jötun Grunt", "type_line": "Creature — Giant Soldier",
+                                   "oracle_text": "Cumulative upkeep—Put two cards from a single graveyard on the bottom of their owner's library.",
+                                   "artist": "Franz Vohwinkel", "set_name": "Coldsnap"])
+        var q = CardSearchQuery()
+        q.text = "jotun"
+        #expect(q.matches(jotun), "a plain o finds ö")
+        q.text = "JÖTUN"
+        #expect(q.matches(jotun), "upper case with the diacritic")
+        q.text = "COLDSNAP giant"
+        #expect(q.matches(jotun), "set name and type line, any case")
+        q.text = "jotunn"
+        #expect(!q.matches(jotun))
+        q = CardSearchQuery()
+        q.typeLine = [TextTerm("GIANT"), TextTerm("élf", negated: true)]
+        #expect(q.matches(jotun))
+        q.typeLine = [TextTerm("SOLDÍER", negated: true)]
+        #expect(!q.matches(jotun), "an excluded term folds too")
+        q = CardSearchQuery()
+        q.oracle = [TextTerm("CUMULATIVE UPKEEP")]
+        #expect(q.matches(jotun))
+        q = CardSearchQuery()
+        q.artist = "  vohwinkel "
+        #expect(q.matches(jotun), "the artist is trimmed and folded")
+
+        let lim = try Self.item(["name": "Lim-Dûl's Vault", "type_line": "Instant"])
+        q = CardSearchQuery()
+        q.text = "lim-dul's"
+        #expect(q.matches(lim))
+        // The same query object over many cards: one matcher, every answer right.
+        q.text = "vault"
+        let m = q.matcher()
+        #expect(m.matches(lim) && !m.matches(jotun))
+        #expect(q.matches(lim) && !q.matches(jotun))
+        #expect(CardSearchQuery.contains("Æther Vial", "æther"), "the static helper still folds case")
+    }
+
     @Test func formatsAndLanguage() throws {
         let card = try Self.item(Self.dragon)
         var q = CardSearchQuery()

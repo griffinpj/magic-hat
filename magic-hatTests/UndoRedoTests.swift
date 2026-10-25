@@ -72,6 +72,43 @@ struct UndoRedoTests {
         #expect(records.filter { !$0.action.isUserAction }.allSatisfy { $0.undoesActionID != nil })
     }
 
+    /// Undo offered from a stale read of the ledger: something was written
+    /// since, so the action offered is no longer the head. The replay
+    /// checks the head on the writer's context and refuses, touching
+    /// nothing — it used to write negated deltas the timeline ignored.
+    @Test func undoFromAStaleLogIsRefusedAndChangesNothing() async throws {
+        let container = try TestSupport.makeContainer()
+        let ctx = container.mainContext
+        ctx.insert(MTGCollection(name: "Main"))
+        try ctx.save()
+        try add("x1", "Xeno", to: "Main", quantity: 2, context: ctx)
+        let undo = UndoController(container: container)
+        await undo.refresh()
+        let staleHead = try #require(undo.log.timeline.nextUndo)
+
+        // Another screen writes; History hasn't re-read.
+        try add("y1", "Yore", to: "Main", quantity: 1, context: ctx)
+        let recordsBefore = try ModelContext(container).fetchCount(FetchDescriptor<AuditRecord>())
+
+        await undo.undo()
+        #expect(undo.error == LedgerReplay.ReplayError.timelineMoved.errorDescription)
+        #expect(try row("x1", in: "Main", container)?.quantity == 2, "the stale head's copies untouched")
+        #expect(try row("y1", in: "Main", container)?.quantity == 1, "the new action's too")
+        #expect(try ModelContext(container).fetchCount(FetchDescriptor<AuditRecord>()) == recordsBefore, "no record written")
+        #expect(undo.log.timeline.nextUndo != staleHead, "the log was re-read after the refusal")
+
+        // A redo offered against a head that moved is refused the same way.
+        await undo.undo()           // undoes Yore, the real head now
+        #expect(try row("y1", in: "Main", container) == nil)
+        let yore = try #require(undo.log.timeline.nextRedo)
+        try add("z1", "Zeal", to: "Main", context: ctx)
+        undo.error = nil
+        #expect(throws: LedgerReplay.ReplayError.timelineMoved) {
+            try LedgerReplay.replay(actionID: yore, direction: .redo, in: ModelContext(container))
+        }
+        #expect(try row("y1", in: "Main", container) == nil)
+    }
+
     @Test func aNewActionForksTheTimelineAndBothBranchesStayReachable() async throws {
         let container = try TestSupport.makeContainer()
         let ctx = container.mainContext
@@ -306,6 +343,72 @@ struct UndoRedoTests {
         #expect(undo.error == nil)
         #expect(try ModelContext(w.container).fetch(FetchDescriptor<Deck>()).isEmpty, "deleted again")
         #expect(!undo.canRedo && undo.canUndo)
+    }
+
+    /// Creating a deck is an action, as deleting one is: History names it,
+    /// Undo takes the deck away — keeping the list it had by then, so Redo
+    /// brings that back with the same id — and a built deck can't be
+    /// un-created until it is taken apart.
+    @Test func aCreatedDeckIsAnActionThatUndoes() async throws {
+        let w = try DeckBuilderTests.makeWorld()
+        let ctx = w.container.mainContext
+        let created = try DeckEditController.createDeck(name: "Fresh", format: .other, commander: nil, context: ctx)
+        let id = created.id
+        let later = try CardSearchQueryMatchingTests.item(["name": "Added Later", "oracle_id": UUID().uuidString])
+        try DeckEditController.add(PrintingSelection(item: later), to: id, board: .main, context: ctx)
+        let records = try ctx.fetch(FetchDescriptor<AuditRecord>()).filter { $0.action == .deckCreate }
+        #expect(records.map(\.cardName).contains("Fresh"), "one record for the new deck")
+
+        let undo = UndoController(container: w.container)
+        await undo.refresh()
+        #expect(undo.log.actions.first?.action == .deckCreate && undo.log.actions.first?.cardCount == 0)
+        #expect(undo.undoTitle == "Undo Created Fresh" && undo.log.actions.first?.title == "Created Fresh")
+
+        await undo.undo()
+        #expect(undo.error == nil)
+        #expect(try ModelContext(w.container).fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == id })).isEmpty, "gone")
+
+        await undo.redo()
+        #expect(undo.error == nil)
+        let back = try #require(try ModelContext(w.container).fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == id })).first)
+        #expect(back.name == "Fresh" && back.cards.count == 1, "the same deck, with the card added after it was made")
+    }
+
+    /// Undoing a deck's creation is refused while it is built.
+    @Test func aBuiltDeckCantBeUncreated() async throws {
+        let w = try DeckBuilderTests.makeWorld()
+        let builder = DeckBuilder.shared(for: w.container)
+        _ = try await builder.build(try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false))
+        let creation = try #require(try ModelContext(w.container).fetch(FetchDescriptor<AuditRecord>()).first { $0.action == .deckCreate })
+        #expect(LedgerReplay.blocker(actionID: creation.actionID, direction: .undo, in: ModelContext(w.container))
+                == .deckStillBuilt("Test Deck"))
+        #expect(LedgerReplay.removesDeck(.deckCreate, .undo) && LedgerReplay.removesDeck(.deckDelete, .redo))
+        #expect(!LedgerReplay.removesDeck(.deckCreate, .redo) && !LedgerReplay.removesDeck(.deckDelete, .undo))
+    }
+
+    /// History's search reads the ledger: any card of an action (not only
+    /// the names its row shows), a collection, a deck by name — and never
+    /// the undo and redo steps themselves.
+    @Test func historySearchFindsActionsByAnyCardCollectionOrDeck() async throws {
+        let w = try DeckBuilderTests.makeWorld()
+        let ctx = w.container.mainContext
+        let deck = try DeckEditController.createDeck(name: "Atraxa Superfriends", format: .commander, commander: nil, context: ctx)
+        let store = CollectionStore(modelContainer: w.container)
+        let records = try ctx.fetch(FetchDescriptor<AuditRecord>())
+        let creation = try #require(records.first { $0.action == .deckCreate && $0.cardName == deck.name }).actionID
+        #expect(try await store.historyMatches("superfriends") == [creation], "by the deck's name, any case")
+        let undo = UndoController(container: w.container)
+        await undo.refresh()
+        await undo.undo()                            // the creation, undone: a step, not an action
+        #expect(try await store.historyMatches("superfriends") == [creation])
+        try CollectionEditController.createCollection(named: "Trades", context: ctx)
+        try CollectionEditController.add(.init(printing: PrintingSelection(item: TestSupport.card(id: "lp", name: "Lotus Petal")),
+                                               collectionName: "Trades", quantity: 2), context: ctx)
+        let added = try #require(try ctx.fetch(FetchDescriptor<AuditRecord>()).first { $0.cardName == "Lotus Petal" }).actionID
+        #expect(try await store.historyMatches("petal") == [added], "by a card")
+        #expect(try await store.historyMatches("trades") == [added], "by its collection")
+        #expect(try await store.historyMatches("   ").isEmpty)
+        #expect(try await store.historyMatches("no such card").isEmpty)
     }
 
     /// A step that can't run says so before it is offered.

@@ -89,23 +89,29 @@ nonisolated enum CardSorting {
     static func sorted(_ items: [CardItem], by sort: CardSort, direction: SortDirection? = nil) -> [CardItem] {
         let ascending = (direction ?? sort.defaultDirection) == .ascending
         func ordered<K: Comparable>(_ l: K, _ r: K) -> Bool { ascending ? l < r : l > r }
+        // Each card's key is worked out once, not twice per comparison
+        // (n log n of them) — for mana value that was parsing both costs in
+        // every comparison. The sort moves indices, not cards: decorating
+        // with (key, CardItem) tuples moved a ~40-field value per swap and
+        // was slower than before for the cheap keys.
         /// A key some cards lack: those sort last, by name.
         func optional<K: Comparable>(_ key: (CardItem) -> K?) -> [CardItem] {
-            items.sorted {
-                switch (key($0), key($1)) {
+            let keys = items.map(key)
+            return items.indices.sorted { i, j in
+                switch (keys[i], keys[j]) {
                 case let (l?, r?) where l != r: return ordered(l, r)
                 case (_?, nil): return true
                 case (nil, _?): return false
-                default: return byName($0, $1)
+                default: return byName(items[i], items[j])
                 }
-            }
+            }.map { items[$0] }
         }
         func keyed<K: Comparable>(_ key: (CardItem) -> K) -> [CardItem] {
-            items.sorted {
-                let l = key($0), r = key($1)
-                if l != r { return ordered(l, r) }
-                return byName($0, $1)
-            }
+            let keys = items.map(key)
+            return items.indices.sorted { i, j in
+                if keys[i] != keys[j] { return ordered(keys[i], keys[j]) }
+                return byName(items[i], items[j])
+            }.map { items[$0] }
         }
         switch sort {
         case .name:

@@ -40,10 +40,46 @@ nonisolated struct EDHRECCardView: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+nonisolated extension EDHRECCardView {
+    /// `name` is read leniently: EDHREC's page JSON is not a published API,
+    /// and a row that comes without a name used to fail the whole page
+    /// ("no EDHREC data"). Without one the slug (`sanitized`) stands in —
+    /// "atraxa-praetors-voice" → "Atraxa Praetors Voice", which reads well
+    /// enough for an unresolved row; the id still resolves the card. A row
+    /// with neither is dropped by `EDHRECCardList`.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try? c.decodeIfPresent(String.self, forKey: .id)
+        sanitized = try? c.decodeIfPresent(String.self, forKey: .sanitized)
+        name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? sanitized.map(Self.name(fromSlug:)) ?? ""
+        synergy = try? c.decodeIfPresent(Double.self, forKey: .synergy)
+        lift = try? c.decodeIfPresent(Double.self, forKey: .lift)
+        numDecks = try? c.decodeIfPresent(Int.self, forKey: .numDecks)
+        potentialDecks = try? c.decodeIfPresent(Int.self, forKey: .potentialDecks)
+    }
+
+    static func name(fromSlug slug: String) -> String {
+        slug.split(separator: "-").map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
+}
+
 nonisolated struct EDHRECCardList: Codable, Sendable, Hashable {
     let header: String?
     let tag: String?
     let cardviews: [EDHRECCardView]
+
+    init(header: String?, tag: String?, cardviews: [EDHRECCardView]) {
+        self.header = header
+        self.tag = tag
+        self.cardviews = cardviews
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        header = try? c.decodeIfPresent(String.self, forKey: .header)
+        tag = try? c.decodeIfPresent(String.self, forKey: .tag)
+        cardviews = (try c.decodeIfPresent([EDHRECCardView].self, forKey: .cardviews) ?? []).filter { !$0.name.isEmpty }
+    }
 }
 
 nonisolated struct EDHRECCardInfo: Codable, Sendable, Hashable {

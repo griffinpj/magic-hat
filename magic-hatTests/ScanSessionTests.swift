@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreGraphics
+import Observation
 @testable import magic_hat
 
 /// The scanner's tray: a card is counted once, a different printing is a
@@ -67,6 +68,34 @@ struct ScanSessionTests {
             #expect(session.tray.count == 1 && session.phase == .added(CardItem(scryfallCard: bolt, owned: false)), "a typed card goes into the tray")
             #expect(!session.isPrompting)
         }
+    }
+
+    /// Frames set the phase they already have most of the time; only a
+    /// real change notifies the screen (it re-rendered twice a frame).
+    @Test func settingTheSamePhaseNotifiesNobody() throws {
+        final class Flag: @unchecked Sendable { var fired = false }
+        try withDefaults { session in
+            let bolt = try Self.card("b1", "Lightning Bolt", set: "m11", number: "146")
+            session.accept(bolt, exactPrinting: true, reading: nil)
+            session.accept(bolt, exactPrinting: true, reading: nil)
+            #expect(session.phase == .again(CardItem(scryfallCard: bolt, owned: false)))
+            let flag = Flag()
+            withObservationTracking { _ = session.phase } onChange: { flag.fired = true }
+            session.accept(bolt, exactPrinting: true, reading: nil)
+            #expect(!flag.fired, "the same .again again: no notification")
+            session.clear()
+            #expect(flag.fired && session.phase == .looking, "a real change still notifies")
+        }
+    }
+
+    /// The outline ignores Vision's frame-to-frame jitter.
+    @Test func theOutlineMovesOnlyPastItsSlop() {
+        let rect = CGRect(x: 100, y: 200, width: 180, height: 250)
+        #expect(!ScanView.outlineMoved(from: rect, to: rect.offsetBy(dx: 2, dy: -3)), "jitter")
+        #expect(!ScanView.outlineMoved(from: rect, to: rect.insetBy(dx: 2, dy: 2)))
+        #expect(ScanView.outlineMoved(from: rect, to: rect.offsetBy(dx: 20, dy: 0)), "the card moved")
+        #expect(ScanView.outlineMoved(from: nil, to: rect) && ScanView.outlineMoved(from: rect, to: nil), "found and lost")
+        #expect(!ScanView.outlineMoved(from: nil, to: nil))
     }
 
     @Test func aReadOfTheLastCardIsIgnoredUnlessItsPrintingDiffers() {

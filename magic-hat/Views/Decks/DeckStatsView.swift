@@ -49,7 +49,10 @@ struct DeckStatsView: View {
     private func analysisSection(_ controller: DeckAnalysisController) -> some View {
         Section {
             NavigationLink {
-                DeckAnalysisView(snapshot: snapshot, controller: controller)
+                // The same Recommended row the menu's Analysis has: it
+                // opens the add sheet, which the deck screen presents.
+                DeckAnalysisView(snapshot: snapshot, controller: controller,
+                                 onAddRecommended: snapshot.isLocked ? nil : onAddRecommended)
             } label: {
                 analysisSummary(controller)
             }

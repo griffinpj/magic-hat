@@ -250,12 +250,17 @@ nonisolated struct DeckPlan: Hashable, Sendable {
             var ownedBonus = 0.0
         }
 
-        /// The add score against the counts as they stand now.
-        func addScore(_ c: DeckCandidate) -> Add {
+        /// The add score against the counts as they stand now. With
+        /// `explain` false only the numbers are worked out: `bestAdd` scores
+        /// every candidate on each step of the table (~30 steps over a
+        /// thousand cards) and needs the sentences for the winner alone.
+        /// One function either way, so the two can't drift apart.
+        func addScore(_ c: DeckCandidate, explain: Bool = true) -> Add {
             let r = reading(c)
             var a = Add()
             for combo in nearByName[front(c.card.name)] ?? [] {
                 a.score += 6
+                guard explain else { continue }
                 let others = combo.cards.filter { front($0) != front(c.card.name) }
                 a.why.append("completes " + others.joined(separator: " + ") + (combo.result.map { " → " + $0 } ?? ""))
                 a.tags.append(.combo(with: others))
@@ -264,17 +269,20 @@ nonisolated struct DeckPlan: Hashable, Sendable {
                 let have = counts[role] ?? 0
                 if have < role.floor {
                     a.score += 2 + Double(min(4, role.floor - have)) * 0.5
+                    a.fills.append(role)
+                    guard explain else { continue }
                     a.why.append("fills \(role.label.lowercased()), \(have) of \(role.floor)")
                     a.tags.append(.gap(role, have: have))
-                    a.fills.append(role)
                 }
             }
             if r.roles.contains(.lands) || r.roles.contains(.ramp) {
                 for color in ManaColor.allCases where r.sources.contains(color) {
                     if let t = targets[color], (sources[color] ?? 0) < t {
                         a.score += 1.5
-                        a.why.append("adds a \(color.name.lowercased()) source, \(sources[color] ?? 0) of ~\(t)")
-                        a.tags.append(.source(color))
+                        if explain {
+                            a.why.append("adds a \(color.name.lowercased()) source, \(sources[color] ?? 0) of ~\(t)")
+                            a.tags.append(.source(color))
+                        }
                         break
                     }
                 }
@@ -282,12 +290,17 @@ nonisolated struct DeckPlan: Hashable, Sendable {
             let overlap = r.overlap(with: engine)
             if overlap > 0 {
                 a.score += 1.5 * Double(overlap)
-                let touched = r.touches(engine)
-                a.why.append("touches " + DeckAnalysis.list(Array(touched.prefix(3))) + ", which the commander pays off")
-                if let first = touched.first { a.tags.append(.plan(first)) }
+                if explain {
+                    let touched = r.touches(engine)
+                    a.why.append("touches " + DeckAnalysis.list(Array(touched.prefix(3))) + ", which the commander pays off")
+                    if let first = touched.first { a.tags.append(.plan(first)) }
+                }
             }
-            if let m = c.metaScore { a.score += 6 * m; a.why.append("meta score \(Int((m * 100).rounded()))%"); a.tags.append(.meta(m)) }
-            if c.ownedCopies > 0 { a.score += 1; a.ownedBonus = 1; a.why.append("already yours") }
+            if let m = c.metaScore {
+                a.score += 6 * m
+                if explain { a.why.append("meta score \(Int((m * 100).rounded()))%"); a.tags.append(.meta(m)) }
+            }
+            if c.ownedCopies > 0 { a.score += 1; a.ownedBonus = 1; if explain { a.why.append("already yours") } }
             if let price = c.card.price {
                 if price > 50 { a.score -= 2 } else if price > 20 { a.score -= 1 }
             }
@@ -325,13 +338,14 @@ nonisolated struct DeckPlan: Hashable, Sendable {
             }
         }
         func bestAdd() -> (DeckCandidate, Add)? {
-            var best: (DeckCandidate, Add)?
+            var best: (candidate: DeckCandidate, score: Double)?
             for c in pool where !usedAdd.contains(c.id) && !usedName.contains(front(c.card.name)) {
-                let a = addScore(c)
+                let a = addScore(c, explain: false)
                 guard a.score - a.ownedBonus > 0 else { continue }
-                if best == nil || a.score > best!.1.score { best = (c, a) }
+                if best == nil || a.score > best!.score { best = (c, a.score) }
             }
-            return best
+            // The sentences for the one that won, against the same counts.
+            return best.map { ($0.candidate, addScore($0.candidate)) }
         }
         func take(_ c: DeckCandidate) { usedAdd.insert(c.id); usedName.insert(front(c.card.name)) }
 
@@ -452,7 +466,7 @@ nonisolated struct DeckPlan: Hashable, Sendable {
         var signals2 = signals
         if signals.combos != nil { signals2.combos = DeckComboSet(included: combos, near: analysis.nearCombos) }
         let a = DeckAnalysis.compute(played: after, format: format, identity: identity, problems: analysis.problems,
-                                     signals: signals2, readings: readings)
+                                     signals: signals2, readings: readings, engine: analysis.engine)
         let round = { (x: Double) in (x * 10).rounded() / 10 }
         return DeckSwapEffect(power: round(a.power.score - before.0), impact: round(a.impact.score - before.1),
                               playability: round(a.playability.score - before.2),

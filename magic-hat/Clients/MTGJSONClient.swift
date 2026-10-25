@@ -30,7 +30,7 @@ nonisolated struct MTGJSONClient {
         let url = baseURL.appendingPathComponent("\(code.uppercased()).json")
         // Static CDN file, not a rate-limited card endpoint.
         return try await http.request(
-            MTGJSONSetResponse.self, url: url, rateLimit: .other
+            MTGJSONSetResponse.self, url: url, rateLimit: .mtgjson
         ).data
     }
 
@@ -52,7 +52,7 @@ nonisolated struct MTGJSONClient {
     func meta() async throws -> MTGJSONMeta {
         let url = baseURL.appendingPathComponent("Meta.json")
         return try await http.request(
-            MTGJSONMetaResponse.self, url: url, rateLimit: .other
+            MTGJSONMetaResponse.self, url: url, rateLimit: .mtgjson
         ).data
     }
 
@@ -62,7 +62,7 @@ nonisolated struct MTGJSONClient {
     func deckList() async throws -> [MTGJSONDeckSummary] {
         let url = baseURL.appendingPathComponent("DeckList.json")
         return try await http.request(
-            MTGJSONDeckListResponse.self, url: url, rateLimit: .other
+            MTGJSONDeckListResponse.self, url: url, rateLimit: .mtgjson
         ).data
     }
 
@@ -72,7 +72,7 @@ nonisolated struct MTGJSONClient {
         let url = baseURL.appendingPathComponent("decks")
             .appendingPathComponent("\(fileName).json")
         return try await http.request(
-            MTGJSONDeckResponse.self, url: url, rateLimit: .other
+            MTGJSONDeckResponse.self, url: url, rateLimit: .mtgjson
         ).data
     }
 
@@ -84,7 +84,7 @@ nonisolated struct MTGJSONClient {
     func pricesToday() async throws -> [String: MTGJSONCardPrices] {
         let url = baseURL.appendingPathComponent("AllPricesToday.json")
         return try await http.request(
-            MTGJSONPricesResponse.self, url: url, rateLimit: .other
+            MTGJSONPricesResponse.self, url: url, rateLimit: .mtgjson
         ).data
     }
 

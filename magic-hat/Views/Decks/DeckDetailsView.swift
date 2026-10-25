@@ -25,6 +25,7 @@ struct DeckDetailsView: View {
     @State private var notes: String
     @State private var notesTask: Task<Void, Never>?
     @State private var error: String?
+    @FocusState private var nameFocused: Bool
 
     init(snapshot: DeckSnapshot, onBuild: @escaping () -> Void, onDisassemble: @escaping () -> Void,
          onExport: @escaping () -> Void, onVersions: @escaping () -> Void, onPlaytest: @escaping () -> Void,
@@ -43,15 +44,22 @@ struct DeckDetailsView: View {
     var body: some View {
         Form {
             Section {
+                // Saved when the field lets go, not only on Return: a swipe
+                // to another page or Back used to drop the edit (Notes
+                // saves as it goes; the name now does on leaving).
                 TextField("Name", text: $name)
                     .submitLabel(.done)
+                    .focused($nameFocused)
                     .onSubmit(commitName)
+                    .onChange(of: nameFocused) { _, focused in if !focused { commitName() } }
+                    .disabled(snapshot.isLocked)
                 Picker("Format", selection: Binding(
                     get: { snapshot.format },
                     set: { format in attempt { try DeckEditController.setFormat(deckID: snapshot.id, format, context: modelContext) } }
                 )) {
                     ForEach(DeckFormat.allCases) { Text($0.label).tag($0) }
                 }
+                .disabled(snapshot.isLocked)
                 Toggle("Locked", isOn: Binding(
                     get: { snapshot.isLocked },
                     set: { locked in attempt { try DeckEditController.setLocked(deckID: snapshot.id, locked, context: modelContext) } }
@@ -115,6 +123,7 @@ struct DeckDetailsView: View {
                 TextEditor(text: $notes)
                     .frame(minHeight: 100)
                     .onChange(of: notes) { _, value in scheduleNotes(value) }
+                    .disabled(snapshot.isLocked)
             }
 
             Section("About") {
@@ -189,10 +198,22 @@ struct DeckDetailsView: View {
             Button("OK", role: .cancel) {}
         } message: { Text(error ?? "") }
         .onChange(of: snapshot.name) { _, value in name = value }
+        .onDisappear {
+            commitName()
+            // A note typed in the last 600ms is saved, not dropped with
+            // the debounce.
+            if notesTask != nil, notes != snapshot.notes {
+                notesTask?.cancel()
+                attempt { try DeckEditController.setNotes(deckID: snapshot.id, notes, context: modelContext) }
+            }
+        }
     }
 
     private func commitName() {
-        guard name != snapshot.name else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Blank reverts rather than saving nothing silently.
+        guard !trimmed.isEmpty else { name = snapshot.name; return }
+        guard trimmed != snapshot.name, !snapshot.isLocked else { return }
         attempt { try DeckEditController.rename(deckID: snapshot.id, to: name, context: modelContext) }
     }
 

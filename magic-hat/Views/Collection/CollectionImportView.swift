@@ -44,6 +44,12 @@ struct CollectionImportView: View {
     @State private var fileText: String?
     @State private var fileName: String?
     @State private var parsed = CardListFile()
+    /// Bumped whenever the text or the file changes; what the read is
+    /// keyed on. Keyed on the text itself, every render compared the
+    /// whole file (an export is a megabyte) to decide nothing changed.
+    @State private var sourceRevision = 0
+    /// A ManaBox import's progress, from the importer.
+    @State private var importProgress: Double?
     @State private var isReading = false
     @State private var choosingFile = false
     @State private var isImporting = false
@@ -73,6 +79,16 @@ struct CollectionImportView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if let importProgress {
+                    Section {
+                        ProgressView(value: importProgress) {
+                            Text("Importing \(Int(importProgress * 100))%")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
                 sourceSection
                 if collectionName == nil {
                     Section {
@@ -128,7 +144,8 @@ struct CollectionImportView: View {
                     chosenName = collections.first { $0.kind == .collection }?.name ?? collections.first?.name ?? ""
                 }
             }
-            .task(id: source) {
+            .onChange(of: text) { _, _ in sourceRevision &+= 1 }
+            .task(id: sourceRevision) {
                 let source = self.source
                 isReading = true
                 // Typing: a pause before a pasted list is read again per key.
@@ -164,8 +181,7 @@ struct CollectionImportView: View {
         Section {
             HStack(spacing: 12) {
                 PasteButton(payloadType: String.self) { strings in
-                    fileText = nil
-                    fileName = nil
+                    useFile(nil, name: nil)
                     text = strings.joined(separator: "\n")
                 }
                 .buttonBorderShape(.capsule)
@@ -211,7 +227,7 @@ struct CollectionImportView: View {
                 HStack { ProgressView(); Text("Reading…").foregroundStyle(.secondary) }
             } else if fileText != nil {
                 Text("No cards found in \(fileName ?? "this file").").foregroundStyle(.secondary)
-                Button("Use Text Instead", systemImage: "text.alignleft") { fileText = nil; fileName = nil }
+                Button("Use Text Instead", systemImage: "text.alignleft") { useFile(nil, name: nil) }
             } else {
                 Text("Paste, type or choose a list.").foregroundStyle(.secondary)
             }
@@ -230,7 +246,7 @@ struct CollectionImportView: View {
                     .accessibilityIdentifier("collection-import-held")
             }
             if fileText != nil {
-                Button("Use Text Instead", systemImage: "text.alignleft") { fileText = nil; fileName = nil }
+                Button("Use Text Instead", systemImage: "text.alignleft") { useFile(nil, name: nil) }
             }
         }
     }
@@ -259,8 +275,14 @@ struct CollectionImportView: View {
                 ?? String(data: data, encoding: .windowsCP1252) ?? String(data: data, encoding: .isoLatin1)
         }.value
         guard let outcome else { error = "Couldn't read the file as text."; return }
-        fileName = url.lastPathComponent
-        fileText = outcome
+        useFile(outcome, name: url.lastPathComponent)
+    }
+
+    /// Every change of file goes through here, so the read follows it.
+    private func useFile(_ text: String?, name: String?) {
+        fileName = name
+        fileText = text
+        sourceRevision &+= 1
     }
 
     private func runImport() {
@@ -275,9 +297,20 @@ struct CollectionImportView: View {
                 if file.isManaBox {
                     let rows = try await Task.detached(priority: .userInitiated) { try CSVParser.parseManaBox(source) }.value
                     let binders = Set(rows.map(\.binderName))
+                    importProgress = 0
+                    defer { importProgress = nil }
+                    // The importer bumps the tracker itself.
                     _ = try await ImportController.apply(rows: rows, selectedBinders: binders, collectionName: name,
-                                                         mode: .add, container: container, progress: { _ in })
-                    CollectionChangeTracker.shared.bump()
+                                                         mode: .add, container: container) { fraction in
+                        importProgress = fraction
+                    }
+                    // Card data for what came in, as the wizard fetches it:
+                    // on the controller's own run, which outlives the sheet.
+                    let ids = rows.map(\.scryfallID)
+                    let context = modelContext
+                    if !UITestSeed.isSeededRun {
+                        Task { await CardHydrationController.shared.hydrateAll(scryfallIDs: ids, context: context) }
+                    }
                     result = Result(copies: rows.reduce(0) { $0 + $1.quantity }, unresolved: [])
                 } else {
                     let outcome = try await CollectionImportController.importCards(

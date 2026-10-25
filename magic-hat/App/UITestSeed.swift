@@ -36,11 +36,18 @@ enum UITestSeed {
                     AppSettings.showPricesKey, AppSettings.priceRefreshKey, AppSettings.defaultConditionKey,
                     AppSettings.defaultFinishKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
                     AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey,
-                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey, FlippedFaces.key] + GridDiagnostics.allKeys {
+                    "search.sets.kind", "search.sets.digital", AddTarget.lastKey, FlippedFaces.key,
+                    DeckPlaytestView.autoPayKey, AppSettings.cardLanguageKey, "bulk.allowCellular"]
+                    + GridDiagnostics.allKeys + ScanSettings.allKeys + BackupScheduler.allKeys {
             UserDefaults.standard.removeObject(forKey: key)
         }
         FlippedFaces.reload()
         GridDiagnostics.reload()
+        // Singletons that read their keys once: read them again, and the
+        // catalog's cellular opt-in back to off.
+        ScanSettings.shared.reload()
+        BackupScheduler.shared.reload()
+        CatalogSyncController.shared.allowCellular = false
         let context = container.mainContext
         context.insert(MTGCollection(name: collectionName))
         let tokenID = "00000000-0000-4000-8000-ffffffffff01"

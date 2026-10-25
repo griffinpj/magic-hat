@@ -56,10 +56,14 @@ struct CardDetailView: View {
     @State private var ownedIDs: Set<String> = []
     /// Copies owned per printing, and how many of those are foil.
     @State private var ownedCounts: [String: (copies: Int, foils: Int)] = [:]
-    @State private var printingItems: [CardItem] = [] {
-        didSet { printingList = CardItemList(printingItems) }
-    }
+    /// The printings as cards, for the viewer — a stamped list only: an
+    /// array of them beside it was compared card by card per update.
     @State private var printingList = CardItemList()
+    /// Worked out once per load, not per body: every printing's id (the
+    /// Owned chip asks whether any is owned), and the cheapest price (a
+    /// UserDefaults read per printing when it was computed).
+    @State private var printingIDs: Set<String> = []
+    @State private var lowestPrice: Double?
 
     /// Which printings we own, fetched off-main *after* the push has
     /// animated. This used to be an unbounded @Query over every entry, run
@@ -69,7 +73,6 @@ struct CardDetailView: View {
         let store = CollectionStore.shared(for: modelContext.container)
         if let ids = try? await store.ownedScryfallIDs(stamp: .current), !Task.isCancelled {
             ownedIDs = ids
-            rebuildPrintingItems()
             rebuildGroups()
         }
         let shown = printings.map(\.id).filter { ownedIDs.contains($0) }
@@ -81,22 +84,6 @@ struct CardDetailView: View {
         }
         ownedCounts = counts
     }
-
-    /// Off the main actor: a basic land has hundreds of printings, and this
-    /// ran on arrival and again when ownership landed, under the push.
-    private func rebuildPrintingItems() {
-        let printings = self.printings
-        let owned = ownedIDs
-        itemsTask?.cancel()
-        itemsTask = Task {
-            let items = await Task.detached(priority: .userInitiated) {
-                printings.map { CardItem(scryfallCard: $0, owned: owned.contains($0.id)) }
-            }.value
-            guard !Task.isCancelled else { return }
-            printingItems = items
-        }
-    }
-    @State private var itemsTask: Task<Void, Never>?
 
     init(item: CardItem) {
         self.item = item
@@ -305,12 +292,18 @@ struct CardDetailView: View {
 
     /// "2024-05-07" → "7 May 2024", as Scryfall writes the date.
     private static func rulingDate(_ raw: String) -> String {
+        guard let date = rulingParser.date(from: raw) else { return raw }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    /// One parser, not one per ruling per body: a DateFormatter is costly
+    /// to make.
+    private static let rulingParser: DateFormatter = {
         let parser = DateFormatter()
         parser.locale = Locale(identifier: "en_US_POSIX")
         parser.dateFormat = "yyyy-MM-dd"
-        guard let date = parser.date(from: raw) else { return raw }
-        return date.formatted(date: .abbreviated, time: .omitted)
-    }
+        return parser
+    }()
 
     // MARK: Printings
 
@@ -328,16 +321,26 @@ struct CardDetailView: View {
     }
 
     /// Filter, group and sort off the main actor — per keystroke in the
-    /// filter field, over every printing.
+    /// filter field, over every printing. The viewer's list is built from
+    /// the same groups, flattened, so a tapped printing opens with its
+    /// neighbours in the order the page shows them (newest set first,
+    /// collector number within a set), not Scryfall's — swiping used to
+    /// run the other way.
     private func rebuildGroups() {
         let printings = self.printings
         let text = filterText
         let owned = ownedOnly ? ownedIDs : nil
+        let ownedIDs = self.ownedIDs
         groupsTask?.cancel()
         groupsTask = Task {
-            let groups = await Task.detached(priority: .userInitiated) { Self.groups(of: printings, matching: text, owned: owned) }.value
+            let (groups, list) = await Task.detached(priority: .userInitiated) { () -> ([PrintingGroup], CardItemList) in
+                let groups = Self.groups(of: printings, matching: text, owned: owned)
+                let list = CardItemList(groups.flatMap(\.cards).map { CardItem(scryfallCard: $0, owned: ownedIDs.contains($0.id)) })
+                return (groups, list)
+            }.value
             guard !Task.isCancelled else { return }
             filteredGroups = groups
+            printingList = list
         }
     }
     @State private var groupsTask: Task<Void, Never>?
@@ -354,11 +357,6 @@ struct CardDetailView: View {
                                      year: String((cards.first?.releasedAt ?? "").prefix(4)), cards: cards)
             }
             .sorted { ($0.cards.first?.releasedAt ?? "") > ($1.cards.first?.releasedAt ?? "") }
-    }
-
-    /// The cheapest printing's price, for the header.
-    private var lowestPrice: Double? {
-        printings.compactMap { $0.prices?.price(foil: false, in: AppSettings.currency) }.min()
     }
 
     @ViewBuilder private var versionsSection: some View {
@@ -387,7 +385,7 @@ struct CardDetailView: View {
                 .toggleStyle(.button)
                 .buttonBorderShape(.capsule)
                 .controlSize(.regular)
-                .disabled(ownedIDs.isDisjoint(with: printings.map(\.id)))
+                .disabled(ownedIDs.isDisjoint(with: printingIDs))
                 .accessibilityIdentifier("detail-owned-only")
             }
             .padding(.horizontal, 16)
@@ -459,18 +457,21 @@ struct CardDetailView: View {
         .accessibilityAddTraits(.isHeader)
     }
 
+    /// A button, not a tap gesture, so VoiceOver offers it as one.
     private func printingRow(_ card: ScryfallCard, position: RowPosition) -> some View {
-        PrintingRow(card: card, owned: ownedCounts[card.id], isOwned: ownedIDs.contains(card.id),
-                    isCurrent: card.id == item.scryfallID, position: position, showsPrices: showsPrices)
-            .padding(.horizontal, 16)
-            .matchedTransitionSource(id: card.id, in: zoom)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if let item = printingItems.first(where: { $0.id == card.id }) {
-                    viewingID = item.id
-                    viewing = item
-                }
+        Button {
+            if let item = printingList.item(for: card.id) {
+                viewingID = item.id
+                viewing = item
             }
+        } label: {
+            PrintingRow(card: card, owned: ownedCounts[card.id], isOwned: ownedIDs.contains(card.id),
+                        isCurrent: card.id == item.scryfallID, position: position, showsPrices: showsPrices)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .matchedTransitionSource(id: card.id, in: zoom)
     }
 
     private func clearFilter() { filterText.removeAll() }
@@ -489,8 +490,11 @@ struct CardDetailView: View {
                 oracle = try await ScryfallClient.shared.card(id: item.scryfallID).oracleID ?? ""
             }
             guard !oracle.isEmpty else { loadError = "No printings found."; return }
-            printings = try await PrintingsCache.shared.printings(oracleID: oracle)
-            rebuildPrintingItems()
+            let loaded = try await PrintingsCache.shared.printings(oracleID: oracle)
+            printings = loaded
+            printingIDs = Set(loaded.map(\.id))
+            let currency = AppSettings.currency
+            lowestPrice = loaded.compactMap { $0.prices?.price(foil: false, in: currency) }.min()
             rebuildGroups()
         } catch {
             loadError = error.localizedDescription

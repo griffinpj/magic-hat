@@ -148,12 +148,18 @@ nonisolated enum DataActivityText {
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
+    /// One for every row, never mutated after this; a formatter per row
+    /// per body was the cost of the list.
+    private nonisolated(unsafe) static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
     static func relative(_ date: Date, now: Date) -> String {
         let seconds = now.timeIntervalSince(date)
         if seconds < 60 { return "Just now" }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        let text = formatter.localizedString(for: date, relativeTo: now)
+        let text = relativeFormatter.localizedString(for: date, relativeTo: now)
         return text.prefix(1).uppercased() + text.dropFirst()
     }
 

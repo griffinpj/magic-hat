@@ -74,6 +74,41 @@ struct AnalysisClientTests {
         #expect(commanders.cardviews.allSatisfy { $0.lift == nil })
     }
 
+    /// A card view without a name reads its slug; one with neither is
+    /// dropped rather than failing the whole page.
+    @Test func edhrecCardViewsWithoutANameStillDecode() throws {
+        let json = #"""
+        {"header": "High Synergy Cards", "tag": "highsynergycards", "cardviews": [
+            {"id": "a", "name": "Sol Ring", "sanitized": "sol-ring", "synergy": 0.1},
+            {"id": "b", "sanitized": "atraxa-praetors-voice", "synergy": 0.3, "num_decks": 10, "potential_decks": 20},
+            {"id": "c", "synergy": 0.2}
+        ]}
+        """#
+        let list = try JSONDecoder().decode(EDHRECCardList.self, from: Data(json.utf8))
+        #expect(list.cardviews.map(\.name) == ["Sol Ring", "Atraxa Praetors Voice"])
+        #expect(list.cardviews[1].inclusion == 0.5 && list.cardviews[1].id == "b")
+        // What DiskJSONCache wrote before still reads back.
+        let round = try JSONDecoder().decode(EDHRECCardList.self, from: JSONEncoder().encode(list))
+        #expect(round == list)
+    }
+
+    /// The memory tier keeps the most recently used within its caps; disk
+    /// keeps everything.
+    @Test func diskCacheMemoryIsBounded() async throws {
+        let cache = DiskJSONCache(folder: "test-lru-\(UUID().uuidString)", maxEntries: 3, maxBytes: 1_000)
+        for i in 0..<5 { await cache.store("value \(i)", key: "k\(i)") }
+        var usage = await cache.memoryUsage
+        #expect(usage.entries == 3, "\(usage)")
+        #expect(await cache.value(String.self, key: "k0", ttl: 60) == "value 0", "evicted from memory, still on disk")
+        // k0 is back in memory and the newest; k2 was the oldest.
+        usage = await cache.memoryUsage
+        #expect(usage.entries == 3)
+        await cache.store(String(repeating: "x", count: 2_000), key: "big")
+        usage = await cache.memoryUsage
+        #expect(usage.bytes <= 1_000, "one value over the budget stays on disk only: \(usage)")
+        #expect(await cache.value(String.self, key: "big", ttl: 60)?.count == 2_000)
+    }
+
     @Test func edhrecSlugs() {
         #expect(EDHRECClient.slug(for: "Atraxa, Praetors' Voice") == "atraxa-praetors-voice")
         #expect(EDHRECClient.slug(for: "Thassa's Oracle") == "thassas-oracle")

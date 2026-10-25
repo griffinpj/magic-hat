@@ -150,7 +150,10 @@ final class DeckFlowTests: XCTestCase {
         // Disassemble: back to the collection.
         app.buttons["deck-menu"].tap()
         app.buttons["Disassemble…"].tap()
-        let back = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Move'")).firstMatch
+        // The alert offers three ways out; this is the default one.
+        let back = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Move' AND label ENDSWITH 'Cards Back'")).firstMatch
+        XCTAssertTrue(app.buttons["Remove the Cards"].waitForExistence(timeout: 5), "removing is offered too")
+        XCTAssertTrue(app.buttons["Move All to One Collection…"].exists, "one collection is offered too")
         XCTAssertTrue(back.waitForExistence(timeout: 5))
         back.tap()
         XCTAssertTrue(waitForValue(app.buttons["deck-row-Card 120"].firstMatch, containing: "In collection"), "returned")

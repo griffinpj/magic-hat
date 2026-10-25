@@ -36,11 +36,13 @@ struct DeckTokenTests {
             ("Captain", [soldierA]),
             ("Elspeth", [soldierB, treasure]),
             ("Raise the Alarm", [soldierA]),
-        ], images: ["s2": ("https://img/s2", "https://img/s2-art")])
+        ], images: ["s2": ("https://img/s2", "https://img/s2-art")],
+           details: ["s1": DeckToken.Details(power: "1", toughness: "1", oracleText: "", colors: [.white])])
         #expect(tokens.map(\.name) == ["Soldier", "Treasure"], "most makers first")
         #expect(tokens[0].makers == ["Captain", "Elspeth", "Raise the Alarm"])
         #expect(tokens[0].imageURL == "https://img/s2", "the first printing with an image, whichever card named it")
         #expect(tokens[0].kind == "Creature — Soldier")
+        #expect(tokens[0].power == "1" && tokens[0].toughness == "1" && tokens[0].colors == [.white], "the playtest makes it from these")
         #expect(tokens[1].makers == ["Elspeth"] && tokens[1].imageURL == nil)
         #expect(DeckTokenText.makers(["A"]) == "Made by A")
         #expect(DeckTokenText.makers(["A", "B"]) == "Made by A and B")

@@ -122,6 +122,11 @@ actor DeckStore: ModelActor {
         var snapshot = Self.assemble(id: deck.id, name: deck.name, format: deck.format, isLocked: deck.isLocked, notes: deck.notes,
                                      branchName: branchName, createdDate: deck.createdDate, updatedDate: deck.updatedDate, items: items)
         snapshot.tokens = try tokens(for: snapshot.playedItems.map(\.card.scryfallID), metaByID: metaByID)
+        // The same test the collection's rows get (CollectionStore.rows):
+        // nothing else hydrates a deck-only card — the foreground sync
+        // walks owned rows — so a card added from a Scryfall search that
+        // the catalog lacks stayed a name with no art, price or type.
+        snapshot.pendingMetaIDs = ids.filter { !(metaByID[$0]?.isComplete ?? false) }.sorted()
         return snapshot
     }
 
@@ -247,8 +252,13 @@ actor DeckStore: ModelActor {
         let tokenIDs = Array(Set(makers.flatMap { $0.tokens.map(\.id) }))
         let tokenMetas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { tokenIDs.contains($0.scryfallID) }))
         var images: [String: (image: String?, art: String?)] = [:]
-        for meta in tokenMetas { images[meta.scryfallID] = (meta.imageNormalURL, meta.artCropURL) }
-        return DeckToken.collect(makers, images: images)
+        var details: [String: DeckToken.Details] = [:]
+        for meta in tokenMetas {
+            images[meta.scryfallID] = (meta.imageNormalURL, meta.artCropURL)
+            details[meta.scryfallID] = DeckToken.Details(power: meta.power, toughness: meta.toughness, oracleText: meta.oracleText,
+                                                         colors: CardItem.colors(fromLetters: meta.colorsRaw))
+        }
+        return DeckToken.collect(makers, images: images, details: details)
     }
 
     private func boardOrder(_ board: DeckBoard) -> Int {
@@ -290,13 +300,7 @@ actor DeckStore: ModelActor {
 
         // Front-face names ("Bloomvine Regent" for "Bloomvine Regent // …").
         let unresolvedNames = names.filter { metasByName[$0] == nil }
-        if !unresolvedNames.isEmpty {
-            for name in unresolvedNames {
-                let prefix = name + " //"
-                let faces = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.name.starts(with: prefix) }))
-                if !faces.isEmpty { metasByName[name] = faces }
-            }
-        }
+        for (name, faces) in try frontFaceRows(for: unresolvedNames) { metasByName[name] = faces }
 
         let sets = Array(Set(lines.compactMap(\.setCode)))
         let bySet = sets.isEmpty ? [] : try modelContext.fetch(
@@ -435,11 +439,28 @@ actor DeckStore: ModelActor {
         let wanted = names
         var metas = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { wanted.contains($0.name) }))
         let foundNames = Set(metas.map(\.name))
-        for name in names where !foundNames.contains(name) {
-            let prefix = name + " //"
-            metas.append(contentsOf: try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.name.starts(with: prefix) })))
+        for faces in try frontFaceRows(for: names.filter { !foundNames.contains($0) }).values {
+            metas.append(contentsOf: faces)
         }
         return metas
+    }
+
+    /// Multi-faced rows whose front face is one of `names`, keyed by the
+    /// name asked. One fetch of every " // " row, matched in memory: a
+    /// `starts(with:)` fetch per name was a scan of the unindexed name
+    /// column (112k rows with the catalog in) for each unresolved line.
+    private func frontFaceRows(for names: [String]) throws -> [String: [CardMeta]] {
+        guard !names.isEmpty else { return [:] }
+        let wanted = Set(names)
+        let separator = " // "
+        let faces = try modelContext.fetch(FetchDescriptor<CardMeta>(predicate: #Predicate { $0.name.contains(separator) }))
+        var out: [String: [CardMeta]] = [:]
+        for meta in faces {
+            guard let range = meta.name.range(of: separator) else { continue }
+            let front = String(meta.name[..<range.lowerBound])
+            if wanted.contains(front) { out[front, default: []].append(meta) }
+        }
+        return out
     }
 
     private func pick(_ metas: [CardMeta], key: (CardMeta) -> String, owned index: OwnedIndex) -> [String: CardItem] {

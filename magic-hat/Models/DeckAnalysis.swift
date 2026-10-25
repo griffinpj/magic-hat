@@ -36,6 +36,11 @@ nonisolated struct TextPattern: @unchecked Sendable {
         regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
+    /// `text` with every match removed.
+    func removing(from text: String) -> String {
+        regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
+    }
+
     /// Capture group 1 of every match.
     func captures(in text: String) -> [String] {
         regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
@@ -168,9 +173,20 @@ nonisolated struct CardReading: Hashable, Sendable {
     private static let landSearch = TextPattern(#"search your library for (?:up to \w+ |an? |any number of )?(?:basic )?lands?(?: cards?)?\b|land cards?.*?(?:onto the battlefield|into your hand)"#)
     private static let ramp = TextPattern(#"add \{|add (?:one|two|three) mana|add an amount of mana|treasure token|mana of any (?:one )?colou?r"#)
     private static let draw = TextPattern(#"draws? (?:a|two|three|four|x|that many|(?:\w+ )?cards?)\b"#)
+    /// Someone else drawing, as a trigger or a punishment ("whenever an
+    /// opponent draws a card", Underworld Dreams, Nekusar): taken out of the
+    /// text before `draw` looks, so it isn't the deck's card draw. "You may
+    /// draw a card unless that player pays" (Rhystic Study) still is.
+    private static let othersDraw = TextPattern(#"(?:whenever|if|when|each time) (?:an? |each |target )?(?:opponent|player)s? draws?[^.,]*|(?:an?|each|target) opponents? draws?[^.,]*"#)
     private static let notDraw = TextPattern(#"discard a card|counter target"#)
-    private static let removal = TextPattern(#"(?:destroy|exile) (?:target|another target|up to \w+ target)|deals? \d+ damage to (?:any target|target creature|target planeswalker|each opponent and each creature)|target creature gets? -\d+/-\d+|fights? (?:up to one )?target|counter target|(?:return|put) target (?:non\w+ )?(?:creature|permanent|artifact|enchantment)[^.]*?(?:to its owner's hand|on the bottom|into its owner's library)"#)
-    private static let wipe = TextPattern(#"(?:destroy|exile) all|each creature (?:gets|deals|is)|all creatures get|damage to each creature|each player sacrifices|each (?:other )?creature"#)
+    /// Counterspells are not removal here: they are counted as counters,
+    /// and the interaction parts add removal and counters — a counterspell
+    /// in both was counted twice.
+    private static let removal = TextPattern(#"(?:destroy|exile) (?:target|another target|up to \w+ target)|deals? \d+ damage to (?:any target|target creature|target planeswalker|each opponent and each creature)|target creature gets? -\d+/-\d+|fights? (?:up to one )?target|(?:return|put) target (?:non\w+ )?(?:creature|permanent|artifact|enchantment)[^.]*?(?:to its owner's hand|on the bottom|into its owner's library)"#)
+    /// "Each creature you control" is an anthem (Cathars' Crusade), not a
+    /// wipe; neither is a pump to every creature. What is left is the
+    /// shrink, the damage and the destroy.
+    private static let wipe = TextPattern(#"(?:destroy|exile) all|each creature (?:gets -|deals)|all creatures get -|damage to each creature|each player sacrifices|each (?:other )?creature(?! (?:tokens? )?you control)"#)
     private static let notWipe = TextPattern(#"destroy all (?:artifacts|enchantments) you control"#)
     private static let tutor = TextPattern(#"search your library for"#)
     private static let counter = TextPattern(#"counter target"#)
@@ -178,8 +194,11 @@ nonisolated struct CardReading: Hashable, Sendable {
     private static let mld = TextPattern(#"(?:destroy|exile|sacrifices?) all (?:\w+ )?lands|return all (?:\w+ )?lands|each player sacrifices (?:all|\w+) lands|lands don't untap|permanents don't untap during|nonbasic lands are mountains|players can't untap more than"#)
     private static let ratherThanPay = TextPattern(#"rather than pay|you may pay .* rather than"#)
     private static let free = TextPattern(#"rather than pay|without paying its mana cost|if you control a commander, you may cast this spell without paying"#)
-    private static let addGroup = TextPattern(#"add ((?:\{[wubrg]\}(?:, | or | and/or | and )?)+)"#)
-    private static let pip = TextPattern(#"\{([wubrg])\}"#)
+    /// The "add {W}{U}" group of a mana ability and the pips in it — open
+    /// to DeckStats so production is read from what a card adds, not from
+    /// every symbol in its text.
+    static let addGroup = TextPattern(#"add ((?:\{[wubrg]\}(?:, | or | and/or | and )?)+)"#)
+    static let pip = TextPattern(#"\{([wubrg])\}"#)
     private static let word = TextPattern(#"([a-z][a-z'\-]+)"#)
 
     static let massLandDenialNames: Set<String> = [
@@ -210,8 +229,11 @@ nonisolated struct CardReading: Hashable, Sendable {
         let landSearch = Self.landSearch.matches(text)
         if !isLand {
             if tagged("ramp") ?? (Self.ramp.matches(text) || landSearch) { roles.insert(.ramp) }
-            if tagged("draw") ?? (Self.draw.matches(text) && !Self.notDraw.matches(text)) { roles.insert(.draw) }
-            if tagged("removal") ?? Self.removal.matches(text) { roles.insert(.removal) }
+            if tagged("draw") ?? (Self.draw.matches(Self.othersDraw.removing(from: text)) && !Self.notDraw.matches(text)) { roles.insert(.draw) }
+            // A tag list's "removal" can include counterspells; one that
+            // does nothing else is counted as a counter only.
+            if tagged("removal") ?? Self.removal.matches(text),
+               !(Self.counter.matches(text) && !Self.removal.matches(text)) { roles.insert(.removal) }
             if tagged("board-wipe") ?? (Self.wipe.matches(text) && !Self.notWipe.matches(text)) { roles.insert(.wipes) }
             if tagged("tutor") ?? (Self.tutor.matches(text) && !landSearch) { roles.insert(.tutors) }
         }
@@ -248,9 +270,16 @@ nonisolated struct CardReading: Hashable, Sendable {
         self.isMassLandDenial = tagged("mass-land-denial")
             ?? (Self.massLandDenialNames.contains(Self.frontName(card.name)) || Self.mld.matches(text))
 
-        let haystack = text + " " + type.lowercased()
-        self.mechanics = Set(DeckMechanic.all.filter { $0.pattern.matches(haystack) }.map(\.label))
-        self.textMechanics = Set(DeckMechanic.all.filter { $0.pattern.matches(text) }.map(\.label))
+        let lowerType = type.lowercased()
+        let haystack = text + " " + lowerType
+        // The rules text once, then only the patterns it missed over the
+        // (short) type line — not all twenty again over text + type, which
+        // was half the cost of reading 3,100 spare cards for a plan.
+        let textMechanics = Set(DeckMechanic.all.filter { $0.pattern.matches(text) }.map(\.label))
+        self.textMechanics = textMechanics
+        self.mechanics = textMechanics.union(DeckMechanic.all.filter {
+            !textMechanics.contains($0.label) && $0.pattern.matches(lowerType)
+        }.map(\.label))
         self.words = Set(Self.word.captures(in: haystack))
         self.isLegendaryCreature = type.contains("Legendary") && type.contains("Creature")
     }
@@ -464,12 +493,29 @@ nonisolated struct DeckAnalysis: Hashable, Sendable {
             if let type = card.typeLine, let dash = type.range(of: " — ") {
                 let subtypes = type[dash.upperBound...].components(separatedBy: " // ").first ?? ""
                 for sub in subtypes.split(separator: " ").map(String.init) where !sub.isEmpty {
-                    let pattern = TextPattern(#"\b"# + NSRegularExpression.escapedPattern(for: sub.lowercased()) + #"s?\b"#)
-                    if pattern.matches(text), !found.contains(sub) { found.append(sub) }
+                    if subtypePatterns.pattern(for: sub).matches(text), !found.contains(sub) { found.append(sub) }
                 }
             }
         }
         return found
+    }
+
+    /// One compiled pattern per creature type, for the life of the app: a
+    /// plan re-scores the deck per swap (~30 times), and each `engine(of:)`
+    /// compiled a regex per commander subtype.
+    private static let subtypePatterns = SubtypePatterns()
+
+    private final class SubtypePatterns: @unchecked Sendable {
+        private var cache: [String: TextPattern] = [:]
+        private let lock = NSLock()
+
+        func pattern(for subtype: String) -> TextPattern {
+            lock.lock(); defer { lock.unlock() }
+            if let hit = cache[subtype] { return hit }
+            let pattern = TextPattern(#"\b"# + NSRegularExpression.escapedPattern(for: subtype.lowercased()) + #"s?\b"#)
+            cache[subtype] = pattern
+            return pattern
+        }
     }
 
     static func list(_ names: [String]) -> String {
@@ -496,14 +542,17 @@ nonisolated struct DeckAnalysis: Hashable, Sendable {
     /// The whole reading over the played cards (commander + mainboard).
     /// `readings` must cover every card id in `played`; a missing one is
     /// read on the spot.
+    /// `engine`, when given, is the commanders' (`engine(of:)`) already
+    /// read: a swap's re-score keeps the commanders, so the planner passes
+    /// the analysis's own rather than reading them again per swap.
     static func compute(played: [DeckCardItem], format: DeckFormat, identity: [ManaColor], problems: [DeckIssue],
-                        signals: DeckAnalysisSignals, readings: [String: CardReading]) -> DeckAnalysis {
+                        signals: DeckAnalysisSignals, readings: [String: CardReading], engine: [String]? = nil) -> DeckAnalysis {
         func reading(_ item: DeckCardItem) -> CardReading {
             readings[item.card.id] ?? CardReading(item.card, identity: identity, tags: signals.tags)
         }
         let commanders = played.filter { $0.board == .commander }
         let isCommander = format.hasCommander && !commanders.isEmpty
-        let engine = engine(of: commanders.map(\.card))
+        let engine = engine ?? Self.engine(of: commanders.map(\.card))
         let target = format.cardTarget
 
         var counts: [CardRole: Int] = [:]

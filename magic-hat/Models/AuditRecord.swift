@@ -43,6 +43,11 @@ nonisolated enum AuditAction: String, Codable, Sendable, CaseIterable {
     /// brings it back whole. With it back, the builds recorded against it
     /// can be replayed again.
     case deckDelete
+    /// A deck created. Like a deletion, no copies move: one zero-delta
+    /// record with the deck in `payload`. Undo takes the deck away (saving
+    /// its list as it stands then, so Redo brings that back); it is refused
+    /// while the deck is built.
+    case deckCreate
     /// A user action reversed; `undoesActionID` names it.
     case undo
     /// An undone action applied again; `undoesActionID` names it.
@@ -56,6 +61,7 @@ nonisolated enum AuditAction: String, Codable, Sendable, CaseIterable {
         switch self {
         case .deckBuild, .deckDisassemble: return "rectangle.stack"
         case .deckDelete: return "trash"
+        case .deckCreate: return "rectangle.stack.badge.plus"
         case .move: return "arrow.right.circle"
         case .manualAdd: return "plus.circle"
         case .manualRemove: return "minus.circle"
@@ -228,4 +234,9 @@ nonisolated extension EntrySnapshot {
         self.rarity = rarity
         self.language = language
     }
+}
+
+nonisolated extension AuditRecord {
+    /// A deck created or deleted: no copies, the deck in `payload`.
+    var isDeckRecord: Bool { action == .deckDelete || action == .deckCreate }
 }

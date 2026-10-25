@@ -137,6 +137,91 @@ struct DeckBuilderTests {
         #expect(Set(audits.map(\.actionID)).count == 1)
     }
 
+    @Test func disassembleIntoOneCollectionSendsEveryRowThere() async throws {
+        let w = try Self.makeWorld()
+        let builder = DeckBuilder.shared(for: w.container)
+        let plan = try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false)
+        _ = try await builder.build(plan)
+        let result = try await builder.disassemble(deckID: w.deck.id, destination: .collection("Trade Binder"))
+        #expect(result.returnedCopies == 3 && result.removedCopies == 0)
+
+        let after = try Self.copies(in: w.container)
+        #expect(after[w.deck.collectionKey] == nil)
+        #expect(after["Main"] == nil, "nothing went back to where it came from")
+        #expect(after["Trade Binder"] == 4, "the foil Alpha already there, plus the three from the deck")
+
+        // A collection that doesn't exist yet is made; a list is refused.
+        _ = try await builder.build(try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false))
+        _ = try await builder.disassemble(deckID: w.deck.id, destination: .collection("Shoebox"))
+        let names = Set(try w.container.mainContext.fetch(FetchDescriptor<MTGCollection>()).map(\.name))
+        #expect(names.contains("Shoebox"))
+        #expect(try Self.copies(in: w.container)["Shoebox"] == 3)
+
+        w.container.mainContext.insert(MTGCollection(name: "Wants", kind: .list))
+        try w.container.mainContext.save()
+        _ = try await builder.build(try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false))
+        await #expect(throws: DeckBuilder.BuildError.self) {
+            try await builder.disassemble(deckID: w.deck.id, destination: .collection("Wants"))
+        }
+        #expect(try Self.copies(in: w.container)[w.deck.collectionKey] == 3, "refused before anything moved")
+    }
+
+    @Test func disassembleDiscardRemovesTheCopiesAsARemoval() async throws {
+        let w = try Self.makeWorld()
+        let builder = DeckBuilder.shared(for: w.container)
+        let plan = try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false)
+        _ = try await builder.build(plan)
+        let before = try Self.copies(in: w.container)
+        #expect(before[w.deck.collectionKey] == 3)
+
+        let result = try await builder.disassemble(deckID: w.deck.id, destination: .discard)
+        #expect(result.returnedCopies == 0 && result.removedCopies == 3)
+        let after = try Self.copies(in: w.container)
+        #expect(after[w.deck.collectionKey] == nil)
+        #expect(after["Main"] == nil && after["Trade Binder"] == 1, "nothing came back")
+
+        // One History action, a removal of three copies from the deck, so
+        // Undo can put them back into the deck.
+        let audits = try w.container.mainContext.fetch(FetchDescriptor<AuditRecord>())
+            .filter { $0.actionID == result.actionID }
+        #expect(audits.allSatisfy { $0.action == .manualRemove && $0.collectionName == w.deck.collectionKey })
+        #expect(audits.reduce(0) { $0 + $1.quantityDelta } == -3)
+
+        // An empty deck disassembles to nothing, whatever the destination.
+        let again = try await builder.disassemble(deckID: w.deck.id, destination: .discard)
+        #expect(again.removedCopies == 0)
+    }
+
+    @Test func deletingABuiltDeckIsRefusedUntilItIsTakenApart() async throws {
+        let w = try Self.makeWorld()
+        let builder = DeckBuilder.shared(for: w.container)
+        _ = try await builder.build(try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false))
+        #expect(throws: DeckEditController.EditError.self) {
+            try DeckEditController.delete(deckID: w.deck.id, context: w.container.mainContext)
+        }
+        #expect(try w.container.mainContext.fetch(FetchDescriptor<Deck>()).count == 1, "still there")
+        _ = try await builder.disassemble(deckID: w.deck.id)
+        try DeckEditController.delete(deckID: w.deck.id, context: w.container.mainContext)
+        #expect(try w.container.mainContext.fetch(FetchDescriptor<Deck>()).isEmpty)
+    }
+
+    @Test func rowsOfADeletedDeckAreLabelledNotKeyed() async throws {
+        let w = try Self.makeWorld()
+        let builder = DeckBuilder.shared(for: w.container)
+        _ = try await builder.build(try await builder.plan(deckID: w.deck.id, sourceCollections: nil, includeSideboard: false))
+        // The deck row gone with its cards left behind (what an older
+        // build did when it deleted on a stale built count).
+        let ctx = w.container.mainContext
+        let deck = try #require(try ctx.fetch(FetchDescriptor<Deck>()).first)
+        try DeckEditController.remove(deck, in: ctx)
+        try ctx.save()
+        let store = CollectionStore(modelContainer: w.container)
+        let rows = try await store.ownedItems(scryfallIDs: ["a1", "c1"])
+        let orphans = rows.filter { Deck.isDeckCollection($0.collectionName) }
+        #expect(!orphans.isEmpty)
+        #expect(orphans.allSatisfy { $0.displayCollection == "Deleted Deck" }, "never deck:<uuid>")
+    }
+
     @Test func snapshotShowsAvailabilityBeforeBuilding() async throws {
         let w = try Self.makeWorld()
         let snap = try #require(try await DeckStore.shared(for: w.container).snapshot(deckID: w.deck.id))

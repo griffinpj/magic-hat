@@ -60,6 +60,9 @@ struct SearchFilterSections: View {
 
     @State private var vocabulary = FilterVocabulary.shared
     @State private var showAllFormats = false
+    /// The query's price clause is in the display currency (`eur>=` in
+    /// euros), so the heading says which.
+    @AppStorage(AppSettings.currencyKey) private var currencyRaw = DisplayCurrency.usd.rawValue
 
     var body: some View {
         optionsSection
@@ -285,7 +288,7 @@ struct SearchFilterSections: View {
     // MARK: Price
 
     private var priceSection: some View {
-        Section("Price (USD)") {
+        Section("Price (\((DisplayCurrency(rawValue: currencyRaw) ?? .usd).code))") {
             LabeledContent("Minimum") {
                 TextField("Any", value: $query.price.min, format: .number.precision(.fractionLength(0...2)))
                     .focused($focused, equals: .priceMin)
@@ -596,8 +599,11 @@ private struct SuggestingTextField: View {
             .focused($focus, equals: field)
             .submitLabel(.done)
             .autocorrectionDisabled()
-        let matches = suggest(text).filter { $0 != text }
-        if focus == field, !text.trimmingCharacters(in: .whitespaces).isEmpty, !matches.isEmpty {
+        // Focus first: `suggest` scans every artist, and the form re-renders
+        // this field on every edit anywhere in it while an artist is set.
+        let matches = focus == field && !text.trimmingCharacters(in: .whitespaces).isEmpty
+            ? suggest(text).filter { $0 != text } : []
+        if !matches.isEmpty {
             ForEach(matches, id: \.self) { match in
                 Button {
                     text = match

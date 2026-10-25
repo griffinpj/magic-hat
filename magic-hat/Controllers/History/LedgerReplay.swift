@@ -41,10 +41,14 @@ nonisolated enum LedgerReplay {
         case copiesMissing(String)
         case deckStillBuilt(String)
         case deckRecordUnreadable
+        /// The step was offered against a timeline that has since moved —
+        /// History read the ledger, then something else wrote to it.
+        case timelineMoved
 
         var errorDescription: String? {
             switch self {
             case .nothingToReplay: return "There is nothing to undo."
+            case .timelineMoved: return "History changed since this was shown. Nothing was changed; try again."
             case .legacyDeckRecord: return "This deck action was recorded before undo existed and can't be reversed."
             case .deckMissing: return "That deck no longer exists, so its cards can't be moved."
             case .copiesMissing(let name): return "\(name) is no longer in the collection to take back."
@@ -62,8 +66,8 @@ nonisolated enum LedgerReplay {
     static func blocker(actionID: UUID, direction: Direction, in context: ModelContext) -> ReplayError? {
         do {
             let records = try context.fetch(FetchDescriptor<AuditRecord>(predicate: #Predicate { $0.actionID == actionID }))
-            if let deletion = records.first(where: { $0.action == .deckDelete }) {
-                _ = try checkDeckDelete(deletion, direction: direction, in: context)
+            if let deckRecord = records.first(where: \.isDeckRecord) {
+                _ = try checkDeckRecord(deckRecord, direction: direction, in: context)
             } else {
                 _ = try check(records, direction: direction, in: context, withMetas: false)
             }
@@ -77,11 +81,76 @@ nonisolated enum LedgerReplay {
 
     /// Reverses (undo) or re-applies (redo) the user action `actionID`,
     /// writing the replay as a new action. Returns the new action's id.
+    ///
+    /// The step is checked against the ledger as it stands on this
+    /// context, not the timeline the caller was shown: Undo is offered
+    /// from History's last read, and a write since (another tab, a sync)
+    /// moves the head. Undoing an action that is no longer the head wrote
+    /// negated deltas the timeline then ignored as a stray record — the
+    /// copies gone and History still saying Applied.
     @discardableResult
     static func replay(actionID: UUID, direction: Direction, in context: ModelContext) throws -> UUID {
+        var head = Head(try timeline(in: context))
+        return try replay(actionID: actionID, direction: direction, in: context, head: &head)
+    }
+
+    /// Several steps in order (Undo Through Here, a Switch), checked against
+    /// one read of the ledger: `head` moves as each lands. Reading the whole
+    /// ledger per step was ~90ms a step on the real export's — forty back
+    /// was seconds, with every write queued behind it on the writer.
+    /// Returns how many steps landed; a refusal or failure throws after the
+    /// ones before it were saved, as a step at a time did.
+    @discardableResult
+    static func replay(_ steps: [(actionID: UUID, direction: Direction)], in context: ModelContext,
+                       landed: (Int) -> Void = { _ in }) throws -> Int {
+        guard !steps.isEmpty else { return 0 }
+        var head = Head(try timeline(in: context))
+        var done = 0
+        for step in steps {
+            try replay(actionID: step.actionID, direction: step.direction, in: context, head: &head)
+            done += 1
+            landed(done)
+        }
+        return done
+    }
+
+    /// Where the timeline's head stands for a run of steps: read from the
+    /// ledger once, then moved by each step as it lands.
+    struct Head {
+        private(set) var id: UUID?
+        private let parent: [UUID: UUID?]
+
+        init(_ timeline: HistoryTimeline) {
+            id = timeline.head
+            parent = timeline.parent
+        }
+
+        /// Undo takes only the head; redo only one of its children.
+        func allows(_ actionID: UUID, _ direction: Direction) -> Bool {
+            switch direction {
+            case .undo: return id == actionID
+            case .redo: return parent[actionID] == .some(id)
+            }
+        }
+
+        mutating func step(_ actionID: UUID, _ direction: Direction) {
+            id = direction == .undo ? (parent[actionID] ?? nil) : actionID
+        }
+    }
+
+    @discardableResult
+    private static func replay(actionID: UUID, direction: Direction, in context: ModelContext,
+                               head: inout Head) throws -> UUID {
+        guard head.allows(actionID, direction) else { throw ReplayError.timelineMoved }
+        let newID = try apply(actionID: actionID, direction: direction, in: context)
+        head.step(actionID, direction)
+        return newID
+    }
+
+    private static func apply(actionID: UUID, direction: Direction, in context: ModelContext) throws -> UUID {
         let records = try context.fetch(FetchDescriptor<AuditRecord>(predicate: #Predicate { $0.actionID == actionID }))
-        if let deletion = records.first(where: { $0.action == .deckDelete }) {
-            return try replayDeckDelete(deletion, direction: direction, in: context)
+        if let deckRecord = records.first(where: \.isDeckRecord) {
+            return try replayDeckRecord(deckRecord, direction: direction, in: context)
         }
         let checked = try check(records, direction: direction, in: context)
         var rows = checked.rows
@@ -135,17 +204,38 @@ nonisolated enum LedgerReplay {
         return newID
     }
 
-    // MARK: A deleted deck
+    /// The timeline as the ledger on `context` has it now — the same steps
+    /// `CollectionStore.history()` resolves (one per action, at its
+    /// earliest record), without the rest of the log.
+    static func timeline(in context: ModelContext) throws -> HistoryTimeline {
+        var descriptor = FetchDescriptor<AuditRecord>()
+        descriptor.propertiesToFetch = [\.actionID, \.timestamp, \.actionRaw, \.undoesActionID]
+        var steps: [UUID: HistoryStep] = [:]
+        for record in try context.fetch(descriptor) {
+            if let seen = steps[record.actionID], seen.timestamp <= record.timestamp { continue }
+            steps[record.actionID] = HistoryStep(id: record.actionID, kind: record.action,
+                                                 target: record.undoesActionID, timestamp: record.timestamp)
+        }
+        return HistoryTimeline.resolve(Array(steps.values))
+    }
 
-    /// What must hold to bring a deleted deck back (its record readable)
-    /// or to delete it again (nothing built in it). Returns the deck as
-    /// recorded and, when it exists now, the deck itself.
-    private static func checkDeckDelete(_ record: AuditRecord, direction: Direction,
+    // MARK: A deck created or deleted
+
+    /// Whether replaying a deck record takes the deck away — undoing its
+    /// creation, redoing its deletion — or brings it back.
+    static func removesDeck(_ action: AuditAction, _ direction: Direction) -> Bool {
+        (action == .deckDelete) == (direction == .redo)
+    }
+
+    /// What must hold to bring a deck back (its record readable) or to take
+    /// it away (nothing built in it). Returns the deck as recorded and,
+    /// when it exists now, the deck itself.
+    private static func checkDeckRecord(_ record: AuditRecord, direction: Direction,
                                         in context: ModelContext) throws -> (saved: DeletedDeck, live: Deck?) {
         guard let data = record.payload, let saved = try? DeletedDeck.decode(data) else { throw ReplayError.deckRecordUnreadable }
         let id = saved.deck.id
         let live = try context.fetch(FetchDescriptor<Deck>(predicate: #Predicate { $0.id == id })).first
-        if direction == .redo, live != nil {
+        if removesDeck(record.action, direction), live != nil {
             let key = Deck.collectionKey(for: id)
             let built = try context.fetchCount(FetchDescriptor<CollectionEntry>(predicate: #Predicate { $0.collectionName == key }))
             if built > 0 { throw ReplayError.deckStillBuilt(saved.deck.name) }
@@ -153,21 +243,21 @@ nonisolated enum LedgerReplay {
         return (saved, live)
     }
 
-    /// Undo puts the deck back as it was deleted — the same id, so every
-    /// record History holds against it names a deck that exists again;
-    /// redo deletes it, recording it afresh (it may have changed since it
-    /// came back). The replay is one zero-delta record, which is what the
+    /// Bringing a deck back puts it as it was recorded — the same id, so
+    /// every record History holds against it names a deck that exists
+    /// again; taking it away records it afresh first (it may have changed
+    /// since — a list filled after it was created), so coming back brings
+    /// that. The replay is one zero-delta record, which is what the
     /// timeline moves its head by.
-    private static func replayDeckDelete(_ record: AuditRecord, direction: Direction, in context: ModelContext) throws -> UUID {
-        let (saved, live) = try checkDeckDelete(record, direction: direction, in: context)
-        switch direction {
-        case .undo:
-            if live == nil { try saved.restore(in: context) }
-        case .redo:
+    private static func replayDeckRecord(_ record: AuditRecord, direction: Direction, in context: ModelContext) throws -> UUID {
+        let (saved, live) = try checkDeckRecord(record, direction: direction, in: context)
+        if removesDeck(record.action, direction) {
             if let live {
                 record.payload = try DeletedDeck(live, in: context).encoded()
                 try DeckEditController.remove(live, in: context)
             }
+        } else if live == nil {
+            try saved.restore(in: context)
         }
         let newID = UUID()
         context.insert(AuditRecord(actionID: newID, action: direction.action, scryfallID: "", cardName: record.cardName,

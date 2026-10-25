@@ -62,7 +62,12 @@ struct DeckCardsView: View {
     private var sortDirection: SortDirection {
         DeckCardSort.direction(sortRaw: sortRaw, directionRaw: sortDirectionRaw) ?? sort.defaultDirection
     }
-    private func sorted(_ items: [DeckCardItem]) -> [DeckCardItem] { sort.apply(items, card: \.card, direction: sortDirection) }
+    /// The list as drawn — filtered and sorted — worked out once per
+    /// input off the main actor (`Layout.make`). It used to be computed
+    /// properties of the body: the filter ran `CardSearchQuery.matches`
+    /// over every row twice per render, and every section re-sorted
+    /// (parsing mana costs) on every keystroke and stepper tap.
+    @State private var layout: Layout?
     /// Counts this list's steppers have written, shown until the snapshot
     /// that includes them arrives. A tap used to show nothing until the
     /// deck was re-read off the main actor — behind the Decks tab's and
@@ -74,17 +79,50 @@ struct DeckCardsView: View {
     private var locked: Bool { snapshot.isLocked }
     private var trimmedFilter: String { filterText.trimmingCharacters(in: .whitespaces) }
 
-    /// The rows matching the field, or nil when nothing is typed.
-    private var filtered: [DeckCardItem]? {
-        guard !trimmedFilter.isEmpty else { return nil }
-        var q = CardSearchQuery()
-        q.text = trimmedFilter
-        return snapshot.allItems.filter { q.matches($0.card) }
+    /// The rows matching the field (nil when nothing is typed) and each
+    /// board's rows in the chosen order.
+    nonisolated struct Layout: Sendable {
+        let key: Key
+        let filtered: [DeckCardItem]?
+        let commanders: [DeckCardItem]
+        let sections: [DeckSection]
+        let sideboard: [DeckCardItem]
+        let maybeboard: [DeckCardItem]
+
+        nonisolated struct Key: Equatable, Sendable {
+            let snapshot: DeckSnapshot
+            let filter: String
+            let sort: DeckCardSort
+            let direction: SortDirection
+        }
+
+        @concurrent
+        static func make(_ key: Key) async -> Layout {
+            let sorted = { (items: [DeckCardItem]) in key.sort.apply(items, card: \.card, direction: key.direction) }
+            var filtered: [DeckCardItem]?
+            if !key.filter.isEmpty {
+                var q = CardSearchQuery()
+                q.text = key.filter
+                filtered = sorted(key.snapshot.allItems.filter { q.matches($0.card) })
+            }
+            let s = key.snapshot
+            return Layout(key: key, filtered: filtered, commanders: sorted(s.commanders),
+                          sections: s.sections.map { DeckSection(id: $0.id, title: $0.title, glyph: $0.glyph, items: sorted($0.items)) },
+                          sideboard: sorted(s.sideboard), maybeboard: sorted(s.maybeboard))
+        }
+    }
+
+    private var layoutKey: Layout.Key {
+        Layout.Key(snapshot: snapshot, filter: trimmedFilter, sort: sort, direction: sortDirection)
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             content
+                .task(id: layoutKey) {
+                    let made = await Layout.make(layoutKey)
+                    if !Task.isCancelled { layout = made }
+                }
                 // Keep the viewer's row in view so the zoom-out lands on it.
                 .onChange(of: viewer?.currentID) { old, id in
                     guard old != nil, let id else { return }
@@ -115,13 +153,28 @@ struct DeckCardsView: View {
                         .accessibilityIdentifier("deck-empty-add")
                 }
             }
-        } else if let filtered, filtered.isEmpty {
-            ContentUnavailableView.search(text: trimmedFilter)
+        } else if let layout {
+            list(layout)
+        } else {
+            // The first layout is a few milliseconds behind the first frame.
+            Color.clear
+        }
+    }
+
+    /// Rows a stepper has just taken to zero are gone at once: the "0" row
+    /// used to stay until the next snapshot, and its − did nothing.
+    private func visible(_ rows: [DeckCardItem]) -> [DeckCardItem] {
+        pending.isEmpty ? rows : rows.filter { pending[$0.id]?.quantity != 0 }
+    }
+
+    @ViewBuilder private func list(_ layout: Layout) -> some View {
+        if let filtered = layout.filtered, visible(filtered).isEmpty {
+            ContentUnavailableView.search(text: layout.key.filter)
         } else {
             List {
-                if let filtered {
+                if let filtered = layout.filtered.map(visible) {
                     Section {
-                        ForEach(sorted(filtered)) { row($0) }
+                        ForEach(filtered) { row($0) }
                     } header: {
                         header { Text("\(filtered.count) matching") }
                     }
@@ -132,19 +185,19 @@ struct DeckCardsView: View {
                     if !locked, let plan = analysis?.plan, plan.changeCount > 0 {
                         swapsRow(plan)
                     }
-                    if snapshot.format.hasCommander || !snapshot.commanders.isEmpty {
+                    if snapshot.format.hasCommander || !layout.commanders.isEmpty {
                         Section {
-                            ForEach(sorted(snapshot.commanders)) { row($0) }
-                            if snapshot.commanders.isEmpty {
+                            ForEach(visible(layout.commanders)) { row($0) }
+                            if layout.commanders.isEmpty {
                                 Text("No commander chosen").foregroundStyle(.secondary)
                             }
                         } header: {
                             header { Label("Commander", systemImage: "crown") }
                         }
                     }
-                    ForEach(snapshot.sections) { section in
+                    ForEach(layout.sections) { section in
                         Section {
-                            ForEach(sorted(section.items)) { row($0) }
+                            ForEach(visible(section.items)) { row($0) }
                         } header: {
                             header {
                                 if let glyph = section.glyph {
@@ -158,18 +211,18 @@ struct DeckCardsView: View {
                             }
                         }
                     }
-                    if !snapshot.sideboard.isEmpty {
+                    if !layout.sideboard.isEmpty {
                         Section {
-                            ForEach(sorted(snapshot.sideboard)) { row($0) }
+                            ForEach(visible(layout.sideboard)) { row($0) }
                         } header: {
-                            header { Text("Sideboard · \(snapshot.sideboard.reduce(0) { $0 + $1.quantity })") }
+                            header { Text("Sideboard · \(layout.sideboard.reduce(0) { $0 + $1.quantity })") }
                         }
                     }
-                    if !snapshot.maybeboard.isEmpty {
+                    if !layout.maybeboard.isEmpty {
                         Section {
-                            ForEach(sorted(snapshot.maybeboard)) { row($0) }
+                            ForEach(visible(layout.maybeboard)) { row($0) }
                         } header: {
-                            header { Text("Maybeboard · \(snapshot.maybeboard.reduce(0) { $0 + $1.quantity })") }
+                            header { Text("Maybeboard · \(layout.maybeboard.reduce(0) { $0 + $1.quantity })") }
                         }
                     }
                 }
@@ -314,14 +367,16 @@ struct DeckCardsView: View {
 
     private func setCommander(_ item: DeckCardItem) {
         do {
-            try DeckEditController.setCommander(deckID: snapshot.id, PrintingSelection(item: item.card), context: modelContext)
-            try DeckEditController.setQuantity(deckCardID: item.id, 0, context: modelContext)
+            try DeckEditController.makeCommander(deckCardID: item.id, artCropURL: item.card.artCropURL, context: modelContext)
         } catch { self.error = error.localizedDescription }
     }
 
     /// The viewer pages through the whole list (or the filtered rows).
     private func open(_ item: DeckCardItem) {
-        let items = (filtered ?? snapshot.allItems).map(\.card)
+        // In the order drawn, so a swipe goes to the row below.
+        let rows = layout.map { $0.filtered ?? ($0.commanders + $0.sections.flatMap(\.items) + $0.sideboard + $0.maybeboard) }
+            ?? snapshot.allItems
+        let items = visible(rows).map(\.card)
         session?.board = .main
         onOpenViewer?(CardViewerSession(items: items, currentID: item.card.id, deck: locked ? nil : session))
     }

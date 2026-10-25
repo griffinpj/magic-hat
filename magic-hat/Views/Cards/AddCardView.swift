@@ -9,7 +9,7 @@
 //
 //  Structure follows the platform rather than the reference app: one sheet
 //  holding a NavigationStack + Form; pickers are pushed, searchable screens;
-//  destructive actions confirm through confirmationDialog.
+//  destructive actions confirm with a modal alert.
 //
 
 import SwiftUI
@@ -110,7 +110,7 @@ struct AddCardView: View {
                 isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                 presenting: pendingDelete
             ) { row in
-                Button("Remove \(row.quantity) from \(row.collectionName)", role: .destructive) { remove(row) }
+                Button("Remove \(row.quantity) from \(row.displayCollection)", role: .destructive) { remove(row) }
                 Button("Cancel", role: .cancel) {}
             } message: { row in
                 Text("\(row.setName) #\(row.collectorNumber) · \(row.finish.displayName). Recorded in History.")
@@ -194,18 +194,23 @@ struct AddCardView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(owned) { row in
-                    OwnedPrintingRow(item: row)
-                        .contentShape(Rectangle())
-                        .onTapGesture { editing = row }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) { pendingDelete = row } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                            Button { editing = row } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(.blue)
+                    // A button, not a tap gesture: VoiceOver says it can be
+                    // activated, and it highlights like any Form row.
+                    Button { editing = row } label: {
+                        OwnedPrintingRow(item: row)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Edits this row")
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) { pendingDelete = row } label: {
+                            Label("Remove", systemImage: "trash")
                         }
+                        Button { editing = row } label: {
+                            Label("Edit", systemImage: "pencil")
+                        }
+                        .tint(.blue)
+                    }
                 }
             }
         } header: {
@@ -283,7 +288,7 @@ struct OwnedPrintingRow: View {
                     }
                 }
                 HStack(spacing: 6) {
-                    chip(item.collectionName, icon: item.inList ? CollectionKind.list.systemImage : CollectionKind.collection.systemImage)
+                    chip(item.displayCollection, icon: item.inList ? CollectionKind.list.systemImage : CollectionKind.collection.systemImage)
                     chip(item.language.uppercased())
                     chip(CardCondition.shortLabel(for: item.condition))
                     if item.finish != .normal { chip(item.finish.displayName.uppercased()) }
@@ -331,20 +336,32 @@ struct EditEntryView: View {
     @State private var form: EntryFormState
     @State private var errorMessage: String?
     @State private var confirmingRemove = false
+    @State private var confirmingDiscard = false
 
     private let printing: PrintingSelection
+    /// The form as it opened, to tell an edit from a look.
+    private let initial: EntryFormState
 
     init(item: CardItem) {
         self.item = item
         printing = PrintingSelection(item: item)
-        _form = State(initialValue: EntryFormState(
+        let start = EntryFormState(
             quantity: item.quantity,
             finish: item.finish,
             condition: CardCondition(rawValue: item.condition)?.rawValue ?? CardCondition.nearMint.rawValue,
             language: item.language.isEmpty ? "en" : item.language,
             price: item.purchasePrice ?? PrintingSelection(item: item).marketPrice(for: item.finish),
             priceEdited: item.purchasePrice != nil
-        ))
+        )
+        initial = start
+        _form = State(initialValue: start)
+    }
+
+    /// Something the user changed — the fields Save writes, not whether the
+    /// price field was touched.
+    private var isDirty: Bool {
+        form.quantity != initial.quantity || form.finish != initial.finish || form.condition != initial.condition
+            || form.language != initial.language || form.price != initial.price
     }
 
     var body: some View {
@@ -362,7 +379,7 @@ struct EditEntryView: View {
                                 Text("\(item.setName) #\(item.collectorNumber)")
                                     .font(.subheadline).foregroundStyle(.secondary)
                             }
-                            Label(item.collectionName, systemImage: "tray.full")
+                            Label(item.displayCollection, systemImage: "tray.full")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -370,7 +387,7 @@ struct EditEntryView: View {
                 }
                 EntryFormSections(form: $form, printing: printing)
                 Section {
-                    Button("Remove from \(item.collectionName)", role: .destructive) {
+                    Button("Remove from \(item.displayCollection)", role: .destructive) {
                         confirmingRemove = true
                     }
                     .frame(maxWidth: .infinity)
@@ -379,12 +396,23 @@ struct EditEntryView: View {
             .navigationTitle("Edit")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { if isDirty { confirmingDiscard = true } else { dismiss() } }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }.accessibilityIdentifier("edit-save")
                 }
             }
-            .confirmationDialog("Remove \(item.name)?", isPresented: $confirmingRemove, titleVisibility: .visible) {
+            // A swipe down used to throw the edits away without a word.
+            // With changes it is held, and Cancel asks first.
+            .interactiveDismissDisabled(isDirty)
+            .alert("Discard Changes?", isPresented: $confirmingDiscard) {
+                Button("Discard Changes", role: .destructive) { dismiss() }
+                Button("Keep Editing", role: .cancel) {}
+            } message: {
+                Text("Your changes to this row won't be saved.")
+            }
+            .alert("Remove \(item.name)?", isPresented: $confirmingRemove) {
                 Button("Remove \(item.quantity)", role: .destructive) { remove() }
                 Button("Cancel", role: .cancel) {}
             }

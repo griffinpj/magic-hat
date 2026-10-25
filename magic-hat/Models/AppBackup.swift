@@ -404,9 +404,9 @@ nonisolated extension AppBackup {
 // MARK: - A deleted deck
 
 /// Everything a deck was, as the backup's own records: what a
-/// `.deckDelete` ledger record carries so an undo can bring the deck back
-/// with the same id (History's records name it by that), its list, and
-/// its versions and branches.
+/// `.deckDelete` (or `.deckCreate`) ledger record carries so a replay can
+/// bring the deck back with the same id (History's records name it by
+/// that), its list, and its versions and branches.
 nonisolated struct DeletedDeck: Codable, Sendable, Equatable {
     var deck: AppBackup.DeckRecord
     var cards: [AppBackup.DeckCardRecord]

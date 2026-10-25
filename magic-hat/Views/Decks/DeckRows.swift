@@ -245,9 +245,21 @@ struct QuantityStepper: View {
             Image(systemName: symbol)
                 .font(.subheadline.weight(.semibold))
                 .frame(width: 26, height: 36)
-                .contentShape(Rectangle())
+                // 44×44 to the finger, the drawn size unchanged: the −/+
+                // are the most-tapped controls in a deck and were 26×36.
+                // Each reaches 9pt into the count's 18, so they meet and
+                // never overlap.
+                .contentShape(HitArea(dx: 9, dy: 4))
         }
         .accessibilityLabel(label)
         .accessibilityIdentifier(id)
     }
+}
+
+/// A hit shape larger than the view it is on, for controls drawn smaller
+/// than a finger.
+private struct HitArea: Shape {
+    let dx: CGFloat
+    let dy: CGFloat
+    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: -dx, dy: -dy)) }
 }

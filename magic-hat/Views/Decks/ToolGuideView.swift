@@ -90,13 +90,16 @@ struct OddsCell: View {
     let value: Double
     var tint: Color = .accentColor
     var width: CGFloat = 54
+    /// "100%" at the reader's text size: a fixed 44 truncated it to "1…"
+    /// at the larger sizes.
+    @ScaledMetric(relativeTo: .subheadline) private var labelWidth: CGFloat = 44
 
     var body: some View {
         HStack(spacing: 8) {
             Text(value, format: .percent.precision(.fractionLength(0)))
                 .font(.subheadline.weight(.medium))
                 .monospacedDigit()
-                .frame(width: 44, alignment: .trailing)
+                .frame(width: labelWidth, alignment: .trailing)
             Capsule()
                 .fill(Color.secondary.opacity(0.18))
                 .frame(width: width, height: 6)

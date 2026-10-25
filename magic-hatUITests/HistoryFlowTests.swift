@@ -53,6 +53,7 @@ final class HistoryFlowTests: XCTestCase {
         let undo = app.buttons["history-undo"]
         let redo = app.buttons["history-redo"]
         XCTAssertTrue(undo.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Today"].firstMatch.waitForExistence(timeout: 5), "the line reads by day")
         XCTAssertTrue(undo.isEnabled, "a removal to undo")
         XCTAssertFalse(redo.isEnabled, "nothing to redo yet")
         undo.tap()
@@ -186,6 +187,19 @@ final class HistoryFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Switch: 1 back, 1 forward"].firstMatch.exists, "and what Switch would do")
         shot(app, "history-fork-off-row")
         tag.tap()
+
+        // Search asks the ledger: an action is found by a card it touched,
+        // on any branch.
+        let search = app.searchFields.firstMatch
+        for _ in 0..<4 where !search.exists { app.swipeDown() }
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "History can be searched")
+        search.tap()
+        search.typeText("Card 100")
+        let result = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'history-result-'")).firstMatch
+        XCTAssertTrue(result.waitForExistence(timeout: 5), "found by its card")
+        XCTAssertTrue(app.staticTexts["Added Card 100"].firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["Added Card 0"].firstMatch.exists, "only what matches")
+        shot(app, "history-search")
     }
 
     /// A PNG under `TEST_RUNNER_UITEST_SHOT_DIR` when set, as the tour writes them.

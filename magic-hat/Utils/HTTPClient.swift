@@ -13,8 +13,9 @@ import Foundation
 enum HTTPError: Error, LocalizedError {
     case badURL
     case badStatus(Int, Data)
-    /// A 429: Scryfall asked for a pause (`RateLimiter.backOff`); nothing
-    /// Scryfall is sent until it ends.
+    /// A 429 from any host, with its Retry-After (else 60s). From Scryfall
+    /// it also pauses every Scryfall request (`RateLimiter.backOff`); other
+    /// hosts are left to the caller — CommanderFinder waits it out.
     case rateLimited(retryAfter: TimeInterval)
     case decoding(Error)
     case transport(Error)
@@ -23,7 +24,7 @@ enum HTTPError: Error, LocalizedError {
         switch self {
         case .badURL: return "Invalid URL."
         case .badStatus(let code, _): return "Server returned status \(code)."
-        case .rateLimited(let seconds): return "Scryfall asked us to slow down; waiting \(Int(seconds)) seconds."
+        case .rateLimited(let seconds): return "The server asked us to slow down; waiting \(Int(seconds)) seconds."
         case .decoding(let e): return "Failed to decode response: \(e.localizedDescription)"
         case .transport(let e): return "Network error: \(e.localizedDescription)"
         }
@@ -100,7 +101,22 @@ nonisolated struct HTTPClient {
         body: Data? = nil,
         rateLimit category: RateLimitCategory
     ) async throws -> Data {
+        try await requestWithResponse(url: url, method: method, body: body, rateLimit: category).data
+    }
+
+    /// `requestData` with the response, for a caller that reads its headers
+    /// (DeckSiteClient refuses a `text/html` page as a deck list).
+    @concurrent
+    func requestWithResponse(
+        url: URL,
+        method: HTTPMethod = .get,
+        body: Data? = nil,
+        rateLimit category: RateLimitCategory
+    ) async throws -> (data: Data, response: HTTPURLResponse?) {
         await RateLimiter.shared.wait(for: category)
+        // A tile scrolled past, a search superseded: nothing to send. Thrown
+        // as itself, not wrapped as `.transport`, so callers can tell.
+        try Task.checkCancellation()
 
         var req = URLRequest(url: url)
         req.httpMethod = method.rawValue
@@ -114,21 +130,25 @@ nonisolated struct HTTPClient {
         do {
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse else {
-                return data
+                return (data, nil)
             }
-            if http.statusCode == 429, category.isScryfall {
-                // Scryfall's warning says a network block follows if this is
-                // ignored: hold everything Scryfall for what it asks.
+            if http.statusCode == 429 {
                 let seconds = RateLimiter.retryAfter(http.value(forHTTPHeaderField: "Retry-After"))
-                await RateLimiter.shared.backOff(seconds: seconds)
-                let until = Date().addingTimeInterval(seconds)
-                Task { @MainActor in DataActivity.shared.scryfallPaused(until: until) }
+                if category.isScryfall {
+                    // Scryfall's warning says a network block follows if this
+                    // is ignored: hold everything Scryfall for what it asks.
+                    await RateLimiter.shared.backOff(seconds: seconds)
+                    let until = Date().addingTimeInterval(seconds)
+                    Task { @MainActor in DataActivity.shared.scryfallPaused(until: until) }
+                }
+                // Any other host's 429 used to be a plain `badStatus`, so
+                // nothing could tell it apart from a failure and wait.
                 throw HTTPError.rateLimited(retryAfter: seconds)
             }
             guard (200..<300).contains(http.statusCode) else {
                 throw HTTPError.badStatus(http.statusCode, data)
             }
-            return data
+            return (data, http)
         } catch let e as HTTPError {
             throw e
         } catch {

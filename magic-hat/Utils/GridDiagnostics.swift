@@ -40,7 +40,14 @@ nonisolated enum GridDiagnostics {
         return cache.withLock { state in
             if let state { return state }
             let d = UserDefaults.standard
-            func on(_ key: String) -> Bool { d.object(forKey: key) == nil ? true : d.bool(forKey: key) }
+            // `UITEST_GRID_OFF=glow,sheen` turns draws off for one launch,
+            // so the hitch metric can run with each one out in turn.
+            let off = Set((ProcessInfo.processInfo.environment["UITEST_GRID_OFF"] ?? "")
+                .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+            func on(_ key: String) -> Bool {
+                if off.contains(key.replacingOccurrences(of: "debug.grid.", with: "")) { return false }
+                return d.object(forKey: key) == nil ? true : d.bool(forKey: key)
+            }
             let flags = Flags(glow: on(glowKey), sheen: on(sheenKey), images: on(imagesKey), caption: on(captionKey))
             state = flags
             return flags

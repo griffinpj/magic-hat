@@ -228,28 +228,44 @@ nonisolated enum DeckCardSort: String, CaseIterable, Identifiable, Hashable, Sen
         let ascending = (direction ?? defaultDirection) == .ascending
         guard self != .relevance else { return ascending ? rows : rows.reversed() }
         func ordered<K: Comparable>(_ l: K, _ r: K) -> Bool { ascending ? l < r : l > r }
-        return rows.enumerated().sorted { a, b in
-            let l = card(a.element), r = card(b.element)
+        // Keys read once per row, not per comparison: the mana value parses
+        // the cost, and a comparator that parsed it on both sides did so
+        // ~2·n·log n times per sort.
+        let keyed = rows.enumerated().map { offset, row -> DeckSortKeys in
+            let c = card(row)
+            return DeckSortKeys(offset: offset, sortKey: c.sortKey,
+                         manaValue: self == .manaValue ? ManaSymbol.manaValue(of: c.manaCost ?? "") : 0,
+                         price: self == .price ? c.marketPrice : nil, rarity: c.rarityRankValue)
+        }
+        return keyed.sorted { l, r in
             switch self {
             case .relevance:
                 break
             case .name:
                 if l.sortKey != r.sortKey { return ordered(l.sortKey, r.sortKey) }
             case .manaValue:
-                let lv = ManaSymbol.manaValue(of: l.manaCost ?? ""), rv = ManaSymbol.manaValue(of: r.manaCost ?? "")
-                if lv != rv { return ordered(lv, rv) }
+                if l.manaValue != r.manaValue { return ordered(l.manaValue, r.manaValue) }
             case .price:
-                switch (l.marketPrice, r.marketPrice) {
+                switch (l.price, r.price) {
                 case let (lp?, rp?) where lp != rp: return ordered(lp, rp)
                 case (_?, nil): return true
                 case (nil, _?): return false
                 default: break
                 }
             case .rarity:
-                if l.rarityRankValue != r.rarityRankValue { return ordered(l.rarityRankValue, r.rarityRankValue) }
+                if l.rarity != r.rarity { return ordered(l.rarity, r.rarity) }
             }
             if l.sortKey != r.sortKey { return l.sortKey < r.sortKey }
-            return a.offset < b.offset
-        }.map(\.element)
+            return l.offset < r.offset
+        }.map { rows[$0.offset] }
     }
+}
+
+/// One row's sort keys, read once before `DeckCardSort.apply` sorts.
+private nonisolated struct DeckSortKeys {
+    let offset: Int
+    let sortKey: String
+    let manaValue: Int
+    let price: Double?
+    let rarity: Int
 }

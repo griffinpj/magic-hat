@@ -3,8 +3,9 @@
 //  magic-hat
 //
 //  The Filters sheet shown over results: the same sections as the landing
-//  screen, editing a draft committed on Done. Reset is top-left; swiping
-//  the sheet down discards the draft, as sheets do.
+//  screen, editing a draft committed on Done. Cancel throws the draft away
+//  on purpose; with edits in it the sheet can't be swiped away, since a
+//  swipe used to discard them without a word. Reset is in the bottom bar.
 //
 
 import SwiftUI
@@ -35,7 +36,11 @@ struct SearchFiltersView: View {
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .accessibilityIdentifier("filters-cancel")
+                }
+                ToolbarItem(placement: .bottomBar) {
                     Button("Reset") {
                         // A set's page keeps its set: it is the scope.
                         let sets = draft.sets
@@ -55,6 +60,7 @@ struct SearchFiltersView: View {
             }
         }
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(draft != query)
     }
 }
 

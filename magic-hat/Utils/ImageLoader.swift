@@ -29,8 +29,10 @@ nonisolated final class ImageMemoryCache: @unchecked Sendable {
     init() {
         cache.countLimit = 400
         // Bound by bytes too: an overlay-sized card decodes to several MB, so
-        // a count-only limit could hold hundreds of MB and thrash.
-        cache.totalCostLimit = 192 * 1024 * 1024
+        // a count-only limit could hold hundreds of MB and thrash. A 3-wide
+        // tile on a 440pt phone is ~370×520px, 0.75MB: about 300 tiles,
+        // ten screens either way, before anything is decoded twice.
+        cache.totalCostLimit = 256 * 1024 * 1024
     }
 
     private static func cost(of image: UIImage) -> Int {
@@ -168,20 +170,44 @@ nonisolated struct ArtTint: Hashable, Sendable {
 
 nonisolated enum ImageLoadError: Error { case meteredNetwork }
 
+/// One shared load and how many callers are waiting on it. `waiters` is
+/// only read and written on `ImageLoader` (the cancellation handler hops
+/// back onto it), hence the unchecked conformance.
+nonisolated private final class ImageFlight<Value: Sendable>: @unchecked Sendable {
+    let task: Task<Value, Error>
+    var waiters = 0
+    init(_ task: Task<Value, Error>) { self.task = task }
+}
+
 actor ImageLoader {
     static let shared = ImageLoader()
 
-    private let http = HTTPClient()
     private let fm = FileManager.default
     private let cacheDir: URL
+    /// The network fetch: the images lane in production, a stand-in in
+    /// tests (which never touch the network).
+    private let fetch: @Sendable (URL) async throws -> Data
 
-    /// In-flight loads keyed by "url|maxPixel", to coalesce duplicate requests.
-    private var inFlight: [String: Task<UIImage, Error>] = [:]
+    /// Decodes in flight, keyed by "url|maxPixel", so a tile and the warm
+    /// pass asking for the same image share one decode.
+    private var decodes: [String: ImageFlight<UIImage>] = [:]
+    /// Downloads in flight, keyed by URL alone: the viewer and the grid
+    /// ask for the same card at different sizes, and used to download its
+    /// bytes once per size.
+    private var downloads: [String: ImageFlight<Data>] = [:]
 
-    init() {
-        let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        cacheDir = caches.appendingPathComponent("CardImages", isDirectory: true)
-        try? fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+    init(cacheDirectory: URL? = nil, fetch: (@Sendable (URL) async throws -> Data)? = nil) {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        cacheDir = cacheDirectory ?? caches.appendingPathComponent("CardImages", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        if let fetch {
+            self.fetch = fetch
+        } else {
+            let http = HTTPClient()
+            // Card images have their own lane (see RateLimiter), so a
+            // scroll never starves a hydration batch.
+            self.fetch = { url in try await http.requestData(url: url, rateLimit: .images) }
+        }
     }
 
     /// Bytes on disk, for Settings.
@@ -194,8 +220,10 @@ actor ImageLoader {
     /// Removes every cached image, on disk and in memory. They stream back
     /// as cards are shown.
     func clearCache() {
-        for task in inFlight.values { task.cancel() }
-        inFlight.removeAll()
+        for flight in decodes.values { flight.task.cancel() }
+        for flight in downloads.values { flight.task.cancel() }
+        decodes.removeAll()
+        downloads.removeAll()
         if let files = try? fm.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil) {
             for file in files { try? fm.removeItem(at: file) }
         }
@@ -205,49 +233,198 @@ actor ImageLoader {
     /// Loads a card image downsampled to `maxPixel` (longest edge, in pixels).
     /// Order: memory → disk bytes → network. Reading and decoding run off
     /// the main thread and off this actor (see `decodeFile`).
+    ///
+    /// Cancellation reaches the request: the load is shared by everyone
+    /// asking for the same image, and when the last of them is cancelled
+    /// (a tile scrolled away, the warm pass moved on) the load is too. It
+    /// used to run in a task nobody could cancel, so a flick through a
+    /// cold region queued a request per tile passed in the 5/sec lane and
+    /// the tiles on screen waited behind them.
     func image(for urlString: String, maxPixel: CGFloat) async throws -> UIImage {
         let key = ImageMemoryCache.key(urlString, maxPixel)
         if let cached = ImageMemoryCache.shared.image(key) { return cached }
-
-        if let existing = inFlight[key] {
-            return try await existing.value
-        }
+        lastInteractiveLoad = .now
 
         let file = fileURL(for: urlString)
-        let task = Task<UIImage, Error> { [http] in
-            if let onDisk = await Self.decodeFile(file, maxPixel: maxPixel, urlString: urlString) { return onDisk }
-            // Settings can keep images off cellular: what is on disk shows,
-            // the rest waits for Wi-Fi (the tile keeps its placeholder).
-            guard AppSettings.imagesOnCellular || !NetworkMonitor.isMeteredNow else { throw ImageLoadError.meteredNetwork }
-            guard let url = URL(string: urlString) else { throw HTTPError.badURL }
-            // Card images have their own lane (see RateLimiter), so a
-            // scroll never starves a hydration batch.
-            let downloaded = try await http.requestData(url: url, rateLimit: .images)
-            return try await Self.keepAndDecode(downloaded, at: file, maxPixel: maxPixel, urlString: urlString)
-        }
-        inFlight[key] = task
-
-        do {
-            let img = try await task.value
-            inFlight[key] = nil
-            ImageMemoryCache.shared.set(img, key)
-            return img
-        } catch {
-            inFlight[key] = nil
-            throw error
+        let flight = decodes[key] ?? {
+            let made = ImageFlight(Task<UIImage, Error> {
+                // A cancelled load (Clear Image Cache cancels them all) caches
+                // nothing: one already past its decode used to put its image
+                // back right after the cache was emptied.
+                if let onDisk = await Self.decodeFile(file, maxPixel: maxPixel, urlString: urlString) {
+                    try Task.checkCancellation()
+                    ImageMemoryCache.shared.set(onDisk, key)
+                    return onDisk
+                }
+                let data = try await self.download(urlString, to: file)
+                guard let image = await Self.decode(data, maxPixel: maxPixel, urlString: urlString) else {
+                    throw HTTPError.badURL
+                }
+                try Task.checkCancellation()
+                ImageMemoryCache.shared.set(image, key)
+                return image
+            })
+            decodes[key] = made
+            return made
+        }()
+        return try await wait(on: flight) { [weak self] in
+            await self?.leave(flight, decodes: key)
+        } finish: {
+            if decodes[key] === flight { decodes[key] = nil }
         }
     }
 
-    /// Loads each image in turn, skipping what is already decoded, and
-    /// stops at cancellation. Sequential on purpose: the grid's own tile
-    /// loads interleave between these and keep their place in the rate
-    /// limiter, rather than queueing behind thirty prefetches.
-    func warm(_ urls: [String], maxPixel: CGFloat) async {
-        for url in urls {
-            if Task.isCancelled { return }
-            if ImageMemoryCache.shared.image(ImageMemoryCache.key(url, maxPixel)) != nil { continue }
-            _ = try? await image(for: url, maxPixel: maxPixel)
+    /// The bytes of `urlString`, downloaded once however many sizes ask
+    /// for it, and kept on disk. Refuses a metered path unless images are
+    /// allowed on cellular: what is on disk still shows, the rest waits
+    /// for Wi-Fi (the tile keeps its placeholder).
+    private func download(_ urlString: String, to file: URL) async throws -> Data {
+        let flight = downloads[urlString] ?? {
+            let made = ImageFlight(Task<Data, Error> { [fetch] in
+                guard AppSettings.imagesOnCellular || !NetworkMonitor.isMeteredNow else { throw ImageLoadError.meteredNetwork }
+                guard let url = URL(string: urlString) else { throw HTTPError.badURL }
+                // Nobody wants it any more: don't spend a slot in the lane.
+                try Task.checkCancellation()
+                let data = try await fetch(url)
+                // Not written into a cache cleared while it was downloading.
+                try Task.checkCancellation()
+                try? await Self.keep(data, at: file)
+                return data
+            })
+            downloads[urlString] = made
+            return made
+        }()
+        return try await wait(on: flight) { [weak self] in
+            await self?.leave(flight, downloads: urlString)
+        } finish: {
+            if downloads[urlString] === flight { downloads[urlString] = nil }
         }
+    }
+
+    /// Waits on a shared load as one of its waiters. A waiter cancelled
+    /// leaves (`onLeave`, hopped back onto the actor); the load is cancelled
+    /// when the last one has left. `finish` drops the finished load from
+    /// its table.
+    private func wait<Value: Sendable>(on flight: ImageFlight<Value>,
+                                       onLeave: @escaping @Sendable () async -> Void,
+                                       finish: () -> Void) async throws -> Value {
+        flight.waiters += 1
+        let result = await withTaskCancellationHandler {
+            await flight.task.result
+        } onCancel: {
+            Task { await onLeave() }
+        }
+        finish()
+        return try result.get()
+    }
+
+    /// How long a load nobody waits on is kept before it is cancelled.
+    /// The grid's warm pass is cancelled and restarted a few tiles on, and
+    /// most of the new window is the old one: without a grace each restart
+    /// cancelled those downloads and queued them again at the back of the
+    /// images lane.
+    static let rejoinGrace: Duration = .milliseconds(250)
+
+    private func leave(_ flight: ImageFlight<UIImage>, decodes key: String) async {
+        flight.waiters -= 1
+        guard flight.waiters <= 0 else { return }
+        try? await Task.sleep(for: Self.rejoinGrace)
+        guard flight.waiters <= 0 else { return }
+        flight.task.cancel()
+        if decodes[key] === flight { decodes[key] = nil }
+    }
+
+    private func leave(_ flight: ImageFlight<Data>, downloads key: String) async {
+        flight.waiters -= 1
+        guard flight.waiters <= 0 else { return }
+        try? await Task.sleep(for: Self.rejoinGrace)
+        guard flight.waiters <= 0 else { return }
+        flight.task.cancel()
+        if downloads[key] === flight { downloads[key] = nil }
+    }
+
+    /// Loads in flight, for tests: (decodes, downloads).
+    var inFlightCounts: (decodes: Int, downloads: Int) { (decodes.count, downloads.count) }
+
+    /// Loads the images in order, a few at a time, skipping what is
+    /// already decoded, and stops at cancellation. A few, not all thirty:
+    /// the grid's own tile loads interleave between these and keep their
+    /// place in the rate limiter, rather than queueing behind the whole
+    /// window. Not one at a time either: a disk hit is a read and a
+    /// decode, a few milliseconds each, and one after another they fell
+    /// behind a flick.
+    func warm(_ urls: [String], maxPixel: CGFloat) async {
+        let pending = urls.filter { ImageMemoryCache.shared.image(ImageMemoryCache.key($0, maxPixel)) == nil }
+        guard !pending.isEmpty else { return }
+        await withTaskGroup(of: Void.self) { group in
+            var next = pending.makeIterator()
+            for _ in 0..<Self.warmWidth {
+                guard let url = next.next() else { break }
+                group.addTask { _ = try? await self.image(for: url, maxPixel: maxPixel) }
+            }
+            while await group.next() != nil {
+                if Task.isCancelled { return }
+                guard let url = next.next() else { continue }
+                group.addTask { _ = try? await self.image(for: url, maxPixel: maxPixel) }
+            }
+        }
+    }
+
+    /// Images decoded at once by `warm`.
+    private static let warmWidth = 3
+
+    // MARK: Prefetching the whole collection
+
+    /// When the grid last asked for an image it didn't have in memory —
+    /// the user is scrolling. The prefetch stands aside while this is
+    /// recent, so its downloads never queue ahead of a tile's in the
+    /// images lane.
+    private var lastInteractiveLoad: ContinuousClock.Instant = .now - .seconds(60)
+    private static let interactiveGrace: Duration = .milliseconds(1500)
+
+    /// The URLs among `urls` with no bytes on disk yet, checked off the
+    /// actor (a stat per card; thousands of them).
+    @concurrent
+    nonisolated func missingFromDisk(_ urls: [String]) async -> [String] {
+        let fm = FileManager.default
+        return urls.filter { !fm.fileExists(atPath: fileURL(for: $0).path) }
+    }
+
+    /// Downloads `urls` to the disk cache, one at a time, in the images
+    /// lane, without decoding — bytes for the grid to find later, so a
+    /// scroll into a part of the collection never seen meets images on
+    /// disk rather than filling in at the lane's rate. Yields while the
+    /// grid is loading, stops at cancellation, and refuses a metered path
+    /// unless images are allowed on cellular (checked per image, so
+    /// leaving Wi-Fi stops it). Reports every `every` images.
+    func prefetch(_ urls: [String], every: Int = 25, progress: @Sendable (Int) async -> Void) async -> (fetched: Int, failed: Int) {
+        var fetched = 0, failed = 0
+        for (i, url) in urls.enumerated() {
+            if Task.isCancelled { break }
+            while ContinuousClock.now - lastInteractiveLoad < Self.interactiveGrace {
+                try? await Task.sleep(for: .milliseconds(500))
+                if Task.isCancelled { return (fetched, failed) }
+            }
+            guard AppSettings.imagesOnCellular || !NetworkMonitor.isMeteredNow else { break }
+            let file = fileURL(for: url)
+            if fm.fileExists(atPath: file.path) { continue }
+            do {
+                // The same shared download a tile would join, so a tile
+                // asking for this card meanwhile waits on it, not a second.
+                _ = try await download(url, to: file)
+                fetched += 1
+            } catch {
+                if Task.isCancelled { break }
+                failed += 1
+            }
+            if (i + 1) % every == 0 { await progress(i + 1) }
+        }
+        return (fetched, failed)
+    }
+
+    @concurrent
+    private nonisolated static func keep(_ data: Data, at file: URL) async throws {
+        try data.write(to: file, options: .atomic)
     }
 
     // Disk and decode on the global executor, several at once. The task
@@ -265,10 +442,8 @@ actor ImageLoader {
     }
 
     @concurrent
-    private nonisolated static func keepAndDecode(_ data: Data, at file: URL, maxPixel: CGFloat, urlString: String) async throws -> UIImage {
-        try? data.write(to: file, options: .atomic)
-        guard let image = downsample(data: data, maxPixel: maxPixel, urlString: urlString) else { throw HTTPError.badURL }
-        return image
+    private nonisolated static func decode(_ data: Data, maxPixel: CGFloat, urlString: String) async -> UIImage? {
+        downsample(data: data, maxPixel: maxPixel, urlString: urlString)
     }
 
     /// Decodes and downsamples image data to `maxPixel` (longest edge) using
@@ -295,7 +470,7 @@ actor ImageLoader {
         return UIImage(cgImage: cg)
     }
 
-    private func fileURL(for urlString: String) -> URL {
+    nonisolated private func fileURL(for urlString: String) -> URL {
         // Stable (cross-launch), filesystem-safe name derived from the URL.
         let digest = SHA256.hash(data: Data(urlString.utf8))
         let name = digest.map { String(format: "%02x", $0) }.joined()

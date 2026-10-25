@@ -11,6 +11,12 @@
 //  read too, to show while a refresh runs. An actor: decoding and writing
 //  happen on its executor, never the main thread.
 //
+//  The memory tier is bounded — least recently used out past `maxEntries`
+//  or `maxBytes` (the JSON's size, a fair stand-in for the decoded value's).
+//  It used to keep every answer for the life of the process, and an EDHREC
+//  commander page is a few hundred KB of JSON: a session spent opening
+//  cards and decks grew it without end. Disk still keeps everything.
+//
 
 import Foundation
 import CryptoKit
@@ -24,12 +30,20 @@ actor DiskJSONCache {
     private struct Slot {
         let fetchedAt: Date
         let value: any Sendable
+        let cost: Int
+        var lastUse: UInt64
     }
 
     private let directory: URL
     private var memory: [String: Slot] = [:]
+    private var memoryCost = 0
+    private var tick: UInt64 = 0
+    let maxEntries: Int
+    let maxBytes: Int
 
-    init(folder: String) {
+    init(folder: String, maxEntries: Int = 64, maxBytes: Int = 8 << 20) {
+        self.maxEntries = maxEntries
+        self.maxBytes = maxBytes
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         directory = caches.appendingPathComponent(folder, isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -43,10 +57,14 @@ actor DiskJSONCache {
 
     /// The value for `key` however old, with when it was fetched.
     func stale<T: Codable & Sendable>(_ type: T.Type, key: String) -> (value: T, fetchedAt: Date)? {
-        if let slot = memory[key], let value = slot.value as? T { return (value, slot.fetchedAt) }
+        if let slot = memory[key], let value = slot.value as? T {
+            tick &+= 1
+            memory[key]?.lastUse = tick
+            return (value, slot.fetchedAt)
+        }
         guard let data = try? Data(contentsOf: fileURL(key)),
               let envelope = try? JSONDecoder().decode(Envelope<T>.self, from: data) else { return nil }
-        memory[key] = Slot(fetchedAt: envelope.fetchedAt, value: envelope.value)
+        remember(key, Slot(fetchedAt: envelope.fetchedAt, value: envelope.value, cost: data.count, lastUse: 0))
         return (envelope.value, envelope.fetchedAt)
     }
 
@@ -58,14 +76,41 @@ actor DiskJSONCache {
 
     func store<T: Codable & Sendable>(_ value: T, key: String) {
         let now = Date()
-        memory[key] = Slot(fetchedAt: now, value: value)
-        guard let data = try? JSONEncoder().encode(Envelope(value: value, fetchedAt: now)) else { return }
+        guard let data = try? JSONEncoder().encode(Envelope(value: value, fetchedAt: now)) else {
+            forget(key)
+            return
+        }
+        remember(key, Slot(fetchedAt: now, value: value, cost: data.count, lastUse: 0))
         try? data.write(to: fileURL(key), options: .atomic)
     }
 
     func remove(key: String) {
-        memory[key] = nil
+        forget(key)
         try? FileManager.default.removeItem(at: fileURL(key))
+    }
+
+    /// Entries and bytes held in memory, for tests.
+    var memoryUsage: (entries: Int, bytes: Int) { (memory.count, memoryCost) }
+
+    private func remember(_ key: String, _ slot: Slot) {
+        forget(key)
+        // One answer bigger than the whole budget stays on disk only.
+        guard slot.cost <= maxBytes else { return }
+        tick &+= 1
+        var slot = slot
+        slot.lastUse = tick
+        memory[key] = slot
+        memoryCost += slot.cost
+        // At most 64 entries: a scan for the oldest is cheaper than keeping
+        // a linked list in step.
+        while memory.count > maxEntries || memoryCost > maxBytes,
+              let oldest = memory.min(by: { $0.value.lastUse < $1.value.lastUse })?.key {
+            forget(oldest)
+        }
+    }
+
+    private func forget(_ key: String) {
+        if let old = memory.removeValue(forKey: key) { memoryCost -= old.cost }
     }
 
     private func fileURL(_ key: String) -> URL {

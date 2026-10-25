@@ -23,11 +23,18 @@
 //  its detail: the cards it changed, and the one button that undoes,
 //  redoes or switches to it.
 //
-//  A long history is shown through a window (HistoryWindow): the newest
-//  forty actions of the current line with Show Earlier under them, each
-//  other branch's newest eight with Show All, and no branch whose fork
-//  lies further back than what is drawn — it comes into view with the
-//  row it splits from.
+//  A long history reads the way Mail and Photos read a long stream: the
+//  current line by day — "Today", "Yesterday", "Monday", "September 28" —
+//  each day its own card, rows giving only the time; each other branch
+//  drawn right after the action it splits from, the day's card carrying
+//  on below it; and older history loading as the foot of the list comes
+//  into view (the
+//  window, HistoryWindow, laid out as a HistoryFeed: forty actions of the
+//  current line at a time, each other branch's newest eight with Show
+//  All, no branch whose fork isn't drawn). Nothing sits below the end of
+//  the line but the row that loads more, so nothing is ever out of reach
+//  behind it. Search finds an action by any card it touched (an import's
+//  thousands, not only the names a row shows), a collection or a deck.
 //
 //  No @Query: the ledger is a large table, and a query over it re-ran on
 //  the main thread after every background save (each hydration batch).
@@ -49,6 +56,11 @@ struct HistoryView: View {
     /// How much of the current line is drawn, and which branches in full.
     @State private var shownLimit = HistoryLog.pageSize
     @State private var expandedBranches: Set<UUID> = []
+    @State private var query = ""
+    /// What the search found, worked out in the debounced task below —
+    /// the ledger's answer plus every action's title and detail matched
+    /// off the main actor — never in the body, where it ran per keystroke.
+    @State private var found = HistorySearchResults()
 
     var body: some View {
         NavigationStack {
@@ -62,16 +74,51 @@ struct HistoryView: View {
                         systemImage: "clock.arrow.circlepath",
                         description: Text("Imports and changes to your collection appear here.")
                     )
+                } else if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    results
                 } else {
                     list
                 }
             }
             .navigationTitle("History")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic),
+                        prompt: "Cards, collections, decks")
+            .task(id: "\(query)|\(undo.revision)") {
+                let needle = query.trimmingCharacters(in: .whitespaces)
+                guard !needle.isEmpty else { return }
+                // A pause before asking the ledger, as typing goes on.
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                let matches = await undo.matches(needle)
+                let actions = undo.log.actions
+                let results = await Task.detached(priority: .userInitiated) {
+                    HistorySearchResults(needle: needle, actions: actions, matches: matches)
+                }.value
+                guard !Task.isCancelled else { return }
+                found = results
+            }
             .navigationDestination(for: UUID.self) { HistoryDetailView(actionID: $0) }
             .toolbar { toolbar }
             .sheet(isPresented: $showGuide) { HistoryGuideView() }
-            .task(id: "\(tracker.revision)|\(deckTracker.revision)") { await undo.refresh() }
+            // The ledger's tracker alone: deck list edits write no records,
+            // and the whole ledger was re-read on every stepper tap once
+            // this tab had been opened. Creating, deleting and renaming a
+            // deck bump it too.
+            .task(id: tracker.revision) { await undo.refresh() }
             .sensoryFeedback(.success, trigger: undo.completed)
+            // ⇧⌘Z at a fork: the Redo control is a menu then, which takes
+            // no shortcut, so a hidden button redoes the default branch —
+            // the most recently taken, what a plain Redo would take.
+            .background {
+                if undo.log.timeline.isFork {
+                    Button("Redo") { Task { await undo.redo() } }
+                        .keyboardShortcut("z", modifiers: [.command, .shift])
+                        .disabled(!undo.canRedo)
+                        .opacity(0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
             .alert("Couldn't Change That", isPresented: Binding(get: { undo.error != nil }, set: { if !$0 { undo.error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -83,25 +130,35 @@ struct HistoryView: View {
     // MARK: List
 
     private var list: some View {
-        let window = undo.log.window(limit: shownLimit, expanded: expandedBranches)
+        let feed = undo.log.feed(limit: shownLimit, expanded: expandedBranches)
         return ScrollViewReader { proxy in
             List {
-                if let section = window.current {
-                    lineSection(section, proxy: proxy, shown: window.shownLines, hiddenBranches: window.hiddenBranches)
-                }
-                ForEach(window.branches) { section in
-                    lineSection(section, proxy: proxy, shown: window.shownLines)
+                ForEach(feed.blocks) { block in
+                    switch block {
+                    case .day(let day):
+                        daySection(day, feed: feed, proxy: proxy)
+                    case .branch(let section):
+                        lineSection(section, proxy: proxy, shown: feed.shownLines)
+                    case .more:
+                        if let line = feed.line {
+                            Section {
+                                earlierRow(line: line, hidden: feed.hidden, hiddenBranches: feed.hiddenBranches)
+                            }
+                        }
+                    }
                 }
             }
             // A new list when the branches change (a fork, a switch): a row
             // that changes section is then drawn fresh in its new place,
             // never animated across from a cell left behind in the old one.
-            // The log's lines, not the window's: Show Earlier bringing a
-            // branch into view must not throw the list back to the top.
+            // The log's lines, not the window's: loading earlier days
+            // bringing a branch into view must not throw the list to the top.
             .id(undo.log.lines.map(\.id))
         }
         .listStyle(.insetGrouped)
-        .animation(.default, value: undo.log.actions)
+        // Keyed on the read, not the log: comparing every action of a long
+        // history ran on each render.
+        .animation(.default, value: undo.revision)
         .overlay(alignment: .bottom) {
             if undo.isBusy { busyPill }
         }
@@ -115,6 +172,91 @@ struct HistoryView: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Leave it empty to use the default name.")
+        }
+    }
+
+    /// A run of one day of the current line: its rows on the rail (which
+    /// runs on across the cards), under the day's header unless it carries
+    /// on after a branch's card, the newest under the line's own header.
+    @ViewBuilder private func daySection(_ day: HistoryFeed.Day, feed: HistoryFeed, proxy: ScrollViewProxy) -> some View {
+        if let line = feed.line {
+            Section {
+                ForEach(day.rows, id: \.self) { id in
+                    if let action = undo.log.action(id), let index = feed.rowIndex[id] {
+                        let branches = undo.log.branches(from: id).filter { feed.shownLines.contains($0.id) }
+                        actionRow(action, line: line, mark: mark(for: line, rows: feed.currentRows, index: index, stub: !branches.isEmpty),
+                                  branches: branches, showsDate: false, proxy: proxy)
+                    }
+                }
+            } header: {
+                if day.isNewest || day.showsHeader {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if day.isNewest {
+                            lineHeader(line)
+                                .id("line-\(line.id.uuidString)")
+                        }
+                        if day.showsHeader {
+                            Text(HistoryDayTitle.title(for: day.start))
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .textCase(nil)
+                                .accessibilityAddTraits(.isHeader)
+                                .accessibilityIdentifier("history-day")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A row of the list: the action on its rail, pushing its detail.
+    private func actionRow(_ action: HistoryAction, line: HistoryLine, mark: RailMark, branches: [HistoryLine],
+                           showsDate: Bool, proxy: ScrollViewProxy) -> some View {
+        let id = action.actionID
+        return NavigationLink(value: id) {
+            HistoryRow(action: action, mark: mark, emphasized: line.isCurrent, branches: branches.map { undo.log.title(of: $0) },
+                       blocked: undo.log.blocked[id], showsDate: showsDate) { branchIndex in
+                // Tags only for branches on screen: a tag that scrolls to
+                // nothing is worse than none.
+                withAnimation { proxy.scrollTo("line-\(branches[branchIndex].id.uuidString)", anchor: .top) }
+            }
+        }
+        .id(id)
+        .contextMenu { menu(for: action) }
+        .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
+        .accessibilityIdentifier("history-row-\(id.uuidString)")
+    }
+
+    // MARK: Search
+
+    /// Every action, on any branch, that the ledger says touched what was
+    /// typed — or whose title or place says it — by day, newest first.
+    private var results: some View {
+        let needle = query.trimmingCharacters(in: .whitespaces)
+        let current = found.needle == needle
+        return List {
+            ForEach(current ? found.days : [], id: \.start) { day in
+                Section(HistoryDayTitle.title(for: day.start)) {
+                    ForEach(day.actions, id: \.self) { id in
+                        if let action = undo.log.action(id) {
+                            NavigationLink(value: action.actionID) {
+                                let dot: RailDot = action.actionID == undo.log.timeline.head ? .head : (action.isApplied ? .applied : .undone)
+                                HistoryRow(action: action, mark: RailMark(above: nil, below: nil, dot: dot), emphasized: true,
+                                           blocked: undo.log.blocked[action.actionID], showsDate: false)
+                            }
+                            .contextMenu { menu(for: action) }
+                            .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
+                            .accessibilityIdentifier("history-result-\(action.actionID.uuidString)")
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .overlay {
+            // Nothing said until the answer for this text is in.
+            if current, found.days.isEmpty { ContentUnavailableView.search(text: needle) }
         }
     }
 
@@ -147,25 +289,13 @@ struct HistoryView: View {
         Section {
             ForEach(Array(rows.enumerated()), id: \.element) { index, id in
                 if let action = undo.log.action(id) {
-                    // Tags only for branches on screen: a tag that scrolls
-                    // to nothing is worse than none.
                     let branches = undo.log.branches(from: id).filter { shown.contains($0.id) }
-                    NavigationLink(value: id) {
-                        HistoryRow(action: action, mark: mark(for: line, rows: rows, index: index, stub: !branches.isEmpty),
-                                   emphasized: line.isCurrent, branches: branches.map { undo.log.title(of: $0) },
-                                   blocked: undo.log.blocked[id]) { branchIndex in
-                            withAnimation { proxy.scrollTo("line-\(branches[branchIndex].id.uuidString)", anchor: .top) }
-                        }
-                    }
-                    .id(id)
-                    .contextMenu { menu(for: action) }
-                    .listRowInsets(EdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20))
-                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] + 36 }
-                    .accessibilityIdentifier("history-row-\(id.uuidString)")
+                    actionRow(action, line: line, mark: mark(for: line, rows: rows, index: index, stub: !branches.isEmpty),
+                              branches: branches, showsDate: true, proxy: proxy)
                 }
             }
             if section.hidden > 0 {
-                earlierRow(section, hiddenBranches: hiddenBranches)
+                earlierRow(line: line, hidden: section.hidden, hiddenBranches: hiddenBranches)
             }
             if !line.isCurrent {
                 let cost = undo.log.switchCost(of: line)
@@ -194,9 +324,8 @@ struct HistoryView: View {
     /// The foot of a cut list: how much older history there is, and the
     /// button that draws more of it. On the current line it also says how
     /// many branches split from actions not drawn yet.
-    private func earlierRow(_ section: HistoryWindow.Section, hiddenBranches: Int) -> some View {
-        let line = section.line
-        return Button {
+    private func earlierRow(line: HistoryLine, hidden: Int, hiddenBranches: Int) -> some View {
+        Button {
             withAnimation {
                 if line.isCurrent { shownLimit += HistoryLog.pageSize } else { expandedBranches.insert(line.id) }
             }
@@ -211,7 +340,7 @@ struct HistoryView: View {
                     Text(line.isCurrent ? "Show Earlier" : "Show All \(line.actions.count) Actions")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.tint)
-                    Text(earlierCaption(hidden: section.hidden, branches: line.isCurrent ? hiddenBranches : 0))
+                    Text(earlierCaption(hidden: hidden, branches: line.isCurrent ? hiddenBranches : 0))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -233,7 +362,7 @@ struct HistoryView: View {
         // first. Not animated: a page arriving under a scroll should land,
         // not slide.
         .onAppear {
-            guard line.isCurrent, section.hidden > 0 else { return }
+            guard line.isCurrent, hidden > 0 else { return }
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { shownLimit += HistoryLog.pageSize }
@@ -446,6 +575,30 @@ struct HistoryView: View {
     }
 }
 
+/// History's search answer for one text: the actions found, by day, newest
+/// first. Built off the main actor; the view holds ids, not actions.
+nonisolated struct HistorySearchResults: Sendable {
+    struct Day: Sendable {
+        let start: Date
+        let actions: [UUID]
+    }
+
+    var needle: String?
+    var days: [Day] = []
+
+    init() {}
+
+    init(needle: String, actions: [HistoryAction], matches: Set<UUID>, calendar: Calendar = .current) {
+        self.needle = needle
+        let found = actions.filter { action in
+            matches.contains(action.actionID) || action.title.localizedStandardContains(needle)
+                || action.detail.localizedStandardContains(needle)
+        }
+        let byDay = Dictionary(grouping: found) { calendar.startOfDay(for: $0.timestamp) }
+        days = byDay.keys.sorted(by: >).map { Day(start: $0, actions: (byDay[$0] ?? []).map(\.actionID)) }
+    }
+}
+
 /// One action on the rail: icon, title, what and where, when; the copies
 /// at the trailing end. Dimmed when undone; on the current line an
 /// undone row is also marked, since it is what Redo would take.
@@ -457,6 +610,9 @@ private struct HistoryRow: View {
     var branches: [String] = []
     /// Why it can't be undone or redone from here, when it can't.
     var blocked: String? = nil
+    /// Under a day's header the time alone; in a branch's card, which runs
+    /// across days, the date too.
+    var showsDate = true
     var onBranchTap: (Int) -> Void = { _ in }
 
     private var icon: String { action.action.systemImage }
@@ -475,7 +631,7 @@ private struct HistoryRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    Text(action.timestamp, format: .dateTime.day().month().year().hour().minute())
+                    Text(action.timestamp, format: showsDate ? .dateTime.day().month().year().hour().minute() : .dateTime.hour().minute())
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }

@@ -70,6 +70,20 @@ nonisolated struct DeckToken: Identifiable, Hashable, Sendable {
     let artCropURL: String?
     /// The deck's cards that make it, by name, in list order.
     let makers: [String]
+    /// The token's own card, when the catalog holds a printing of it: what
+    /// the playtest needs to put one on the table.
+    var power: String? = nil
+    var toughness: String? = nil
+    var oracleText: String? = nil
+    var colors: [ManaColor] = []
+
+    /// What the catalog knows of a token printing beyond its image.
+    nonisolated struct Details: Hashable, Sendable {
+        var power: String?
+        var toughness: String?
+        var oracleText: String?
+        var colors: [ManaColor] = []
+    }
 
     /// "Creature — Soldier" without the leading "Token".
     var kind: String {
@@ -78,13 +92,16 @@ nonisolated struct DeckToken: Identifiable, Hashable, Sendable {
     }
 
     /// Rolls the makers' tokens up by kind, keeping the first printing
-    /// seen with an image. `makers` are (card name, its tokens).
+    /// seen with an image (and the first with details). `makers` are
+    /// (card name, its tokens).
     static func collect(_ makers: [(name: String, tokens: [RelatedToken])],
-                        images: [String: (image: String?, art: String?)]) -> [DeckToken] {
+                        images: [String: (image: String?, art: String?)],
+                        details: [String: Details] = [:]) -> [DeckToken] {
         var order: [String] = []
         var names: [String: String] = [:]
         var types: [String: String] = [:]
         var image: [String: (String?, String?)] = [:]
+        var detail: [String: Details] = [:]
         var by: [String: [String]] = [:]
         for maker in makers {
             for token in maker.tokens {
@@ -92,11 +109,14 @@ nonisolated struct DeckToken: Identifiable, Hashable, Sendable {
                 if by[key] == nil { order.append(key); names[key] = token.name; types[key] = token.typeLine }
                 if !(by[key] ?? []).contains(maker.name) { by[key, default: []].append(maker.name) }
                 if image[key]?.0 == nil, let found = images[token.id], found.image != nil { image[key] = (found.image, found.art) }
+                if detail[key] == nil, let found = details[token.id] { detail[key] = found }
             }
         }
         return order.map { key in
             DeckToken(id: key, name: names[key] ?? "", typeLine: types[key] ?? "",
-                      imageURL: image[key]?.0, artCropURL: image[key]?.1, makers: by[key] ?? [])
+                      imageURL: image[key]?.0, artCropURL: image[key]?.1, makers: by[key] ?? [],
+                      power: detail[key]?.power, toughness: detail[key]?.toughness,
+                      oracleText: detail[key]?.oracleText, colors: detail[key]?.colors ?? [])
         }
         .sorted { a, b in a.makers.count != b.makers.count ? a.makers.count > b.makers.count : a.name < b.name }
     }
@@ -135,6 +155,10 @@ nonisolated struct DeckSnapshot: Hashable, Sendable {
     let stats: DeckStats
     /// The tokens the played boards make (see DeckToken).
     var tokens: [DeckToken] = []
+    /// Printings the list names whose CardMeta is missing or incomplete;
+    /// the deck screen hands them to hydration (a deck-only card is in no
+    /// collection, so nothing else would fetch it).
+    var pendingMetaIDs: [String] = []
 
     var allItems: [DeckCardItem] { commanders + sections.flatMap(\.items) + sideboard + maybeboard }
     var playedItems: [DeckCardItem] { commanders + sections.flatMap(\.items) }
@@ -159,8 +183,9 @@ nonisolated struct DeckSnapshot: Hashable, Sendable {
     }
 }
 
-/// A row on the Decks tab.
-nonisolated struct DeckSummary: Identifiable, Hashable, Sendable {
+/// A row on the Decks tab. Codable for `LastDeckOverview`; a field added
+/// later should be optional so a saved list still decodes.
+nonisolated struct DeckSummary: Identifiable, Hashable, Sendable, Codable {
     let id: UUID
     let name: String
     let format: DeckFormat
@@ -173,6 +198,33 @@ nonisolated struct DeckSummary: Identifiable, Hashable, Sendable {
     let updatedDate: Date
     var folderID: UUID? = nil
     var createdDate: Date = .distantPast
+}
+
+/// The Decks tab's last overview, so its first frame shows the tiles
+/// instead of a spinner: `DeckStore.overview()` waits on the ownership
+/// index (0.35s fresh on the real collection) every launch. The
+/// Collections tab's `LastOverview`, for decks: a few KB in UserDefaults,
+/// per store, never for a seeded UI-test store (so the seed has nothing to
+/// clear). Read once synchronously; kept current in memory so a pushed
+/// folder starts from the latest list rather than the launch's.
+nonisolated enum LastDeckOverview {
+    private static var key: String? {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("-uitest-seed") { return nil }
+        return arguments.contains("-uitest-real") ? "decks.lastOverview.uitest-real" : "decks.lastOverview"
+    }
+
+    @MainActor static private(set) var latest: [DeckSummary]? = {
+        guard let key, let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode([DeckSummary].self, from: data)
+    }()
+
+    @MainActor static func save(_ decks: [DeckSummary]) {
+        guard decks != latest else { return }
+        latest = decks
+        guard let key, let data = try? JSONEncoder().encode(decks) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
 }
 
 // MARK: - Building
@@ -216,7 +268,21 @@ nonisolated struct BuildResult: Hashable, Sendable {
 
 nonisolated struct DisassembleResult: Hashable, Sendable {
     let actionID: UUID
+    /// Copies moved back into collections.
     let returnedCopies: Int
+    /// Copies removed instead (`DisassembleDestination.discard`).
+    var removedCopies: Int = 0
+}
+
+/// Where a deck's built cards go when it is taken apart.
+nonisolated enum DisassembleDestination: Hashable, Sendable {
+    /// Each row back to the collection it was built from (the first
+    /// collection if that one is gone).
+    case sources
+    /// Every row into this one collection, made if it doesn't exist.
+    case collection(String)
+    /// The rows are removed; nothing goes back. Recorded as a removal.
+    case discard
 }
 
 /// A parsed list line matched to the catalog.

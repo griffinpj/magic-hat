@@ -20,7 +20,7 @@ import Observation
 
 /// Every kind of load the app does on its own.
 nonisolated enum DataTask: String, CaseIterable, Codable, Sendable, Identifiable {
-    case catalog, rulings, cardData, prices, backup, analysisSignals, vocabularies, setList
+    case catalog, rulings, cardData, prices, backup, analysisSignals, vocabularies, setList, cardImages
 
     var id: String { rawValue }
 
@@ -34,6 +34,7 @@ nonisolated enum DataTask: String, CaseIterable, Codable, Sendable, Identifiable
         case .analysisSignals: return "Analysis Signals"
         case .vocabularies: return "Search Vocabularies"
         case .setList: return "Set List"
+        case .cardImages: return "Card Images"
         }
     }
 
@@ -47,6 +48,7 @@ nonisolated enum DataTask: String, CaseIterable, Codable, Sendable, Identifiable
         case .analysisSignals: return "chart.bar.xaxis"
         case .vocabularies: return "character.book.closed"
         case .setList: return "square.grid.3x3"
+        case .cardImages: return "photo.on.rectangle"
         }
     }
 
@@ -61,6 +63,7 @@ nonisolated enum DataTask: String, CaseIterable, Codable, Sendable, Identifiable
         case .analysisSignals: return "Scryfall's game-changer and tag lists the deck analysis reads."
         case .vocabularies: return "Card types, keywords and artists for the search filters."
         case .setList: return "Every set, for the Sets browser and the filters."
+        case .cardImages: return "The picture of every card you own, kept on this phone so the grid never waits on the network."
         }
     }
 
@@ -87,6 +90,10 @@ nonisolated enum DataTask: String, CaseIterable, Codable, Sendable, Identifiable
         case .analysisSignals: return "Game changers daily, tag lists weekly, a page at a time behind your own searches."
         case .vocabularies: return "Weekly, the first time the search filters are opened."
         case .setList: return "Daily, when the Sets browser or a set filter is opened; pull to refresh forces it."
+        case .cardImages:
+            return AppSettings.imagesOnCellular
+                ? "When the app comes to the front and some are missing, behind whatever is on screen."
+                : "On Wi-Fi, when the app comes to the front and some are missing, behind whatever is on screen."
         }
     }
 }

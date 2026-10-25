@@ -87,33 +87,106 @@ final class PreconController {
 
     /// Covers read so far, for the tiles' first frame.
     private(set) var covers: [String: PreconCover] = [:]
-    private var coverTasks: [String: Task<PreconCover?, Never>] = [:]
     private static let coverTTL: TimeInterval = 365 * 24 * 3600
+
+    /// A cover being read, and how many tiles are waiting on it. The last
+    /// tile to leave cancels it: each read is a ~570KB deck file, and a
+    /// fast scroll through Everything (3,000 tiles) used to queue every
+    /// one it passed — over a gigabyte — with nothing able to stop them.
+    private struct CoverJob {
+        let id = UUID()
+        let task: Task<PreconCover?, Never>
+        /// One token per caller, so leaving twice (cancelled, then
+        /// returning) counts once.
+        var waiters: Set<UUID> = []
+    }
+    private var coverJobs: [String: CoverJob] = [:]
+
+    /// Deck files downloading for covers at once; the rest wait for a
+    /// slot (and a tile scrolled past gives its place up).
+    private static let maxCoverDownloads = 3
+    private var coverDownloads = 0
+    private var coverSlotQueue: [(id: UUID, resume: CheckedContinuation<Bool, Never>)] = []
 
     /// The tile's picture and identity for a deck: its commander's art
     /// (the first card's for a deck without one) and the colours. Derived
     /// from the deck file — the list carries no images — and kept a year
     /// per deck, so the file is read once, not once per launch. On a
     /// metered path with images off, nothing is fetched: the tile keeps
-    /// its set symbol.
+    /// its set symbol. Cancelling the caller (the tile's `.task` as it
+    /// scrolls away) leaves the read; the last to leave cancels it.
     func cover(for fileName: String) async -> PreconCover? {
         if let cover = covers[fileName] { return cover }
-        if let task = coverTasks[fileName] { return await task.value }
-        let task = Task<PreconCover?, Never> { [weak self] in
+        var job = coverJobs[fileName] ?? CoverJob(task: makeCoverTask(fileName))
+        let waiter = UUID()
+        job.waiters.insert(waiter)
+        coverJobs[fileName] = job
+        let jobID = job.id
+        let task = job.task
+        let cover = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.leaveCover(fileName, jobID: jobID, waiter: waiter) }
+        }
+        if let cover { covers[fileName] = cover }
+        leaveCover(fileName, jobID: jobID, waiter: waiter)
+        return cover
+    }
+
+    private func leaveCover(_ fileName: String, jobID: UUID, waiter: UUID) {
+        guard var job = coverJobs[fileName], job.id == jobID, job.waiters.remove(waiter) != nil else { return }
+        if !job.waiters.isEmpty {
+            coverJobs[fileName] = job
+        } else {
+            // Nobody is waiting: finished, or every tile scrolled away.
+            job.task.cancel()
+            coverJobs[fileName] = nil
+        }
+    }
+
+    private func makeCoverTask(_ fileName: String) -> Task<PreconCover?, Never> {
+        Task<PreconCover?, Never> { [weak self] in
             let key = "cover-v2-\(fileName)"
             if let cached = await Self.cache.value(PreconCover.self, key: key, ttl: Self.coverTTL) { return cached }
             guard let self else { return nil }
             if NetworkMonitor.shared.isMetered, !AppSettings.imagesOnCellular { return nil }
-            guard let deck = try? await self.deck(fileName: fileName) else { return nil }
+            guard await self.acquireCoverSlot() else { return nil }
+            defer { self.releaseCoverSlot() }
+            guard !Task.isCancelled, let deck = try? await self.deck(fileName: fileName) else { return nil }
             let cover = PreconCover(deck: deck)
             await Self.cache.store(cover, key: key)
             return cover
         }
-        coverTasks[fileName] = task
-        let cover = await task.value
-        coverTasks[fileName] = nil
-        if let cover { covers[fileName] = cover }
-        return cover
+    }
+
+    /// Waits for one of `maxCoverDownloads`; false when cancelled first.
+    private func acquireCoverSlot() async -> Bool {
+        if coverDownloads < Self.maxCoverDownloads {
+            coverDownloads += 1
+            return true
+        }
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                if Task.isCancelled { continuation.resume(returning: false) } else { coverSlotQueue.append((id, continuation)) }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.dropCoverSlotWaiter(id) }
+        }
+    }
+
+    private func dropCoverSlotWaiter(_ id: UUID) {
+        guard let index = coverSlotQueue.firstIndex(where: { $0.id == id }) else { return }
+        coverSlotQueue.remove(at: index).resume.resume(returning: false)
+    }
+
+    /// Hands the slot to the next in line, else frees it.
+    private func releaseCoverSlot() {
+        if coverSlotQueue.isEmpty {
+            coverDownloads -= 1
+        } else {
+            coverSlotQueue.removeFirst().resume.resume(returning: true)
+        }
     }
 
     /// One deck, cached a month.
@@ -154,12 +227,19 @@ final class PreconController {
         }
     }
 
-    /// A new deck from the precon: its name and format, every row on its
-    /// board, through the import path a pasted list takes (so the rows
-    /// carry the printing and the deck is editable from here on).
-    func importDeck(_ deck: MTGJSONDeck, context: ModelContext) throws -> UUID {
+    /// A new deck from the precon, in `folderID` (nil: the top level): its
+    /// name and format, every row on its board, through the import path a
+    /// pasted list takes (so the rows carry the printing and the deck is
+    /// editable from here on).
+    /// The rows are written on a background context: the deck itself is
+    /// made on the main one (it is a History action, like every deck
+    /// created), its hundred-odd rows off it, so the screen's "Importing…"
+    /// shows while they go in.
+    func importDeck(_ deck: MTGJSONDeck, into folderID: UUID? = nil, context: ModelContext) async throws -> UUID {
         let format = DeckStore.preconFormat(deck.type)
         let created = try DeckEditController.createDeck(name: deck.name, format: format, commander: nil, context: context)
+        created.folderID = folderID
+        try context.save()
         var lines: [ResolvedDeckLine] = []
         func add(_ cards: [MTGJSONDeckCard]?, board: DeckBoard) {
             for card in cards ?? [] {
@@ -173,8 +253,15 @@ final class PreconController {
         add(deck.commander, board: .commander)
         add(deck.mainBoard, board: .main)
         add(deck.sideBoard, board: .side)
-        _ = try DeckEditController.importLines(lines, into: created.id, context: context)
-        return created.id
+        let id = created.id
+        try await Self.write(lines, into: id, container: context.container)
+        DeckChangeTracker.shared.bump()
+        return id
+    }
+
+    @concurrent
+    private static func write(_ lines: [ResolvedDeckLine], into deckID: UUID, container: ModelContainer) async throws {
+        _ = try DeckEditController.importLines(lines, into: deckID, in: ModelContext(container))
     }
 }
 

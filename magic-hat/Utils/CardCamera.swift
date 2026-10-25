@@ -54,11 +54,13 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
     private var device: AVCaptureDevice?
     private var rotation: AVCaptureDevice.RotationCoordinator?
     private weak var previewLayer: AVCaptureVideoPreviewLayer?
-    /// The camera asked for (CameraOption.id); nil is the default.
-    private var requestedID: String?
-
-    /// Read on the camera queue; written from the main actor.
+    /// Read on the camera queue; written from the main actor. Everything
+    /// the two share goes through it — the callback and the camera asked
+    /// for too, which were plain properties written on one thread and
+    /// read on the other.
     private let lock = NSLock()
+    private var _requestedID: String?
+    private var _onFrame: (@MainActor @Sendable (RecognizedFrame) -> Void)?
     private var _region = CGRect(x: 0, y: 0, width: 1, height: 1)
     private var _isPaused = false
     private var _findsCard = false
@@ -66,7 +68,16 @@ nonisolated final class CardCamera: NSObject, AVCaptureVideoDataOutputSampleBuff
     private var lastFrame = Date.distantPast
 
     /// Each analysed frame, on the main actor.
-    var onFrame: (@MainActor @Sendable (RecognizedFrame) -> Void)?
+    var onFrame: (@MainActor @Sendable (RecognizedFrame) -> Void)? {
+        get { lock.withLock { _onFrame } }
+        set { lock.withLock { _onFrame = newValue } }
+    }
+
+    /// The camera asked for (CameraOption.id); nil is the default.
+    private var requestedID: String? {
+        get { lock.withLock { _requestedID } }
+        set { lock.withLock { _requestedID = newValue } }
+    }
 
     static let interval: TimeInterval = 0.22
 

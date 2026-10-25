@@ -100,8 +100,13 @@ struct RootView: View {
                 try? await Task.sleep(for: .seconds(5))
                 guard CatalogSyncController.shared.catalogReady else { return }
                 let store = CollectionStore.shared(for: container)
-                guard let due = try? await store.dueForRefresh(stamp: .current), !due.pending.isEmpty || !due.stale.isEmpty else { return }
-                CardHydrationController.shared.sync(pending: due.pending, stale: due.stale, context: container.mainContext)
+                if let due = try? await store.dueForRefresh(stamp: .current), !due.pending.isEmpty || !due.stale.isEmpty {
+                    CardHydrationController.shared.sync(pending: due.pending, stale: due.stale, context: container.mainContext)
+                    await CardHydrationController.shared.syncTask?.value
+                }
+                // Then every owned card's image onto the disk, behind
+                // whatever the user is doing (see ImagePrefetchController).
+                ImagePrefetchController.shared.runIfNeeded(container: container)
             }
             // An automatic backup, if one is due, well after the first frames.
             Task {

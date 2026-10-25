@@ -95,22 +95,62 @@ extension View {
     /// `managesBack: false` for a screen that hides Back for its own
     /// reasons too (the deck screen, while searching) and folds the
     /// selection into that rule: an explicit "shown" here would override it.
-    func cardSelectionBar(_ selection: CardSelection, items: [CardItem], actions: [SelectionAction] = [],
+    ///
+    /// A `CardItemList`, never `[CardItem]`: a modifier's inputs are
+    /// compared on every update of the screen, and an array of the whole
+    /// collection was compared card by card per keystroke, hydration
+    /// merge, sort and toggle (CLAUDE.md, "Big card lists").
+    func cardSelectionBar(_ selection: CardSelection, items: CardItemList, actions: [SelectionAction] = [],
                           managesBack: Bool = true) -> some View {
-        modifier(CardSelectionBar(selection: selection, items: items, actions: actions, managesBack: managesBack))
+        modifier(CardSelectionBar(selection: selection, cards: .list(items), actions: actions, managesBack: managesBack))
+    }
+
+    /// The same over a short list the screen keeps in another shape (a
+    /// deck's rows): the ids in order, and the cards gathered only when an
+    /// action runs or selecting starts.
+    func cardSelectionBar(_ selection: CardSelection, ids: [String], items: @escaping () -> [CardItem],
+                          actions: [SelectionAction] = [], managesBack: Bool = true) -> some View {
+        modifier(CardSelectionBar(selection: selection, cards: .gathered(ids: ids, items: items), actions: actions,
+                                  managesBack: managesBack))
+    }
+}
+
+/// What the selection chooses from. Ids are cheap to hold and count; the
+/// cards themselves are read only when an action needs them.
+private enum SelectableCards {
+    case list(CardItemList)
+    case gathered(ids: [String], items: () -> [CardItem])
+
+    var ids: [String] {
+        switch self {
+        case .list(let list): list.ids
+        case .gathered(let ids, _): ids
+        }
+    }
+
+    var count: Int {
+        switch self {
+        case .list(let list): list.count
+        case .gathered(let ids, _): ids.count
+        }
+    }
+
+    func items() -> [CardItem] {
+        switch self {
+        case .list(let list): list.items
+        case .gathered(_, let items): items()
+        }
     }
 }
 
 private struct CardSelectionBar: ViewModifier {
     let selection: CardSelection
-    let items: [CardItem]
+    let cards: SelectableCards
     let actions: [SelectionAction]
     let managesBack: Bool
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
-    @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
-    @Query(sort: \Deck.name) private var decks: [Deck]
     @State private var error: String?
     /// Copies per card id, built when selecting starts, so the count in the
     /// bar is dictionary lookups rather than copying every chosen card on
@@ -120,7 +160,8 @@ private struct CardSelectionBar: ViewModifier {
     /// A bulk add is running on the writer.
     @State private var working = false
 
-    private var chosen: [CardItem] { items.filter { selection.contains($0.id) } }
+    /// Gathered when an action runs, never in a body.
+    private var chosen: [CardItem] { cards.items().filter { selection.contains($0.id) } }
 
     func body(content: Content) -> some View {
         content
@@ -145,9 +186,14 @@ private struct CardSelectionBar: ViewModifier {
                     .glassEffect(.regular, in: Capsule())
                     .padding(.top, 8)
                     .transition(.move(edge: .top).combined(with: .opacity))
-                    .task {
-                        try? await Task.sleep(for: .seconds(2))
-                        selection.toast = nil
+                    // Keyed on the message: a second toast inside the two
+                    // seconds restarts the clock rather than being cleared by
+                    // the first one's timer. A cancelled sleep clears nothing.
+                    .task(id: toast) {
+                        do {
+                            try await Task.sleep(for: .seconds(2))
+                            selection.toast = nil
+                        } catch {}
                     }
                     .accessibilityIdentifier("selection-toast")
                 }
@@ -163,7 +209,7 @@ private struct CardSelectionBar: ViewModifier {
             }
             .task(id: selection.isActive) {
                 guard selection.isActive else { copiesByID = [:]; return }
-                let items = self.items
+                let items = cards.items()
                 copiesByID = await Task.detached(priority: .userInitiated) {
                     Dictionary(items.map { ($0.id, max($0.quantity, 1)) }, uniquingKeysWith: { a, _ in a })
                 }.value
@@ -184,9 +230,10 @@ private struct CardSelectionBar: ViewModifier {
 
     @ToolbarContentBuilder private var bars: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            let all = !items.isEmpty && selection.count == items.count
+            let total = cards.count
+            let all = total > 0 && selection.count == total
             Button(all ? "Deselect All" : "Select All") {
-                if all { selection.deselectAll() } else { selection.selectAll(items.map(\.id)) }
+                if all { selection.deselectAll() } else { selection.selectAll(cards.ids) }
             }
             .accessibilityIdentifier("selection-all")
         }
@@ -260,43 +307,14 @@ private struct CardSelectionBar: ViewModifier {
         }
     }
 
-    /// Add copies of the chosen cards to any collection, list or deck.
+    /// Add copies of the chosen cards to any collection, list or deck. Its
+    /// own view: the queries over collections and decks live only while
+    /// the bar is up, not in the modifier every grid screen wears.
     private var addMenu: some View {
-        Menu {
-            let owned = collections.filter { $0.kind == .collection }
-            let lists = collections.filter { $0.kind == .list }
-            if !owned.isEmpty {
-                Section("Collections") {
-                    ForEach(owned) { c in
-                        Button(c.name, systemImage: CollectionKind.collection.systemImage) { add(to: c.name) }
-                    }
-                }
-            }
-            if !lists.isEmpty {
-                Section("Lists") {
-                    ForEach(lists) { c in
-                        Button(c.name, systemImage: CollectionKind.list.systemImage) { add(to: c.name) }
-                    }
-                }
-            }
-            if !decks.isEmpty {
-                Section("Decks") {
-                    ForEach(decks.filter { !$0.isLocked }) { deck in
-                        Menu(deck.name, systemImage: "rectangle.stack") {
-                            ForEach(DeckBoard.addable, id: \.rawValue) { board in
-                                Button(board.label) { add(to: deck.id, name: deck.name, board: board) }
-                            }
-                        }
-                    }
-                }
-            }
-        } label: {
-            Label("Add", systemImage: "plus")
-        }
-        .menuOrder(.fixed)
-        .disabled(selection.count == 0)
-        .accessibilityIdentifier("selection-add")
+        SelectionAddMenu(isEnabled: selection.count > 0, onCollection: { add(to: $0) },
+                         onDeck: { add(to: $0, name: $1, board: $2) })
     }
+
 
     /// A row brings its count (an owned row's copies, a deck row's); a
     /// search hit or printing is one copy.
@@ -374,5 +392,52 @@ struct SelectionMark: View {
         .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+/// The selection bar's Add menu: collections, lists, then decks by board.
+private struct SelectionAddMenu: View {
+    let isEnabled: Bool
+    let onCollection: (String) -> Void
+    let onDeck: (UUID, String, DeckBoard) -> Void
+
+    @Query(sort: \MTGCollection.name) private var collections: [MTGCollection]
+    @Query(sort: \Deck.name) private var decks: [Deck]
+
+    var body: some View {
+        Menu {
+            let owned = collections.filter { $0.kind == .collection }
+            let lists = collections.filter { $0.kind == .list }
+            if !owned.isEmpty {
+                Section("Collections") {
+                    ForEach(owned) { c in
+                        Button(c.name, systemImage: CollectionKind.collection.systemImage) { onCollection(c.name) }
+                    }
+                }
+            }
+            if !lists.isEmpty {
+                Section("Lists") {
+                    ForEach(lists) { c in
+                        Button(c.name, systemImage: CollectionKind.list.systemImage) { onCollection(c.name) }
+                    }
+                }
+            }
+            if !decks.isEmpty {
+                Section("Decks") {
+                    ForEach(decks.filter { !$0.isLocked }) { deck in
+                        Menu(deck.name, systemImage: "rectangle.stack") {
+                            ForEach(DeckBoard.addable, id: \.rawValue) { board in
+                                Button(board.label) { onDeck(deck.id, deck.name, board) }
+                            }
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label("Add", systemImage: "plus")
+        }
+        .menuOrder(.fixed)
+        .disabled(!isEnabled)
+        .accessibilityIdentifier("selection-add")
     }
 }

@@ -182,7 +182,7 @@ final class CommanderFinder {
     private nonisolated static func commanders(period: EDHRECPeriod, force: Bool) async throws -> [EDHRECCardView] {
         let key = "top:\(period.rawValue)"
         if !force, let cached = await cache.value([EDHRECCardView].self, key: key, ttl: ttl) { return cached }
-        let page = try await EDHRECClient.shared.topCommanders(period: period)
+        let page = try await patiently { try await EDHRECClient.shared.topCommanders(period: period) }
         let views = page.cardlists.first?.cardviews ?? []
         await cache.store(views, key: key)
         return views
@@ -194,12 +194,30 @@ final class CommanderFinder {
         if !force, let cached = await cache.value([EDHRECAverageDeck.Entry].self, key: key, ttl: ttl) { return cached }
         let entries: [EDHRECAverageDeck.Entry]
         do {
-            entries = try await EDHRECClient.shared.averageDeck(slug: slug).entries
+            entries = try await patiently { try await EDHRECClient.shared.averageDeck(slug: slug) }.entries
         } catch let error as HTTPError {
             // An unknown page is "no average deck", not a failed scan.
             if case .badStatus(let code, _) = error, code == 403 || code == 404 { entries = [] } else { throw error }
         }
         await cache.store(entries, key: key)
         return entries
+    }
+
+    /// EDHREC's 429 is waited out: the scan sleeps the Retry-After it was
+    /// given (a minute without one, two at most) and carries on, up to three
+    /// times, before the screen says to slow down. A hundred requests at
+    /// 2/sec can trip it, and the error used to end the scan — HTTPClient
+    /// reported another host's 429 as a plain bad status, so the "slow
+    /// down" message was never reached either.
+    private nonisolated static func patiently<T: Sendable>(_ request: () async throws -> T) async throws -> T {
+        var waits = 0
+        while true {
+            do {
+                return try await request()
+            } catch HTTPError.rateLimited(let seconds) where waits < 3 {
+                waits += 1
+                try await Task.sleep(for: .seconds(min(120, max(1, seconds))))
+            }
+        }
     }
 }

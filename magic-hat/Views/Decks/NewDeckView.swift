@@ -114,11 +114,16 @@ struct CommanderPickerView: View {
             case .results:
                 // The row's own button is the pick: a Button wrapped around
                 // the row would sit *behind* it and never get the tap.
-                List(controller.results) { item in
-                    DeckSearchRow(item: item, ownedCopies: nil, inDeck: 0, showsAdd: false, onOpen: {
-                        onPick(PrintingSelection(item: item))
-                        dismiss()
-                    })
+                // Over the ids, each card fetched by id: a List over the
+                // `[CardItem]` compared every card on every update.
+                let list = controller.resultList
+                List(list.ids, id: \.self) { id in
+                    if let item = list.item(for: id) {
+                        DeckSearchRow(item: item, ownedCopies: nil, inDeck: 0, showsAdd: false, onOpen: {
+                            onPick(PrintingSelection(item: item))
+                            dismiss()
+                        })
+                    }
                 }
                 .listStyle(.plain)
             }

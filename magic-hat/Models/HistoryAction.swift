@@ -79,6 +79,7 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
         case .deckBuild: return "Built \(deckName ?? "Deck")"
         case .deckDisassemble: return "Disassembled \(deckName ?? "Deck")"
         case .deckDelete: return "Deleted \(deckName ?? "Deck")"
+        case .deckCreate: return "Created \(deckName ?? "Deck")"
         case .move:
             return cardCount == 1 && cardNames.count == 1 ? "Moved \(cardNames[0])" : "Moved \(cards)"
         case .undo: return "Undo"
@@ -112,6 +113,7 @@ nonisolated struct HistoryAction: Identifiable, Hashable, Sendable {
     /// collections otherwise.
     private var placeLine: String {
         if action == .deckDelete { return "Deck · its list and versions come back with Undo" }
+        if action == .deckCreate { return "New deck · Undo removes it, Redo brings back its list" }
         let deckLabel = deckName.map { "Deck: \($0)" }
         let others = scopes.filter { $0 != deckLabel && $0 != "Deleted deck" }
         switch action {
@@ -316,5 +318,126 @@ nonisolated extension HistoryLog {
             branches.append(section)
         }
         return HistoryWindow(current: current, branches: branches, hiddenBranches: hiddenBranches)
+    }
+}
+
+// MARK: - The feed: the window by day
+
+/// The History list as it scrolls: the current line's drawn rows by day,
+/// newest first, each day its own card under a "Today" / "Yesterday" /
+/// "Monday" / "September 28" header — Mail's and Photos' landmarks in a
+/// long chronological list — and each branch drawn right after the row it
+/// splits from, the day's card carrying on below it. Last, and only when
+/// there is more, the row that loads earlier history: nothing sits below
+/// it, since anything under an endlessly loading list can never be
+/// scrolled to (every branch card used to).
+nonisolated struct HistoryFeed: Hashable, Sendable {
+    /// A run of one day's rows: the whole day, or the part of it between
+    /// branches.
+    struct Day: Hashable, Sendable {
+        /// The start of the day.
+        let start: Date
+        /// Newest first.
+        let rows: [UUID]
+        /// The newest run drawn: it carries the line's own header.
+        let isNewest: Bool
+        /// The day's first run carries the day's header; a run carrying on
+        /// after a branch card doesn't repeat it.
+        let showsHeader: Bool
+    }
+
+    nonisolated enum Block: Hashable, Sendable, Identifiable {
+        case day(Day)
+        case branch(HistoryWindow.Section)
+        /// The row that loads earlier history.
+        case more
+
+        var id: String {
+            switch self {
+            case .day(let day): return "day-\(day.rows.first?.uuidString ?? "")"
+            case .branch(let section): return "branch-\(section.line.id.uuidString)"
+            case .more: return "more"
+            }
+        }
+    }
+
+    let line: HistoryLine?
+    let blocks: [Block]
+    /// Every drawn row of the current line, newest first: where a row sits
+    /// on the rail, across the day cards.
+    let currentRows: [UUID]
+    /// Where each of `currentRows` sits: every drawn row asks for its
+    /// place on the rail, and `firstIndex(of:)` per row made a page of
+    /// rows quadratic.
+    let rowIndex: [UUID: Int]
+    /// Older actions of the current line not drawn yet.
+    let hidden: Int
+    /// Branches left out because where they split from isn't drawn yet.
+    let hiddenBranches: Int
+    let shownLines: Set<UUID>
+}
+
+nonisolated extension HistoryLog {
+    /// The window (`window(limit:expanded:)`) laid out by day.
+    func feed(limit: Int = HistoryLog.pageSize, expanded: Set<UUID> = [], calendar: Calendar = .current) -> HistoryFeed {
+        let window = window(limit: limit, expanded: expanded)
+        let rows = window.current?.rows ?? []
+        let rowIndex = Dictionary(rows.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        var byFork: [UUID: [HistoryWindow.Section]] = [:]
+        var fromStart: [HistoryWindow.Section] = []
+        for section in window.branches {
+            if let fork = section.line.forkFrom, rowIndex[fork] != nil {
+                byFork[fork, default: []].append(section)
+            } else {
+                fromStart.append(section)
+            }
+        }
+        var blocks: [HistoryFeed.Block] = []
+        var run: [UUID] = []
+        var runDay: Date?
+        var dayHasHeader = false
+        func close() {
+            guard let day = runDay, !run.isEmpty else { return }
+            blocks.append(.day(HistoryFeed.Day(start: day, rows: run, isNewest: !blocks.contains { if case .day = $0 { true } else { false } },
+                                               showsHeader: !dayHasHeader)))
+            dayHasHeader = true
+            run = []
+        }
+        for id in rows {
+            let day = calendar.startOfDay(for: action(id)?.timestamp ?? .distantPast)
+            if day != runDay {
+                close()
+                runDay = day
+                dayHasHeader = false
+            }
+            run.append(id)
+            if let branches = byFork[id] {
+                close()
+                blocks += branches.map(HistoryFeed.Block.branch)
+            }
+        }
+        close()
+        blocks += fromStart.map(HistoryFeed.Block.branch)
+        if window.current?.hidden ?? 0 > 0 { blocks.append(.more) }
+        return HistoryFeed(line: window.current?.line, blocks: blocks, currentRows: rows, rowIndex: rowIndex, hidden: window.current?.hidden ?? 0,
+                           hiddenBranches: window.hiddenBranches, shownLines: window.shownLines)
+    }
+}
+
+/// A day's header: "Today", "Yesterday", the weekday within the week,
+/// then "September 28", and "September 28, 2025" from another year.
+nonisolated enum HistoryDayTitle {
+    static func title(for start: Date, now: Date = .now, calendar: Calendar = .current) -> String {
+        if calendar.isDate(start, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(start, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
+        let today = calendar.startOfDay(for: now)
+        let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: start), to: today).day ?? 0
+        var style = Date.FormatStyle(calendar: calendar, timeZone: calendar.timeZone).locale(calendar.locale ?? .current)
+        if days >= 0, days < 7 { return start.formatted(style.weekday(.wide)) }
+        style = style.month(.wide).day()
+        if calendar.component(.year, from: start) != calendar.component(.year, from: now) { style = style.year() }
+        return start.formatted(style)
     }
 }

@@ -21,19 +21,34 @@ import Foundation
 import SwiftData
 
 nonisolated enum BackupController {
-    /// UserDefaults keys that travel with a backup.
+    /// UserDefaults keys that travel with a backup: the app's settings,
+    /// every sort with its direction, the scanner's preferences and the
+    /// backup schedule. Not the backup folder (a bookmark into this
+    /// phone's files) nor the scanner's camera (a lens on this phone).
     static let settingsKeys = [
         AppSettings.currencyKey, AppSettings.cardLanguageKey, AppSettings.gridColumnsKey,
         AppSettings.defaultConditionKey, AppSettings.defaultFinishKey, AppSettings.showPricesKey,
         AppSettings.priceRefreshKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
         AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey,
-        "collection.sort", "deck.sort", "decks.layout", "decks.sort", AddTarget.lastKey,
-    ]
+        "collection.sort", "collection.sort.direction", "deck.sort", "deck.sort.direction",
+        "deck.add.sort.all", "deck.add.sort.all.direction",
+        "deck.add.sort.recommended", "deck.add.sort.recommended.direction",
+        "decks.layout", "decks.sort", AddTarget.lastKey,
+        BackupScheduler.frequencyKey,
+    ] + ScanSettings.backedUpKeys
+
+    /// Keys stored as a string array, written into a backup joined by
+    /// commas (set codes and ids have none).
+    private static let arrayKeys = [ScanSettings.lockedSetsKey]
 
     static func currentSettings() -> [String: String] {
         var out: [String: String] = [:]
         for key in settingsKeys {
-            if let value = UserDefaults.standard.object(forKey: key) { out[key] = "\(value)" }
+            if arrayKeys.contains(key) {
+                if let list = UserDefaults.standard.stringArray(forKey: key) { out[key] = list.joined(separator: ",") }
+            } else if let value = UserDefaults.standard.object(forKey: key) {
+                out[key] = "\(value)"
+            }
         }
         // The flipped faces: a set of ids, joined.
         if let flipped = UserDefaults.standard.stringArray(forKey: FlippedFaces.key), !flipped.isEmpty {
@@ -45,13 +60,15 @@ nonisolated enum BackupController {
     static func apply(settings: [String: String]) {
         let ints = [AppSettings.gridColumnsKey, AppSettings.priceRefreshKey]
         let bools = [AppSettings.showPricesKey, AppSettings.pricesOnCellularKey, AppSettings.imagesOnCellularKey,
-                     AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey]
+                     AppSettings.autoCatalogRefreshKey, AppSettings.onlineAnalysisKey] + ScanSettings.boolKeys
         if let flipped = settings[FlippedFaces.key] {
             UserDefaults.standard.set(flipped.split(separator: ",").map(String.init), forKey: FlippedFaces.key)
             FlippedFaces.reload()
         }
         for (key, value) in settings where settingsKeys.contains(key) {
-            if ints.contains(key), let n = Int(value) {
+            if arrayKeys.contains(key) {
+                UserDefaults.standard.set(value.split(separator: ",").map(String.init), forKey: key)
+            } else if ints.contains(key), let n = Int(value) {
                 UserDefaults.standard.set(n, forKey: key)
             } else if bools.contains(key) {
                 UserDefaults.standard.set(value == "1" || value == "true", forKey: key)
@@ -236,6 +253,9 @@ extension BackupController {
         let safety = try await makeBackup(container: container, prefix: "Magic Hat Before Restore")
         try await CardMetaWriter.shared(for: container).runRestore(backup)
         apply(settings: backup.settings)
+        // The scanner and the schedule hold their values in memory.
+        ScanSettings.shared.reload()
+        BackupScheduler.shared.reload()
         CollectionChangeTracker.shared.bump()
         DeckChangeTracker.shared.bump()
         return safety

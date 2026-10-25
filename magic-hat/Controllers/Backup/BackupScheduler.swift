@@ -53,9 +53,11 @@ final class BackupScheduler {
     nonisolated static let keep = 10
 
     private let defaults = UserDefaults.standard
-    private static let frequencyKey = "backup.frequency"
-    private static let bookmarkKey = "backup.folderBookmark"
-    private static let lastKey = "backup.last"
+    nonisolated static let frequencyKey = "backup.frequency"
+    private nonisolated static let bookmarkKey = "backup.folderBookmark"
+    private nonisolated static let lastKey = "backup.last"
+    /// Every key, for the seed to clear.
+    nonisolated static let allKeys = [frequencyKey, bookmarkKey, lastKey]
 
     var frequency: BackupFrequency {
         didSet { defaults.set(frequency.rawValue, forKey: Self.frequencyKey) }
@@ -68,6 +70,13 @@ final class BackupScheduler {
     private(set) var folderName: String?
 
     private init() {
+        frequency = .off
+        reload()
+    }
+
+    /// Reads the schedule again from UserDefaults — after a restore or the
+    /// seed changed it under the shared instance.
+    func reload() {
         frequency = BackupFrequency(rawValue: UserDefaults.standard.string(forKey: Self.frequencyKey) ?? "") ?? .off
         lastBackup = UserDefaults.standard.object(forKey: Self.lastKey) as? Date
         folderName = resolveFolder()?.lastPathComponent

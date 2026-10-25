@@ -106,8 +106,11 @@ struct DeckBrowser: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \DeckFolder.name) private var folders: [DeckFolder]
 
-    @State private var decks: [DeckSummary] = []
-    @State private var hasLoaded = false
+    /// Starts from the last overview (`LastDeckOverview`) and is replaced
+    /// by the fresh one: a bare spinner showed every launch until the
+    /// store had counted ownership.
+    @State private var decks: [DeckSummary] = LastDeckOverview.latest ?? []
+    @State private var hasLoaded = LastDeckOverview.latest != nil
     @State private var showNewDeck = false
     @State private var showFileImporter = false
     @State private var importSource: DeckImportSource?
@@ -116,6 +119,8 @@ struct DeckBrowser: View {
     /// The root's My Decks | Precons picker (a subfolder shows decks only).
     @State private var mode: DecksMode = .decks
     @State private var moving: MoveRequest?
+    /// The move sheet carried a move out (rather than being cancelled).
+    @State private var didMove = false
     @State private var renaming: RenameRequest?
     @State private var renameText = ""
     @State private var newFolderName = ""
@@ -213,12 +218,15 @@ struct DeckBrowser: View {
             .toolbar(selecting ? .hidden : .automatic, for: .tabBar)
             .navigationBarBackButtonHidden(selecting)
             .sheet(isPresented: $showGuide) { DecksGuideView() }
-            .confirmationDialog(chosen.count == 1 ? "Delete 1 Deck?" : "Delete \(chosen.count) Decks?",
-                                isPresented: $confirmDeleteChosen, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) { deleteChosen() }
+            .alert(chosen.count == 1 ? "Delete 1 Deck?" : "Delete \(chosen.count) Decks?",
+                   isPresented: $confirmDeleteChosen) {
+                Button("Delete", role: .destructive) { deleteChosen(.sources) }
+                if decks.contains(where: { chosen.contains($0.id) && $0.builtCopies > 0 }) {
+                    Button("Delete and Remove Their Cards", role: .destructive) { deleteChosen(.discard) }
+                }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Built decks go back to their collections first. No cards are lost.")
+                Text("Built decks go back to their collections first, unless you choose to remove their cards. Recorded in History.")
             }
             .sheet(isPresented: $showNewDeck) {
                 NewDeckView { id in file(id) }
@@ -226,10 +234,13 @@ struct DeckBrowser: View {
             .sheet(item: $importSource) { source in
                 DeckImportView(source: source) { id in file(id) }
             }
+            // Selection ends with a move, not with Cancel: backing out of
+            // the sheet used to drop every deck chosen.
             .sheet(item: $moving, onDismiss: {
-                if selecting { selecting = false; chosen = [] }
+                if selecting, didMove { selecting = false; chosen = [] }
+                didMove = false
             }) { request in
-                DeckMoveSheet(request: request, tree: tree)
+                DeckMoveSheet(request: request, tree: tree) { didMove = true }
             }
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.plainText, .text, .utf8PlainText]) { result in
                 importFile(result)
@@ -250,13 +261,18 @@ struct DeckBrowser: View {
             // reads as a tooltip. A destructive confirmation is modal.
             .alert(deleteTitle, isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                    presenting: pendingDelete) { request in
-                Button(request.folder != nil ? "Delete Folder" : "Delete Deck", role: .destructive) { delete(request) }
+                if let deck = request.deck, deck.builtCopies > 0 {
+                    Button("Delete and Move Cards Back", role: .destructive) { delete(request, .sources) }
+                    Button("Delete and Remove Cards", role: .destructive) { delete(request, .discard) }
+                } else {
+                    Button(request.folder != nil ? "Delete Folder" : "Delete Deck", role: .destructive) { delete(request, .sources) }
+                }
                 Button("Cancel", role: .cancel) {}
             } message: { request in
                 if request.folder != nil {
                     Text("Its decks and folders move up a level. No deck is deleted.")
                 } else if let deck = request.deck, deck.builtCopies > 0 {
-                    Text("Its cards go back to their collections first, then the list is deleted.")
+                    Text("Its \(deck.builtCopies) cards go back to their collections, or are removed; then the list is deleted. Recorded in History.")
                 } else {
                     Text("The list is deleted. No cards are affected.")
                 }
@@ -586,17 +602,18 @@ struct DeckBrowser: View {
         }
     }
 
-    private func deleteChosen() {
+    private func deleteChosen(_ destination: DisassembleDestination) {
         let chosenDecks = decks.filter { chosen.contains($0.id) }
         let container = modelContext.container
         let context = modelContext
         Task {
             do {
                 for deck in chosenDecks {
-                    if deck.builtCopies > 0 {
-                        _ = try await DeckBuilder.shared(for: container).disassemble(deckID: deck.id)
-                        CollectionChangeTracker.shared.bump()
-                    }
+                    // Always through the builder: the overview's built count
+                    // can be stale (the first frame draws the last one), and
+                    // deleting on it left rows under a deck that was gone.
+                    let apart = try await DeckBuilder.shared(for: container).disassemble(deckID: deck.id, destination: destination)
+                    if apart.returnedCopies + apart.removedCopies > 0 { CollectionChangeTracker.shared.bump() }
                     try DeckEditController.delete(deckID: deck.id, context: context)
                 }
                 selecting = false
@@ -638,7 +655,8 @@ struct DeckBrowser: View {
     private func load() async {
         let store = DeckStore.shared(for: modelContext.container)
         if let fetched = try? await store.overview(), !Task.isCancelled {
-            decks = fetched
+            if fetched != decks { decks = fetched }
+            LastDeckOverview.save(fetched)
         }
         hasLoaded = true
     }
@@ -668,7 +686,7 @@ struct DeckBrowser: View {
         }
     }
 
-    private func delete(_ request: DeleteRequest) {
+    private func delete(_ request: DeleteRequest, _ destination: DisassembleDestination) {
         if let node = request.folder {
             attempt { try DeckEditController.deleteFolder(node.id, context: modelContext) }
         } else if let deck = request.deck {
@@ -676,10 +694,8 @@ struct DeckBrowser: View {
             let context = modelContext
             Task {
                 do {
-                    if deck.builtCopies > 0 {
-                        _ = try await DeckBuilder.shared(for: container).disassemble(deckID: deck.id)
-                        CollectionChangeTracker.shared.bump()
-                    }
+                    let apart = try await DeckBuilder.shared(for: container).disassemble(deckID: deck.id, destination: destination)
+                    if apart.returnedCopies + apart.removedCopies > 0 { CollectionChangeTracker.shared.bump() }
                     try DeckEditController.delete(deckID: deck.id, context: context)
                 } catch {
                     self.error = error.localizedDescription
@@ -759,13 +775,10 @@ nonisolated enum DeckDragItem: Hashable {
 private struct DeckMoveSheet: View {
     let request: DeckBrowser.MoveRequest
     let tree: DeckFolderTree
+    var onMoved: () -> Void = {}
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Deck.name) private var allDecks: [Deck]
-    @State private var error: String?
-    @State private var showNewFolder = false
-    @State private var newFolderName = ""
 
     /// Where the thing being moved is now.
     private var current: UUID? {
@@ -775,75 +788,15 @@ private struct DeckMoveSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                destination(nil, name: "Decks", depth: 0)
-                ForEach(tree.flattened(), id: \.node.id) { entry in
-                    destination(entry.node.id, name: entry.node.name, depth: entry.depth + 1)
-                }
-            }
-            .navigationTitle("Move “\(request.name)”")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("New Folder", systemImage: "folder.badge.plus") {
-                        newFolderName = ""
-                        showNewFolder = true
-                    }
-                }
-            }
-            .alert("New Folder", isPresented: $showNewFolder) {
-                TextField("Name", text: $newFolderName)
-                Button("Create and Move") { createAndMove() }
-                Button("Cancel", role: .cancel) {}
-            }
-            .alert("Couldn't Move", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: { Text(error ?? "") }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func destination(_ id: UUID?, name: String, depth: Int) -> some View {
-        let blocked = request.folderID.map { tree.isInside(id, $0) } ?? false
-        return Button {
-            move(to: id)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: id == nil ? "rectangle.stack.fill" : "folder.fill")
-                    .foregroundStyle(blocked ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.tint))
-                Text(name).foregroundStyle(blocked ? .secondary : .primary)
-                Spacer()
-                if id == current { Image(systemName: "checkmark").foregroundStyle(.tint) }
-            }
-            .padding(.leading, CGFloat(depth) * 18)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(blocked)
-        .accessibilityIdentifier("move-to-\(name)")
-    }
-
-    private func move(to id: UUID?) {
-        do {
+        DeckFolderPicker(title: "Move “\(request.name)”", current: .some(current),
+                         isBlocked: { id in request.folderID.map { tree.isInside(id, $0) } ?? false },
+                         createLabel: "Create and Move") { id in
             if let folder = request.folderID {
                 try DeckEditController.moveFolder(folder, to: id, context: modelContext)
             } else {
                 try DeckEditController.moveDecks(request.deckIDs, to: id, context: modelContext)
             }
-            dismiss()
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    private func createAndMove() {
-        do {
-            let folder = try DeckEditController.createFolder(named: newFolderName, in: nil, context: modelContext)
-            move(to: folder.id)
-        } catch {
-            self.error = error.localizedDescription
+            onMoved()
         }
     }
 }
@@ -857,6 +810,8 @@ struct FolderTile: View {
     let covers: [String]
     let count: (decks: Int, folders: Int)
     var isDropTarget = false
+    /// Grows with Dynamic Type, with the deck tiles beside it.
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = 160
 
     static func countLine(_ count: (decks: Int, folders: Int)) -> String {
         var parts: [String] = []
@@ -893,7 +848,7 @@ struct FolderTile: View {
                 .foregroundStyle(.secondary)
         }
         .padding(12)
-        .frame(height: 160)
+        .frame(height: height)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassEffect(isDropTarget ? .regular.tint(.accentColor.opacity(0.3)) : .regular,
                      in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -909,6 +864,9 @@ struct DeckTile: View {
     let deck: DeckSummary
     /// The folder path, shown on search results that span folders.
     var location: String? = nil
+    /// Grows with Dynamic Type: at the larger sizes a fixed 160 clipped
+    /// the name and the format line.
+    @ScaledMetric(relativeTo: .headline) private var height: CGFloat = 160
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -949,7 +907,7 @@ struct DeckTile: View {
             .foregroundStyle(.white)
             .padding(12)
         }
-        .frame(height: 160)
+        .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityElement(children: .combine)

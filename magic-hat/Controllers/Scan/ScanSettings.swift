@@ -18,7 +18,7 @@ final class ScanSettings {
     static let shared = ScanSettings()
 
     private let defaults = UserDefaults.standard
-    private enum Key {
+    private nonisolated enum Key {
         static let camera = "scan.camera"
         static let quickMode = "scan.quickMode"
         static let lockedSets = "scan.lockedSets"
@@ -29,6 +29,18 @@ final class ScanSettings {
         static let ignoreLowValues = "scan.ignoreLowValues"
         static let showFrame = "scan.showFrame"
     }
+
+    /// Every key, for the seed to clear (preferences outlive a simulator
+    /// run).
+    nonisolated static let allKeys = [Key.camera, Key.quickMode, Key.lockedSets, Key.ignorePromos, Key.preferFoil,
+                                      Key.playSounds, Key.showTotal, Key.ignoreLowValues, Key.showFrame]
+    /// The ones a backup carries: not the camera, whose id names a lens on
+    /// this phone only.
+    nonisolated static let backedUpKeys = allKeys.filter { $0 != Key.camera }
+    /// Of those, the ones stored as Bool, and the set list (a string array).
+    nonisolated static let boolKeys = [Key.quickMode, Key.ignorePromos, Key.preferFoil, Key.playSounds,
+                                       Key.showTotal, Key.ignoreLowValues, Key.showFrame]
+    nonisolated static let lockedSetsKey = Key.lockedSets
 
     /// The camera's unique id; nil is the default (see CardCamera).
     var cameraID: String? { didSet { defaults.set(cameraID, forKey: Key.camera) } }
@@ -53,6 +65,14 @@ final class ScanSettings {
     var showFrame: Bool { didSet { defaults.set(showFrame, forKey: Key.showFrame) } }
 
     private init() {
+        cameraID = nil; quickMode = true; lockedSets = []; ignorePromos = false; preferFoil = false
+        playSounds = true; showTotal = true; ignoreLowValues = false; showFrame = false
+        reload()
+    }
+
+    /// Reads every value again from UserDefaults — after a restore or the
+    /// seed changed them under the shared instance.
+    func reload() {
         let d = UserDefaults.standard
         cameraID = d.string(forKey: Key.camera)
         quickMode = d.object(forKey: Key.quickMode) as? Bool ?? true

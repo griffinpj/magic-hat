@@ -26,6 +26,9 @@ final class UndoController {
     private(set) var isBusy = false
     /// Counts completed replays; views key a haptic on it.
     private(set) var completed = 0
+    /// Counts reads of the ledger: what History keys its animation and its
+    /// search on, rather than comparing the whole log on every render.
+    private(set) var revision = 0
     var error: String?
 
     private let container: ModelContainer
@@ -64,8 +67,18 @@ final class UndoController {
     /// Reads the ledger again. Views call it when a tracker moves.
     func refresh() async {
         let store = CollectionStore.shared(for: container)
-        if let fresh = try? await store.history() { log = fresh }
+        if let fresh = try? await store.history() {
+            log = fresh
+            revision += 1
+        }
         isLoaded = true
+    }
+
+    /// The actions whose records name `text` (see `CollectionStore
+    /// .historyMatches`), for History's search.
+    func matches(_ text: String) async -> Set<UUID> {
+        let store = CollectionStore.shared(for: container)
+        return (try? await store.historyMatches(text)) ?? []
     }
 
     /// Reverses the head.
@@ -135,19 +148,10 @@ final class UndoController {
         isBusy = true
         defer { isBusy = false }
         let writer = CardMetaWriter.shared(for: container)
-        var done = 0
-        do {
-            for id in undos {
-                try await writer.runReplay(actionID: id, direction: .undo)
-                done += 1
-            }
-            for id in redos {
-                try await writer.runReplay(actionID: id, direction: .redo)
-                done += 1
-            }
-        } catch {
-            self.error = error.localizedDescription
-        }
+        let steps = undos.map { (actionID: $0, direction: LedgerReplay.Direction.undo) }
+            + redos.map { (actionID: $0, direction: LedgerReplay.Direction.redo) }
+        let (done, failure) = await writer.runReplays(steps)
+        if let failure { self.error = failure.localizedDescription }
         if done > 0 {
             completed += done
             CollectionChangeTracker.shared.bump()

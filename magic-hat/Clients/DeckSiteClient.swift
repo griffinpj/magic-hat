@@ -98,15 +98,18 @@ nonisolated struct DeckSiteClient {
                 let data = try await http.requestData(url: URL(string: "https://api2.moxfield.com/v3/decks/all/\(id)")!, rateLimit: .deckSite)
                 return try Self.moxfield(data)
             case .mtggoldfish(let id):
-                let data = try await http.requestData(url: URL(string: "https://www.mtggoldfish.com/deck/download/\(id)")!, rateLimit: .deckSite)
-                return try Self.plainText(data, splitSideboardAtBlankLine: true)
+                let (data, response) = try await http.requestWithResponse(url: URL(string: "https://www.mtggoldfish.com/deck/download/\(id)")!, rateLimit: .deckSite)
+                return try Self.plainText(data, splitSideboardAtBlankLine: true, contentType: response?.value(forHTTPHeaderField: "Content-Type"))
             case .plain(let url):
-                let data = try await http.requestData(url: url, rateLimit: .deckSite)
-                return try Self.plainText(data, splitSideboardAtBlankLine: false)
+                let (data, response) = try await http.requestWithResponse(url: url, rateLimit: .deckSite)
+                return try Self.plainText(data, splitSideboardAtBlankLine: false, contentType: response?.value(forHTTPHeaderField: "Content-Type"))
             }
         } catch HTTPError.badStatus(let code, _) where code == 404 {
             throw DeckSiteError.notFound
-        } catch HTTPError.badStatus(let code, _) where code == 401 || code == 403 || code == 429 {
+        } catch HTTPError.badStatus(let code, _) where code == 401 || code == 403 {
+            throw DeckSiteError.refused(site: site.label)
+        } catch HTTPError.rateLimited {
+            // HTTPClient reports any host's 429 as `.rateLimited` now.
             throw DeckSiteError.refused(site: site.label)
         } catch HTTPError.decoding {
             throw DeckSiteError.notAList
@@ -220,11 +223,14 @@ nonisolated struct DeckSiteClient {
     }
 
     /// A text list as served. MTGGoldfish's has no headers: the sideboard
-    /// follows the first blank line.
-    static func plainText(_ data: Data, splitSideboardAtBlankLine: Bool) throws -> DeckSiteList {
-        guard let raw = String(data: data, encoding: .utf8), !raw.contains("<html"), !raw.contains("<!DOCTYPE") else {
-            throw DeckSiteError.notAList
-        }
+    /// follows the first blank line. A web page is never a list: one served
+    /// as `text/html`, or whose opening says HTML in any case (`<HTML>`,
+    /// `<!doctype html>` — the check used to match only two spellings).
+    static func plainText(_ data: Data, splitSideboardAtBlankLine: Bool, contentType: String? = nil) throws -> DeckSiteList {
+        if let contentType, contentType.lowercased().contains("text/html") { throw DeckSiteError.notAList }
+        guard let raw = String(data: data, encoding: .utf8) else { throw DeckSiteError.notAList }
+        let folded = raw.lowercased()
+        guard !folded.contains("<html"), !folded.contains("<!doctype") else { throw DeckSiteError.notAList }
         var text = raw.replacingOccurrences(of: "\r\n", with: "\n")
         if splitSideboardAtBlankLine, let range = text.range(of: "\n\n") {
             let rest = text[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)

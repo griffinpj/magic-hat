@@ -41,9 +41,11 @@ struct CollectionsView: View {
     @State private var showingCreate = false
     @State private var newName = ""
     @State private var createError: String?
-    @State private var parsedRows: [ManaBoxRow] = []
-    @State private var parsedBinders: [ImportWizardView.BinderCount] = []
-    @State private var showingWizard = false
+    /// A picked ManaBox export, parsed, while the wizard is up. A
+    /// reference, not the rows: a `[ManaBoxRow]` in state (3,872 rows) was
+    /// compared row by row on each of the tab's updates and kept for the
+    /// session; this compares by identity and goes when the sheet does.
+    @State private var parsedFile: ParsedManaBox?
     /// A file that isn't a ManaBox export: read by CardListReader, into a
     /// collection or list chosen in the sheet.
     @State private var genericFile: GenericFile?
@@ -65,7 +67,10 @@ struct CollectionsView: View {
     /// caught up yet can't make the backfill (and the recount) repeat.
     @State private var backfilled: Set<String> = []
     @State private var pendingDelete: String?
-    @State private var isDeleting = false
+    /// How far a delete has got (the writer reports it per row); nil when
+    /// none is running.
+    @State private var deleteProgress: Double?
+    @State private var deleteError: String?
     /// Collection names (or `CollectionScope.allKey`) pushed onto the stack.
     @State private var path: [String] = []
     /// The grid's sort, so the overview pass can leave each collection's
@@ -159,7 +164,13 @@ struct CollectionsView: View {
                     .accessibilityIdentifier("collections-menu")
                 }
             }
-            .overlay { if isParsing || isDeleting { busyOverlay(isDeleting ? "Deleting…" : "Reading file…") } }
+            .overlay {
+                if let deleteProgress {
+                    busyOverlay("Deleting…", progress: deleteProgress)
+                } else if isParsing {
+                    busyOverlay("Reading file…")
+                }
+            }
             .fileImporter(
                 isPresented: $showingFileImporter,
                 allowedContentTypes: [.commaSeparatedText, .tabSeparatedText, .plainText, .text, .utf8PlainText, .xml, .data],
@@ -174,11 +185,13 @@ struct CollectionsView: View {
             .sheet(item: $genericFile) { file in
                 CollectionImportView(collectionName: nil, isList: false, fileText: file.text, fileName: file.name)
             }
-            .sheet(isPresented: $showingWizard) {
+            .sheet(item: $parsedFile) { file in
+                // Lists are not import destinations: the wizard offers
+                // collections, and a new name a list already has is refused.
                 ImportWizardView(
-                    rows: parsedRows,
-                    binderCounts: parsedBinders,
-                    existingCollectionNames: collections.map(\.name)
+                    file: file,
+                    existingCollectionNames: ownedCollections.map(\.name),
+                    listNames: lists.map(\.name)
                 )
             }
             .alert(creatingKind == .list ? "New List" : "New Collection", isPresented: $showingCreate) {
@@ -195,6 +208,11 @@ struct CollectionsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(createError ?? "")
+            }
+            .alert("Couldn't Delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(deleteError ?? "")
             }
             .alert("Couldn't Import", isPresented: errorBinding) {
                 Button("OK", role: .cancel) {}
@@ -270,13 +288,21 @@ struct CollectionsView: View {
         Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
     }
 
+    /// On the writer, with its progress: thousands of rows and a ledger
+    /// record each take a few seconds, which an indeterminate spinner
+    /// didn't account for. A failure says so rather than leaving the
+    /// collection there with nothing said.
     private func delete(_ name: String) {
-        isDeleting = true
+        deleteProgress = 0
         Task {
-            defer { isDeleting = false }
-            _ = try? await CollectionEditController.delete(
-                collectionName: name, context: modelContext
-            )
+            defer { deleteProgress = nil }
+            do {
+                try await CollectionEditController.delete(collectionName: name, context: modelContext) { fraction in
+                    deleteProgress = fraction
+                }
+            } catch {
+                deleteError = error.localizedDescription
+            }
         }
     }
 
@@ -375,12 +401,19 @@ struct CollectionsView: View {
         }
     }
 
-    // Brief spinner shown while the picked CSV is read + parsed off-main.
-    private func busyOverlay(_ label: String) -> some View {
+    // Brief spinner shown while the picked CSV is read + parsed off-main;
+    // a bar with `progress` (a delete).
+    private func busyOverlay(_ label: String, progress: Double? = nil) -> some View {
         ZStack {
             Color.black.opacity(0.15).ignoresSafeArea()
             VStack(spacing: 12) {
-                ProgressView()
+                if let progress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .frame(width: 180)
+                } else {
+                    ProgressView()
+                }
                 Text(label)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -401,10 +434,8 @@ struct CollectionsView: View {
                 let outcome = await Self.parse(url: url)
                 isParsing = false
                 switch outcome {
-                case .rows(let rows, let binders):
-                    parsedRows = rows
-                    parsedBinders = binders
-                    showingWizard = true
+                case .rows(let file):
+                    parsedFile = file
                 case .other(let text, let name):
                     genericFile = GenericFile(text: text, name: name)
                 case .failure(let message):
@@ -415,7 +446,7 @@ struct CollectionsView: View {
     }
 
     private enum ParseOutcome: Sendable {
-        case rows([ManaBoxRow], binders: [ImportWizardView.BinderCount])
+        case rows(ParsedManaBox)
         /// Not a ManaBox export: any other list or table, for the generic sheet.
         case other(text: String, name: String)
         case failure(String)
@@ -437,12 +468,15 @@ struct CollectionsView: View {
                         ?? String(data: data, encoding: .windowsCP1252) ?? String(data: data, encoding: .isoLatin1) else {
                     return .failure("Couldn't read the file as text.")
                 }
-                guard CardListReader.read(text).isManaBox else { return .other(text: text, name: url.lastPathComponent) }
+                // Told apart by the header line alone, then parsed once: it
+                // used to be read whole by CardListReader to learn it was
+                // ManaBox, then parsed again for the wizard.
+                guard ParsedManaBox.isManaBoxHeader(text) else { return .other(text: text, name: url.lastPathComponent) }
                 let rows = try CSVParser.parseManaBox(text)
                 guard !rows.isEmpty else {
                     return .failure("No card rows found in the file.")
                 }
-                return .rows(rows, binders: ImportWizardView.binderCounts(of: rows))
+                return .rows(ParsedManaBox(rows: rows, binderCounts: ImportWizardView.binderCounts(of: rows)))
             } catch {
                 return .failure(error.localizedDescription)
             }
@@ -545,7 +579,7 @@ struct LibraryOverviewCard: View {
                 .monospacedDigit()
                 .accessibilityIdentifier(id)
             Text(label.uppercased())
-                .font(.system(size: 10, weight: .bold))
+                .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
         }
     }

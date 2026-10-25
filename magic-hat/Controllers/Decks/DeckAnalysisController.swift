@@ -13,13 +13,26 @@
 //  Answers are cached per list on disk (DiskJSONCache), so re-opening a
 //  deck is a read, not a round of requests. Nothing here is main-thread
 //  work: the analysis and the planner run in detached tasks and only the
-//  assignments land on the main actor. One controller per deck, kept
-//  while the app runs, so leaving and returning shows what was there.
+//  assignments land on the main actor. One controller per deck, so
+//  leaving and returning shows what was there — but bounded: the
+//  collection's spare cards are read once per collection revision and
+//  shared by every deck (they don't depend on the deck), a deck's
+//  candidate readings (a CardReading per spare card, thousands) are
+//  dropped when another deck opens, its screen goes (`screenLeft`) or
+//  memory runs short, and only the last `keptControllers` decks are kept.
+//  Each used to hold its own copy of the spare cards and their readings
+//  for the life of the process.
+//
+//  The outside signals wait for the list to settle: every stepper tap is
+//  a new list, and each used to cancel and refire a Spellbook POST and a
+//  Recommander POST. The local reading is still published at once; the
+//  requests go a second after the last change (`networkDebounce`).
 //
 
 import Foundation
 import Observation
 import SwiftData
+import UIKit
 import os
 
 @MainActor
@@ -63,8 +76,9 @@ final class DeckAnalysisController {
     private var plannedFor: (hash: String, collection: Int, signals: Int)?
     private var planningFor: (hash: String, collection: Int, signals: Int)?
     /// The collection's spare cards, kept for the collection revision they
-    /// were read at: three signals landing meant three full reads.
-    private var collectionCandidates: (revision: Int, cards: [DeckSearchResult])?
+    /// were read at: three signals landing meant three full reads. Shared
+    /// across decks — nothing in them is the deck's.
+    private static var collectionCandidates: (revision: Int, cards: [DeckSearchResult])?
     /// Candidate readings by card id, kept across replans — the regexes
     /// over a thousand spare cards are the plan's cost, and the cards do
     /// not change between one signal landing and the next. Dropped when
@@ -79,12 +93,60 @@ final class DeckAnalysisController {
     static let metaTTL: TimeInterval = 7 * 24 * 3600
 
     @MainActor private static var instances: [UUID: DeckAnalysisController] = [:]
+    /// Most recently opened last.
+    @MainActor private static var recent: [UUID] = []
+    @MainActor private static var memoryObserver: NSObjectProtocol?
+    /// Decks whose controller (analysis, plan, picks) is kept for a return.
+    static let keptControllers = 6
+    /// How long the list must stay put before the outside signals are asked.
+    static let networkDebounce: Duration = .seconds(1)
 
     static func shared(for deckID: UUID) -> DeckAnalysisController {
-        if let existing = instances[deckID] { return existing }
-        let controller = DeckAnalysisController(deckID: deckID)
+        // Called from view bodies: the common case is one lookup and one
+        // compare, nothing else.
+        if recent.last == deckID, let existing = instances[deckID] { return existing }
+        installMemoryObserver()
+        let controller = instances[deckID] ?? DeckAnalysisController(deckID: deckID)
         instances[deckID] = controller
+        // Another deck opened: the one before is off screen, and its
+        // candidate readings are the bulk of what it holds.
+        if let previous = recent.last, previous != deckID { instances[previous]?.dropCandidateReadings() }
+        recent.removeAll { $0 == deckID }
+        recent.append(deckID)
+        while recent.count > keptControllers {
+            instances[recent.removeFirst()] = nil
+        }
         return controller
+    }
+
+    /// The deck screen went away: drop what only a replan reads. The
+    /// analysis and plan stay, so returning shows them at once.
+    static func screenLeft(deckID: UUID) {
+        instances[deckID]?.dropCandidateReadings()
+    }
+
+    /// Memory warning: keep only the deck on screen, and that without its
+    /// candidate readings; the shared spare cards are read again on demand.
+    static func releaseMemory() {
+        collectionCandidates = nil
+        let keep = recent.last
+        instances = instances.filter { $0.key == keep }
+        recent = keep.map { [$0] } ?? []
+        instances.values.forEach { $0.dropCandidateReadings() }
+    }
+
+    private static func installMemoryObserver() {
+        guard memoryObserver == nil else { return }
+        memoryObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { DeckAnalysisController.releaseMemory() }
+        }
+    }
+
+    private func dropCandidateReadings() {
+        candidateReadings = [:]
+        candidateReadingsTags = ""
     }
 
     init(deckID: UUID) {
@@ -123,6 +185,10 @@ final class DeckAnalysisController {
     }
 
     private func run(snapshot: DeckSnapshot, hash: String, container: ModelContainer) {
+        // A list that changed under an analysis already shown is mid-edit:
+        // its network round waits for the edits to stop. The first reading
+        // of a deck asks at once.
+        let debounce = analysis != nil
         runTask?.cancel()
         planTask?.cancel()
         generation += 1
@@ -162,6 +228,12 @@ final class DeckAnalysisController {
             self.loadCommanderPicks(snapshot: snapshot, container: container, allowNetwork: allowNetwork)
 
             guard allowNetwork else { return }
+            if debounce {
+                // A new `run` cancels this task, so only the last list of a
+                // burst of taps reaches Spellbook and Recommander.
+                try? await Task.sleep(for: Self.networkDebounce)
+                guard !Task.isCancelled, gen == self.generation else { return }
+            }
             // 2. The outside signals, concurrently; each republishes as it lands.
             await withTaskGroup(of: Void.self) { group in
                 if sig.gameChangers == nil {
@@ -278,7 +350,7 @@ final class DeckAnalysisController {
         let stamp = StoreStamp.current
         let writer = CardMetaWriter.shared(for: container)
         let allowNetwork = Self.allowsNetwork
-        let cachedCollection = collectionCandidates?.revision == collectionRevision ? collectionCandidates?.cards : nil
+        let cachedCollection = Self.collectionCandidates?.revision == collectionRevision ? Self.collectionCandidates?.cards : nil
         let knownReadings = candidateReadings
         planTask = Task { [weak self] in
             let t0 = ContinuousClock.now
@@ -290,8 +362,8 @@ final class DeckAnalysisController {
                 // has; grouped off the main actor.
                 let cards = (try? await rows.ownedCards(stamp: stamp)) ?? []
                 owned = await Task.detached(priority: .userInitiated) { DeckStore.candidates(from: cards) }.value
-                guard let self, !Task.isCancelled else { return }
-                self.collectionCandidates = (collectionRevision, owned)
+                guard !Task.isCancelled else { return }
+                Self.collectionCandidates = (collectionRevision, owned)
             }
             let candidates = await Self.candidates(snapshot: snapshot, analysis: analysis, signals: signals, owned: owned,
                                                   store: store, writer: writer, allowNetwork: allowNetwork)
@@ -328,7 +400,7 @@ final class DeckAnalysisController {
         let signals = self.signals
         let readings = self.readings
         var owned: [String: Int] = [:]
-        for c in collectionCandidates?.cards ?? [] { owned[c.card.oracleID ?? c.card.scryfallID] = c.ownedCopies }
+        for c in Self.collectionCandidates?.cards ?? [] { owned[c.card.oracleID ?? c.card.scryfallID] = c.ownedCopies }
         let candidates = cards.map { card in
             DeckCandidate(card: card, ownedCopies: owned[card.oracleID ?? card.scryfallID] ?? 0,
                           metaScore: card.oracleID.flatMap { signals.meta?[$0] })

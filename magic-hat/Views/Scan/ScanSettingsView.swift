@@ -196,7 +196,7 @@ struct ScanSetLockView: View {
 private struct ScanTipsView: View {
     var body: some View {
         List {
-            tip("rectangle.portrait", "Fill the frame", "Hold the card flat so its edges sit just inside the frame, a hand's width from the lens.")
+            tip("rectangle.portrait", "Anywhere in view", "Hold the card flat anywhere in the picture, a hand's width from the lens; an outline follows it once it's found. A dark surface behind a white-bordered card helps. Card Frame in Scan Settings draws a guide to line it up with instead.")
             tip("lightbulb", "Light evenly", "Bright, even light works best. Tilt a foil until the glare leaves the name and the bottom-left corner, or turn on the light.")
             tip("text.magnifyingglass", "Name and corner", "The scanner reads the name at the top and the set and number at the bottom left. Newer cards give an exact printing; older ones are matched by name.")
             tip("plus.circle", "Several copies", "The same card is only counted once while you hold it. Tap +1 for each further copy.")

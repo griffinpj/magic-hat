@@ -73,9 +73,9 @@ struct ScanView: View {
                 }
                 .task { await session.loadSets() }
                 .onAppear { isVisible = true; startIfReady() }
-                .onDisappear { isVisible = false; camera.stop() }
+                .onDisappear { isVisible = false; stopCamera() }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { startIfReady() } else { camera.stop() }
+                    if phase == .active { startIfReady() } else { stopCamera() }
                 }
                 .onChange(of: session.isPaused) { _, paused in camera.isPaused = paused }
                 .onChange(of: showPrintings) { _, open in session.isEditing = open }
@@ -90,6 +90,7 @@ struct ScanView: View {
 
     private var screen: some View {
         content
+            .onChange(of: showTray || showSettings, initial: true) { _, covered in session.isCovered = covered }
             .sheet(isPresented: $showTray) { ScanTrayView(session: session) }
             .sheet(isPresented: $showSettings) {
                 ScanSettingsView()
@@ -261,11 +262,31 @@ struct ScanView: View {
         screenSize.width > screenSize.height ? CGSize(width: 1920, height: 1080) : CGSize(width: 1080, height: 1920)
     }
 
+    /// Stopping the session turns the light off, so the button must say so.
+    private func stopCamera() {
+        camera.stop()
+        torch = false
+    }
+
     private func take(_ frame: RecognizedFrame) {
         session.ingest(frame.lines, layout: frame.layout)
         guard !settings.showFrame else { return }
         let outline = frame.card.map { CardCamera.viewRect(region: $0, in: screenSize, imageSize: uprightImageSize) }
-        if outline != cardOutline { withAnimation(.snappy(duration: 0.2)) { cardOutline = outline } }
+        guard Self.outlineMoved(from: cardOutline, to: outline) else { return }
+        withAnimation(.snappy(duration: 0.2)) { cardOutline = outline }
+    }
+
+    /// Hysteresis for the outline: Vision's rectangle jitters a point or
+    /// two between frames on a card that isn't moving, and setting it under
+    /// an animation four times a second kept the overlay animating forever.
+    /// A change counts when the card appears, goes, or an edge moves by
+    /// more than `outlineSlop` points.
+    static let outlineSlop: CGFloat = 6
+
+    static func outlineMoved(from old: CGRect?, to new: CGRect?) -> Bool {
+        guard let old, let new else { return (old == nil) != (new == nil) }
+        return abs(old.minX - new.minX) > outlineSlop || abs(old.minY - new.minY) > outlineSlop
+            || abs(old.maxX - new.maxX) > outlineSlop || abs(old.maxY - new.maxY) > outlineSlop
     }
 
     private var guideTint: Color {
@@ -762,7 +783,7 @@ private struct ScanPromptView: View {
             Group {
                 switch session.phase {
                 case .confirm(let match):
-                    ScanConfirmView(match: match,
+                    ScanConfirmView(match: match, resolving: session.resolvingName,
                                     onAccept: { session.confirm(match.card, exactPrinting: match.exactPrinting) },
                                     onPick: { name in session.confirm(name: name) },
                                     onReject: { withAnimation { session.reject() } },
@@ -785,6 +806,9 @@ private struct ScanPromptView: View {
 /// scanning, this card left alone while it stays in view.
 private struct ScanConfirmView: View {
     let match: ScanMatch
+    /// The alternative being looked up, if one is: it shows a spinner and
+    /// the other answers wait.
+    var resolving: String? = nil
     let onAccept: () -> Void
     let onPick: (String) -> Void
     let onReject: () -> Void
@@ -822,9 +846,14 @@ private struct ScanConfirmView: View {
                         Text("Or is it…").font(.subheadline.weight(.semibold))
                         FlowLayout {
                             ForEach(match.alternatives, id: \.self) { name in
-                                Button(name) { onPick(name) }
-                                    .buttonStyle(.bordered)
-                                    .buttonBorderShape(.capsule)
+                                Button { onPick(name) } label: {
+                                    HStack(spacing: 6) {
+                                        if resolving == name { ProgressView().controlSize(.mini) }
+                                        Text(name)
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .buttonBorderShape(.capsule)
                             }
                         }
                     }
@@ -832,6 +861,7 @@ private struct ScanConfirmView: View {
                 }
             }
             .padding(20)
+            .disabled(resolving != nil)
         }
         .navigationTitle("Is This the Card?")
         .navigationBarTitleDisplayMode(.inline)

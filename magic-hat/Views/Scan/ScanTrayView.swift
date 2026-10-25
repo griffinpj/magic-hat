@@ -35,7 +35,10 @@ struct ScanTrayView: View {
                         }
                     }
                     .onDelete { offsets in
-                        for i in offsets { session.remove(session.tray[i].id) }
+                        // Ids first: removing by offset while iterating
+                        // shifts every later offset onto the wrong card.
+                        let ids = offsets.map { session.tray[$0].id }
+                        for id in ids { session.remove(id) }
                     }
                 } footer: {
                     Text("Check each card's printing and finish; swipe to take one out.")
@@ -54,18 +57,21 @@ struct ScanTrayView: View {
             }
             .navigationTitle("\(session.trayCopies) Scanned")
             .navigationBarTitleDisplayMode(.inline)
+            // A modal alert, never a popover pointing at Clear (it read as a
+            // tooltip); on the list, since a toolbar item's own presentations
+            // aren't reliable.
+            .alert("Clear \(session.trayCopies == 1 ? "1 Scanned Card" : "\(session.trayCopies) Scanned Cards")?",
+                   isPresented: $confirmClear) {
+                Button("Clear All", role: .destructive) { session.clear(); dismiss() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("They haven't been added anywhere yet, so they'll need scanning again.")
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() }.accessibilityIdentifier("scan-tray-done") }
                 ToolbarItem(placement: .destructiveAction) {
                     Button("Clear", role: .destructive) { confirmClear = true }
                         .disabled(session.tray.isEmpty)
-                        .confirmationDialog("Clear \(session.trayCopies == 1 ? "1 Scanned Card" : "\(session.trayCopies) Scanned Cards")?",
-                                            isPresented: $confirmClear, titleVisibility: .visible) {
-                            Button("Clear All", role: .destructive) { session.clear(); dismiss() }
-                            Button("Cancel", role: .cancel) {}
-                        } message: {
-                            Text("They haven't been added anywhere yet, so they'll need scanning again.")
-                        }
                 }
                 ToolbarItem(placement: .bottomBar) {
                     Button(action: addAll) {

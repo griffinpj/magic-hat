@@ -94,6 +94,43 @@ struct CardSortingTests {
         #expect(elapsed < .milliseconds(500), "all six sorts took \(elapsed)")
     }
 
+    /// Mana value is a key worked out from the cost (parsed once per card,
+    /// not per comparison); ties still fall to name, then id, under shuffle.
+    @Test func manaValueSortsByParsedCostWithATotalOrder() {
+        func card(_ id: String, _ name: String, _ cost: String?) -> CardItem {
+            CardItem(
+                id: id, scryfallID: id, oracleID: nil, name: name, setCode: "one",
+                setName: "ONE", collectorNumber: "1", rarity: "common",
+                quantity: 1, finish: .normal, condition: "near_mint",
+                language: "en", addedDate: nil, owned: true, collectionName: "Main", imageURL: nil,
+                artCropURL: nil, aspectRatio: 488.0 / 680.0, typeLine: nil,
+                manaCost: cost, oracleText: nil, power: nil, toughness: nil,
+                loyalty: nil, colors: [], colorIdentity: [], artist: nil,
+                price: nil, priceFoil: nil,
+                sortKey: CardItem.sortKey(for: name),
+                collectorNumberValue: CardItem.collectorValue("1"),
+                rarityRankValue: CardItem.rarityRank("common"),
+                purchasePrice: nil,
+                legalities: nil, edhrecRank: nil, purchaseURIs: nil
+            )
+        }
+        var items = [
+            card("a", "Big", "{7}"),
+            card("b", "Bolt", "{R}"),
+            card("c", "Land", nil),
+            card("d", "Hybrid", "{2/W}{G}"),
+            card("e", "Also Three", "{1}{U}{U}"),
+            card("f", "Also Three", "{2}{B}"),
+        ]
+        let reference = CardSorting.sorted(items, by: .manaValue).map(\.id)
+        #expect(reference == ["c", "b", "e", "f", "d", "a"])
+        #expect(CardSorting.sorted(items, by: .manaValue, direction: .descending).map(\.id) == ["a", "e", "f", "d", "b", "c"])
+        for _ in 0..<5 {
+            items.shuffle()
+            #expect(CardSorting.sorted(items, by: .manaValue).map(\.id) == reference)
+        }
+    }
+
     @Test func raritySortsMythicFirst() {
         let items = [
             TestSupport.card(id: "1", name: "C", rarity: "common"),

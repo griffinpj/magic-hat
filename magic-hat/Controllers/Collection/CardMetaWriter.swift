@@ -47,10 +47,25 @@ actor CardMetaWriter: ModelActor {
         )
         guard let metas = try? modelContext.fetch(descriptor) else { return ids }
         let byID = Dictionary(metas.map { ($0.scryfallID, $0) }, uniquingKeysWith: { a, _ in a })
+        let now = Date()
         return ids.filter { id in
             guard let meta = byID[id] else { return true }
-            return !meta.isComplete
+            return !meta.isComplete && !Self.isBackingOff(meta, now: now)
         }
+    }
+
+    /// How long an id Scryfall answered `not_found` for rests before it
+    /// is asked for again. It used to stay pending and go out on every
+    /// launch, forever; a day lets a card Scryfall adds late arrive.
+    nonisolated static let notFoundBackoff: TimeInterval = 24 * 60 * 60
+
+    /// A row Scryfall said it doesn't have, less than a day ago: not
+    /// pending (CollectionStore) and not needed (above) until then. A
+    /// network failure marks the row failed without a date, so it is
+    /// retried on the next pass as before.
+    nonisolated static func isBackingOff(_ meta: CardMeta, now: Date = Date()) -> Bool {
+        guard meta.fetchState == .failed, let last = meta.lastFetched else { return false }
+        return now.timeIntervalSince(last) < notFoundBackoff
     }
 
     /// Upserts metadata for `cards`; with `linkEntries`, also points the
@@ -106,8 +121,10 @@ actor CardMetaWriter: ModelActor {
             let sample = PriceSample(meta: meta, day: today)
             guard !sample.isEmpty else { continue }
             if let row = byID[id] {
-                var series = row.series
-                if series.record(sample) { row.series = series }
+                // Appended (or today's overwritten) in the blob: decoding
+                // and repacking every owned series per batch was millions
+                // of allocations a refresh.
+                row.record(sample)
             } else {
                 var series = PriceSeries()
                 series.record(sample)
@@ -172,14 +189,32 @@ actor CardMetaWriter: ModelActor {
         try LedgerReplay.replay(actionID: actionID, direction: direction, in: modelContext)
     }
 
-    func markFailed(_ ids: Set<String>) throws {
+    /// Several steps against one read of the ledger (`LedgerReplay.replay(_:in:)`).
+    /// Returns how many landed and the error that stopped the rest, if any:
+    /// the steps before a refusal are saved and must still be counted.
+    func runReplays(_ steps: [(actionID: UUID, direction: LedgerReplay.Direction)]) -> (done: Int, error: Error?) {
+        var done = 0
+        do {
+            try LedgerReplay.replay(steps, in: modelContext) { done = $0 }
+            return (done, nil)
+        } catch {
+            return (done, error)
+        }
+    }
+
+    /// Marks rows whose fetch failed. With `notFound` (Scryfall answered
+    /// and doesn't have the id) the row is dated, which starts its back-off
+    /// (`isBackingOff`); a failed request leaves the date alone.
+    func markFailed(_ ids: Set<String>, notFound: Bool = false) throws {
         let idList = Array(ids)
         let descriptor = FetchDescriptor<CardMeta>(
             predicate: #Predicate { idList.contains($0.scryfallID) }
         )
         guard let metas = try? modelContext.fetch(descriptor) else { return }
+        let now = Date()
         for meta in metas where meta.fetchState != .fetched {
             meta.fetchState = .failed
+            if notFound { meta.lastFetched = now }
         }
         try modelContext.save()
     }
